@@ -2329,14 +2329,22 @@
       "role_operator": "Operator",
       "role_vm_admin": "VM Admin",
       "role_viewer": "Viewer",
-      "role_vm_user": "VM User"
+      "role_vm_user": "VM User",
+      "role_provider_admin": "Provider Admin",
+      "role_tenant_admin": "Tenant Admin",
+      "role_tenant_operator": "Tenant Operator",
+      "role_tenant_viewer": "Tenant Viewer"
     },
     "roleDesc": {
       "role_super_admin": "Full access to all features",
       "role_operator": "Day-to-day VM management without admin access",
       "role_vm_admin": "Full VM administration",
       "role_viewer": "Read-only access to all resources",
-      "role_vm_user": "Basic usage of assigned VMs (console, start/stop)"
+      "role_vm_user": "Basic usage of assigned VMs (console, start/stop)",
+      "role_provider_admin": "MSP provider with full access and tenant identity management",
+      "role_tenant_admin": "Full VM and backup administration within tenant scope",
+      "role_tenant_operator": "Day-to-day VM operations (start, stop, console, snapshots)",
+      "role_tenant_viewer": "Read-only access with console to assigned VMs"
     },
     "scopes": {
       "global": "Global",

@@ -361,6 +361,63 @@ export function getDb() {
     );
     CREATE INDEX IF NOT EXISTS idx_user_tenants_user ON user_tenants(user_id);
     CREATE INDEX IF NOT EXISTS idx_user_tenants_tenant ON user_tenants(tenant_id);
+
+    CREATE TABLE IF NOT EXISTS vdcs (
+      id              TEXT PRIMARY KEY,
+      tenant_id       TEXT NOT NULL REFERENCES tenants(id),
+      connection_id   TEXT NOT NULL,
+      name            TEXT NOT NULL,
+      slug            TEXT NOT NULL,
+      description     TEXT,
+      pve_pool_name   TEXT NOT NULL,
+      enabled         INTEGER DEFAULT 1,
+      created_by      TEXT,
+      created_at      TEXT DEFAULT (datetime('now')),
+      updated_at      TEXT DEFAULT (datetime('now')),
+      UNIQUE(tenant_id, connection_id, slug)
+    );
+    CREATE INDEX IF NOT EXISTS idx_vdcs_tenant ON vdcs(tenant_id);
+    CREATE INDEX IF NOT EXISTS idx_vdcs_connection ON vdcs(connection_id);
+
+    CREATE TABLE IF NOT EXISTS vdc_nodes (
+      id              TEXT PRIMARY KEY,
+      vdc_id          TEXT NOT NULL REFERENCES vdcs(id) ON DELETE CASCADE,
+      node_name       TEXT NOT NULL,
+      UNIQUE(vdc_id, node_name)
+    );
+    CREATE INDEX IF NOT EXISTS idx_vdc_nodes_vdc ON vdc_nodes(vdc_id);
+
+    CREATE TABLE IF NOT EXISTS vdc_storages (
+      id              TEXT PRIMARY KEY,
+      vdc_id          TEXT NOT NULL REFERENCES vdcs(id) ON DELETE CASCADE,
+      storage_id      TEXT NOT NULL,
+      UNIQUE(vdc_id, storage_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_vdc_storages_vdc ON vdc_storages(vdc_id);
+
+    CREATE TABLE IF NOT EXISTS vdc_quotas (
+      id              TEXT PRIMARY KEY,
+      vdc_id          TEXT NOT NULL UNIQUE REFERENCES vdcs(id) ON DELETE CASCADE,
+      max_vcpus       INTEGER,
+      max_ram_mb      INTEGER,
+      max_storage_mb  INTEGER,
+      max_vms         INTEGER,
+      max_snapshots   INTEGER,
+      max_backups     INTEGER,
+      updated_at      TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS vdc_usage_cache (
+      id              TEXT PRIMARY KEY,
+      vdc_id          TEXT NOT NULL UNIQUE REFERENCES vdcs(id) ON DELETE CASCADE,
+      used_vcpus      INTEGER DEFAULT 0,
+      used_ram_mb     INTEGER DEFAULT 0,
+      used_storage_mb INTEGER DEFAULT 0,
+      used_vms        INTEGER DEFAULT 0,
+      used_snapshots  INTEGER DEFAULT 0,
+      used_backups    INTEGER DEFAULT 0,
+      last_synced_at  TEXT
+    );
   `)
 
   // Auto-create DEFAULT tenant
@@ -640,7 +697,7 @@ export function getDb() {
           'events.view', 'alerts.view', 'automation.view', 'reports.view', 'tasks.view'
         ]
       },
-      { 
+      {
         id: 'role_vm_user',
         name: 'VM User',
         description: 'Basic usage of assigned VMs (console, start/stop)',
@@ -648,6 +705,64 @@ export function getDb() {
         color: '#10b981',
         permissions: [
           'vm.view', 'vm.console', 'vm.start', 'vm.stop', 'vm.restart'
+        ]
+      },
+      {
+        id: 'role_provider_admin',
+        name: 'Provider Admin',
+        description: 'MSP provider: full access + manages tenant identity and OIDC',
+        is_system: 1,
+        color: '#dc2626',
+        permissions: ['*']
+      },
+      {
+        id: 'role_tenant_admin',
+        name: 'Tenant Admin',
+        description: 'Full VM and backup administration within tenant scope',
+        is_system: 1,
+        color: '#ea580c',
+        permissions: [
+          'vm.view', 'vm.console', 'vm.start', 'vm.stop', 'vm.restart', 'vm.suspend',
+          'vm.snapshot', 'vm.backup', 'vm.clone', 'vm.migrate', 'vm.config', 'vm.delete', 'vm.create',
+          'storage.view', 'storage.content', 'storage.upload', 'storage.delete',
+          'node.view', 'connection.view',
+          'backup.view', 'backup.restore', 'backup.delete',
+          'backup.job.view', 'backup.job.create', 'backup.job.edit', 'backup.job.delete', 'backup.job.run',
+          'events.view', 'tasks.view',
+          'alerts.view', 'alerts.manage',
+          'automation.view', 'automation.manage',
+          'reports.view'
+        ]
+      },
+      {
+        id: 'role_tenant_operator',
+        name: 'Tenant Operator',
+        description: 'Day-to-day VM operations (start, stop, console, snapshots)',
+        is_system: 1,
+        color: '#2563eb',
+        permissions: [
+          'vm.view', 'vm.console', 'vm.start', 'vm.stop', 'vm.restart', 'vm.suspend',
+          'vm.snapshot', 'vm.migrate',
+          'node.view', 'connection.view',
+          'backup.view',
+          'events.view', 'tasks.view',
+          'alerts.view',
+          'reports.view'
+        ]
+      },
+      {
+        id: 'role_tenant_viewer',
+        name: 'Tenant Viewer',
+        description: 'Read-only access with console to assigned VMs',
+        is_system: 1,
+        color: '#6b7280',
+        permissions: [
+          'vm.view', 'vm.console',
+          'node.view', 'connection.view',
+          'backup.view',
+          'events.view', 'tasks.view',
+          'alerts.view',
+          'reports.view'
         ]
       },
     ]
@@ -681,15 +796,32 @@ export function getDb() {
       }
     }
   } else {
-    // Roles already exist — ensure Super Admin has all permissions (covers newly added ones)
-    const superAdminRole = db.prepare("SELECT id FROM rbac_roles WHERE id = 'role_super_admin'").get() as any
-    if (superAdminRole) {
+    // Roles already exist — auto-create new MSP roles if missing (upgrade path)
+    const mspRolesToCreate = [
+      { id: 'role_provider_admin', name: 'Provider Admin', description: 'MSP provider: full access + manages tenant identity and OIDC', color: '#dc2626', wildcard: true },
+      { id: 'role_tenant_admin', name: 'Tenant Admin', description: 'Full VM and backup administration within tenant scope', color: '#ea580c', wildcard: false },
+      { id: 'role_tenant_operator', name: 'Tenant Operator', description: 'Day-to-day VM operations (start, stop, console, snapshots)', color: '#2563eb', wildcard: false },
+      { id: 'role_tenant_viewer', name: 'Tenant Viewer', description: 'Read-only access with console to assigned VMs', color: '#6b7280', wildcard: false },
+    ]
+    const insertMspRole = db.prepare(
+      'INSERT OR IGNORE INTO rbac_roles (id, name, description, is_system, color, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?, ?)'
+    )
+    const migNow = new Date().toISOString()
+    for (const mr of mspRolesToCreate) {
+      insertMspRole.run(mr.id, mr.name, mr.description, mr.color, migNow, migNow)
+    }
+
+    // Ensure wildcard roles have all permissions (covers newly added ones)
+    const wildcardRoles = db.prepare("SELECT id FROM rbac_roles WHERE id IN ('role_super_admin', 'role_provider_admin')").all() as any[]
+    if (wildcardRoles.length > 0) {
       const allPerms = db.prepare('SELECT id FROM rbac_permissions').all() as any[]
       const insertRolePerm = db.prepare(
         'INSERT OR IGNORE INTO rbac_role_permissions (role_id, permission_id) VALUES (?, ?)'
       )
-      for (const p of allPerms) {
-        insertRolePerm.run('role_super_admin', p.id)
+      for (const wr of wildcardRoles) {
+        for (const p of allPerms) {
+          insertRolePerm.run(wr.id, p.id)
+        }
       }
     }
   }
@@ -721,6 +853,35 @@ export function getDb() {
       ],
       role_vm_user: [
         'vm.view', 'vm.console', 'vm.start', 'vm.stop', 'vm.restart'
+      ],
+      role_tenant_admin: [
+        'vm.view', 'vm.console', 'vm.start', 'vm.stop', 'vm.restart', 'vm.suspend',
+        'vm.snapshot', 'vm.backup', 'vm.clone', 'vm.migrate', 'vm.config', 'vm.delete', 'vm.create',
+        'storage.view', 'storage.content', 'storage.upload', 'storage.delete',
+        'node.view', 'connection.view',
+        'backup.view', 'backup.restore', 'backup.delete',
+        'backup.job.view', 'backup.job.create', 'backup.job.edit', 'backup.job.delete', 'backup.job.run',
+        'events.view', 'tasks.view',
+        'alerts.view', 'alerts.manage',
+        'automation.view', 'automation.manage',
+        'reports.view'
+      ],
+      role_tenant_operator: [
+        'vm.view', 'vm.console', 'vm.start', 'vm.stop', 'vm.restart', 'vm.suspend',
+        'vm.snapshot', 'vm.migrate',
+        'node.view', 'connection.view',
+        'backup.view',
+        'events.view', 'tasks.view',
+        'alerts.view',
+        'reports.view'
+      ],
+      role_tenant_viewer: [
+        'vm.view', 'vm.console',
+        'node.view', 'connection.view',
+        'backup.view',
+        'events.view', 'tasks.view',
+        'alerts.view',
+        'reports.view'
       ],
     }
     const insertOrIgnoreRolePerm = db.prepare(
