@@ -5556,7 +5556,7 @@
     "delete": "Supprimer le vDC",
     "name": "Nom",
     "slug": "Slug",
-    "slugHelp": "Lettres minuscules, chiffres et tirets uniquement. Utilisé dans le nom du pool PVE.",
+    "slugHelp": "Lettres minuscules, chiffres et tirets uniquement. Un pool PVE sera créé automatiquement.",
     "description": "Description",
     "tenant": "Tenant",
     "selectTenant": "Sélectionner un tenant",
