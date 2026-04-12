@@ -142,7 +142,7 @@ export default function VdcTab() {
     try {
       const [tenantsRes, connectionsRes] = await Promise.all([
         fetch('/api/v1/tenants'),
-        fetch('/api/v1/connections'),
+        fetch('/api/v1/admin/connections?type=pve'),
       ])
 
       const tenantsData = await tenantsRes.json()
