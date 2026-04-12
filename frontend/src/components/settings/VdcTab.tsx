@@ -605,15 +605,25 @@ export default function VdcTab() {
           />
 
           {/* Slug */}
-          <TextField
-            label={t('vdc.slug')}
-            value={form.slug}
-            onChange={(e) => setForm((f) => ({ ...f, slug: e.target.value }))}
-            fullWidth
-            required
-            disabled={!!editingVdc}
-            helperText={t('vdc.slugHelp')}
-          />
+          <Tooltip
+            title={t('vdc.slugHelp')}
+            open={!!form.slug && !/^[a-z0-9-]*$/.test(form.slug)}
+            arrow
+            placement="top"
+          >
+            <TextField
+              label={t('vdc.slug')}
+              value={form.slug}
+              onChange={(e) => {
+                const raw = e.target.value
+                const sanitized = raw.toLowerCase().replace(/[^a-z0-9-]/g, '')
+                setForm((f) => ({ ...f, slug: sanitized }))
+              }}
+              fullWidth
+              required
+              disabled={!!editingVdc}
+            />
+          </Tooltip>
 
           {/* Description */}
           <TextField
