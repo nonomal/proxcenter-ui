@@ -700,43 +700,79 @@ export default function VdcTab() {
                   </Typography>
 
                   {(availableResources.nodes || []).map((node: any) => {
-                    const cpuPercent = node.maxcpu > 0 ? ((node.cpu || 0) * 100).toFixed(1) : '0'
-                    const ramFormatted = formatBytes(node.maxmem || 0)
+                    const cpuPercent = node.maxcpu > 0 ? Math.round((node.cpu || 0) * 100) : 0
+                    const ramPercent = node.maxmem > 0 ? Math.round(((node.mem || 0) / node.maxmem) * 100) : 0
+                    const isOnline = node.status === 'online'
 
                     return (
-                      <FormControlLabel
+                      <Box
                         key={node.name}
-                        control={
-                          <Checkbox
-                            checked={form.nodes.includes(node.name)}
-                            onChange={(e) => {
-                              setForm((f) => ({
-                                ...f,
-                                nodes: e.target.checked
-                                  ? [...f.nodes, node.name]
-                                  : f.nodes.filter((n) => n !== node.name),
-                              }))
-                            }}
+                        sx={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 1.5,
+                          py: 0.75,
+                          px: 1,
+                          borderRadius: 1,
+                          '&:hover': { bgcolor: 'action.hover' },
+                        }}
+                      >
+                        <Checkbox
+                          checked={form.nodes.includes(node.name)}
+                          onChange={(e) => {
+                            setForm((f) => ({
+                              ...f,
+                              nodes: e.target.checked
+                                ? [...f.nodes, node.name]
+                                : f.nodes.filter((n) => n !== node.name),
+                            }))
+                          }}
+                          size="small"
+                        />
+
+                        {/* Proxmox icon with status dot */}
+                        <Box sx={{ position: 'relative', width: 22, height: 22, flexShrink: 0 }}>
+                          <img src="/images/proxmox-logo.svg" alt="" width={22} height={22} style={{ opacity: isOnline ? 0.9 : 0.4 }} />
+                          <Box sx={{
+                            position: 'absolute', bottom: -2, right: -2,
+                            width: 10, height: 10, borderRadius: '50%',
+                            bgcolor: isOnline ? 'success.main' : 'text.disabled',
+                            border: '2px solid', borderColor: 'background.paper',
+                          }} />
+                        </Box>
+
+                        <Typography variant="body2" sx={{ fontWeight: 500, minWidth: 120 }}>{node.name}</Typography>
+
+                        {/* CPU progress */}
+                        <Box sx={{ flex: 1, minWidth: 80 }}>
+                          <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.25 }}>
+                            <Typography variant="caption" color="text.secondary">CPU</Typography>
+                            <Typography variant="caption" color="text.secondary">{cpuPercent}%</Typography>
+                          </Box>
+                          <LinearProgress
+                            variant="determinate"
+                            value={cpuPercent}
+                            color={quotaColor(cpuPercent)}
+                            sx={{ height: 6, borderRadius: 3 }}
                           />
-                        }
-                        label={
-                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                            <Typography variant="body2">{node.name}</Typography>
-                            <Chip
-                              label={node.status === 'online' ? t('common.online') : t('common.offline')}
-                              size="small"
-                              color={node.status === 'online' ? 'success' : 'default'}
-                              sx={{ height: 20, fontSize: '0.65rem' }}
-                            />
+                        </Box>
+
+                        {/* RAM progress */}
+                        <Box sx={{ flex: 1, minWidth: 80 }}>
+                          <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.25 }}>
+                            <Typography variant="caption" color="text.secondary">RAM</Typography>
                             <Typography variant="caption" color="text.secondary">
-                              CPU: {cpuPercent}%
-                            </Typography>
-                            <Typography variant="caption" color="text.secondary">
-                              RAM: {ramFormatted}
+                              {formatBytes(node.mem || 0)} / {formatBytes(node.maxmem || 0)}
                             </Typography>
                           </Box>
-                        }
-                      />
+                          <LinearProgress
+                            variant="determinate"
+                            value={ramPercent}
+                            color={quotaColor(ramPercent)}
+                            sx={{ height: 6, borderRadius: 3 }}
+                          />
+                        </Box>
+                      </Box>
                     )
                   })}
 
@@ -751,10 +787,22 @@ export default function VdcTab() {
                     )}
                   </Typography>
 
-                  {(availableResources.storages || []).map((storage: any) => (
-                    <FormControlLabel
-                      key={storage.id}
-                      control={
+                  {(availableResources.storages || []).map((storage: any) => {
+                    const usagePercent = storage.maxdisk > 0 ? Math.round((storage.disk / storage.maxdisk) * 100) : 0
+
+                    return (
+                      <Box
+                        key={storage.id}
+                        sx={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 1.5,
+                          py: 0.75,
+                          px: 1,
+                          borderRadius: 1,
+                          '&:hover': { bgcolor: 'action.hover' },
+                        }}
+                      >
                         <Checkbox
                           checked={form.storages.includes(storage.id)}
                           onChange={(e) => {
@@ -765,29 +813,38 @@ export default function VdcTab() {
                                 : f.storages.filter((s) => s !== storage.id),
                             }))
                           }}
+                          size="small"
                         />
-                      }
-                      label={
-                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                          <Typography variant="body2">{storage.id}</Typography>
-                          <Chip
-                            label={storage.type}
-                            size="small"
-                            variant="outlined"
-                            sx={{ height: 20, fontSize: '0.65rem' }}
-                          />
-                          {storage.shared && (
-                            <Chip
-                              label={t('vdc.shared')}
-                              size="small"
-                              color="info"
-                              sx={{ height: 20, fontSize: '0.65rem' }}
+
+                        <i className="ri-hard-drive-2-fill" style={{ fontSize: 18, opacity: 0.7 }} />
+
+                        <Typography variant="body2" sx={{ fontWeight: 500, minWidth: 120 }}>{storage.id}</Typography>
+
+                        <Chip label={storage.type} size="small" variant="outlined" sx={{ height: 20, fontSize: '0.65rem' }} />
+                        {storage.shared && (
+                          <Chip label={t('vdc.shared')} size="small" color="info" sx={{ height: 20, fontSize: '0.65rem' }} />
+                        )}
+
+                        {/* Usage progress */}
+                        {storage.maxdisk > 0 && (
+                          <Box sx={{ flex: 1, minWidth: 80 }}>
+                            <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.25 }}>
+                              <Typography variant="caption" color="text.secondary">
+                                {formatBytes(storage.disk || 0)} / {formatBytes(storage.maxdisk || 0)}
+                              </Typography>
+                              <Typography variant="caption" color="text.secondary">{usagePercent}%</Typography>
+                            </Box>
+                            <LinearProgress
+                              variant="determinate"
+                              value={usagePercent}
+                              color={quotaColor(usagePercent)}
+                              sx={{ height: 6, borderRadius: 3 }}
                             />
-                          )}
-                        </Box>
-                      }
-                    />
-                  ))}
+                          </Box>
+                        )}
+                      </Box>
+                    )
+                  })}
                 </>
               ) : null}
 

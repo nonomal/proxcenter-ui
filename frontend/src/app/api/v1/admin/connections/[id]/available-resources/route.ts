@@ -36,14 +36,26 @@ export async function GET(_req: Request, ctx: RouteContext) {
       maxmem: n.maxmem,
     }))
 
-    // Fetch storages (cluster-wide)
+    // Fetch storages: definition from /storage + usage from /cluster/resources
     const storagesRaw = await pveFetch<any[]>(conn, "/storage") || []
+    let storageUsage: Record<string, { disk: number; maxdisk: number }> = {}
+    try {
+      const resources = await pveFetch<any[]>(conn, "/cluster/resources?type=storage") || []
+      for (const r of resources) {
+        if (r.storage && !storageUsage[r.storage]) {
+          storageUsage[r.storage] = { disk: r.disk || 0, maxdisk: r.maxdisk || 0 }
+        }
+      }
+    } catch {}
+
     const storages = storagesRaw.map((s: any) => ({
       id: s.storage,
       type: s.type,
       content: s.content,
       shared: !!s.shared,
       nodes: s.nodes || null,
+      disk: storageUsage[s.storage]?.disk || 0,
+      maxdisk: storageUsage[s.storage]?.maxdisk || 0,
     }))
 
     // Fetch existing PVE pools (to show what's taken)
