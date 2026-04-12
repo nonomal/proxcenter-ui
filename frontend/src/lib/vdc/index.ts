@@ -1,0 +1,458 @@
+// src/lib/vdc/index.ts
+// vDC CRUD library with PVE pool integration
+
+import { randomUUID } from 'crypto'
+
+import { getDb } from '@/lib/db/sqlite'
+import { pveFetch } from '@/lib/proxmox/client'
+import { getConnectionById } from '@/lib/connections/getConnection'
+
+import type {
+  Vdc,
+  VdcWithDetails,
+  VdcQuota,
+  VdcUsage,
+  CreateVdcInput,
+  UpdateVdcInput,
+} from './types'
+
+// Re-export all types
+export type { Vdc, VdcWithDetails, VdcQuota, VdcUsage, CreateVdcInput, UpdateVdcInput } from './types'
+
+// ---------------------------------------------------------------------------
+// Row mapping helpers
+// ---------------------------------------------------------------------------
+
+function rowToVdc(row: any): Vdc {
+  return {
+    id: row.id,
+    tenantId: row.tenant_id,
+    connectionId: row.connection_id,
+    name: row.name,
+    slug: row.slug,
+    description: row.description ?? null,
+    pvePoolName: row.pve_pool_name,
+    enabled: !!row.enabled,
+    createdBy: row.created_by ?? null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }
+}
+
+function rowToQuota(row: any): VdcQuota | null {
+  if (!row) return null
+  return {
+    maxVcpus: row.max_vcpus ?? null,
+    maxRamMb: row.max_ram_mb ?? null,
+    maxStorageMb: row.max_storage_mb ?? null,
+    maxVms: row.max_vms ?? null,
+    maxSnapshots: row.max_snapshots ?? null,
+    maxBackups: row.max_backups ?? null,
+  }
+}
+
+function rowToUsage(row: any): VdcUsage | null {
+  if (!row) return null
+  return {
+    usedVcpus: row.used_vcpus ?? 0,
+    usedRamMb: row.used_ram_mb ?? 0,
+    usedStorageMb: row.used_storage_mb ?? 0,
+    usedVms: row.used_vms ?? 0,
+    usedSnapshots: row.used_snapshots ?? 0,
+    usedBackups: row.used_backups ?? 0,
+    lastSyncedAt: row.last_synced_at ?? null,
+  }
+}
+
+function generatePoolName(tenantSlug: string, vdcSlug: string): string {
+  return `vdc-${tenantSlug}-${vdcSlug}`
+}
+
+// ---------------------------------------------------------------------------
+// listVdcs
+// ---------------------------------------------------------------------------
+
+export function listVdcs(tenantId?: string): VdcWithDetails[] {
+  const db = getDb()
+
+  const baseQuery = `
+    SELECT v.*, t.name AS tenant_name
+    FROM vdcs v
+    LEFT JOIN tenants t ON t.id = v.tenant_id
+  `
+  const rows = tenantId
+    ? db.prepare(`${baseQuery} WHERE v.tenant_id = ? ORDER BY v.name`).all(tenantId)
+    : db.prepare(`${baseQuery} ORDER BY v.name`).all()
+
+  const stmtNodes = db.prepare('SELECT node_name FROM vdc_nodes WHERE vdc_id = ?')
+  const stmtStorages = db.prepare('SELECT storage_id FROM vdc_storages WHERE vdc_id = ?')
+  const stmtQuota = db.prepare('SELECT * FROM vdc_quotas WHERE vdc_id = ?')
+  const stmtUsage = db.prepare('SELECT * FROM vdc_usage_cache WHERE vdc_id = ?')
+
+  return (rows as any[]).map((row) => {
+    const vdc = rowToVdc(row)
+    const nodes = (stmtNodes.all(vdc.id) as any[]).map((r) => r.node_name)
+    const storages = (stmtStorages.all(vdc.id) as any[]).map((r) => r.storage_id)
+    const quota = rowToQuota(stmtQuota.get(vdc.id))
+    const usage = rowToUsage(stmtUsage.get(vdc.id))
+
+    return {
+      ...vdc,
+      tenantName: row.tenant_name ?? undefined,
+      nodes,
+      storages,
+      quota,
+      usage,
+    } as VdcWithDetails
+  })
+}
+
+// ---------------------------------------------------------------------------
+// getVdcById
+// ---------------------------------------------------------------------------
+
+export function getVdcById(id: string): VdcWithDetails | null {
+  const db = getDb()
+
+  const row = db.prepare(`
+    SELECT v.*, t.name AS tenant_name
+    FROM vdcs v
+    LEFT JOIN tenants t ON t.id = v.tenant_id
+    WHERE v.id = ?
+  `).get(id) as any
+
+  if (!row) return null
+
+  const vdc = rowToVdc(row)
+  const nodes = (db.prepare('SELECT node_name FROM vdc_nodes WHERE vdc_id = ?').all(id) as any[]).map((r) => r.node_name)
+  const storages = (db.prepare('SELECT storage_id FROM vdc_storages WHERE vdc_id = ?').all(id) as any[]).map((r) => r.storage_id)
+  const quota = rowToQuota(db.prepare('SELECT * FROM vdc_quotas WHERE vdc_id = ?').get(id))
+  const usage = rowToUsage(db.prepare('SELECT * FROM vdc_usage_cache WHERE vdc_id = ?').get(id))
+
+  return {
+    ...vdc,
+    tenantName: row.tenant_name ?? undefined,
+    nodes,
+    storages,
+    quota,
+    usage,
+  }
+}
+
+// ---------------------------------------------------------------------------
+// createVdc
+// ---------------------------------------------------------------------------
+
+export async function createVdc(input: CreateVdcInput, createdBy: string | null): Promise<VdcWithDetails> {
+  const db = getDb()
+
+  // 1. Resolve tenant slug
+  const tenantRow = db.prepare('SELECT slug FROM tenants WHERE id = ?').get(input.tenantId) as any
+  if (!tenantRow) {
+    throw new Error(`Tenant not found: ${input.tenantId}`)
+  }
+  const tenantSlug = tenantRow.slug as string
+
+  // 2. Check slug uniqueness within tenant + connection
+  const existing = db.prepare(
+    'SELECT id FROM vdcs WHERE tenant_id = ? AND connection_id = ? AND slug = ?'
+  ).get(input.tenantId, input.connectionId, input.slug) as any
+  if (existing) {
+    throw new Error(`A vDC with slug "${input.slug}" already exists for this tenant/connection`)
+  }
+
+  // 3. Create PVE pool
+  const poolName = generatePoolName(tenantSlug, input.slug)
+  const conn = await getConnectionById(input.connectionId, input.tenantId)
+
+  try {
+    await pveFetch(conn, '/pools', {
+      method: 'POST',
+      body: new URLSearchParams({
+        poolid: poolName,
+        comment: `ProxCenter vDC: ${input.name}`,
+      }),
+    })
+  } catch (err: any) {
+    // Handle "already exists" errors gracefully (retry / race condition)
+    const msg = err?.message || ''
+    if (!msg.includes('already exists')) {
+      throw new Error(`Failed to create PVE pool "${poolName}": ${msg}`)
+    }
+    console.warn(`[vdc] PVE pool "${poolName}" already exists, proceeding`)
+  }
+
+  // 4. DB transaction
+  const id = randomUUID()
+  const now = new Date().toISOString()
+
+  const insertVdc = db.prepare(`
+    INSERT INTO vdcs (id, tenant_id, connection_id, name, slug, description, pve_pool_name, enabled, created_by, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+  `)
+  const insertNode = db.prepare('INSERT INTO vdc_nodes (id, vdc_id, node_name) VALUES (?, ?, ?)')
+  const insertStorage = db.prepare('INSERT INTO vdc_storages (id, vdc_id, storage_id) VALUES (?, ?, ?)')
+  const insertQuota = db.prepare(`
+    INSERT INTO vdc_quotas (id, vdc_id, max_vcpus, max_ram_mb, max_storage_mb, max_vms, max_snapshots, max_backups, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `)
+  const insertUsage = db.prepare(`
+    INSERT INTO vdc_usage_cache (id, vdc_id, used_vcpus, used_ram_mb, used_storage_mb, used_vms, used_snapshots, used_backups, last_synced_at)
+    VALUES (?, ?, 0, 0, 0, 0, 0, 0, NULL)
+  `)
+
+  const runTransaction = db.transaction(() => {
+    insertVdc.run(
+      id, input.tenantId, input.connectionId, input.name, input.slug,
+      input.description ?? null, poolName, createdBy, now, now
+    )
+
+    for (const nodeName of input.nodes) {
+      insertNode.run(randomUUID(), id, nodeName)
+    }
+
+    for (const storageId of input.storages) {
+      insertStorage.run(randomUUID(), id, storageId)
+    }
+
+    if (input.quota) {
+      insertQuota.run(
+        randomUUID(), id,
+        input.quota.maxVcpus ?? null,
+        input.quota.maxRamMb ?? null,
+        input.quota.maxStorageMb ?? null,
+        input.quota.maxVms ?? null,
+        input.quota.maxSnapshots ?? null,
+        input.quota.maxBackups ?? null,
+        now
+      )
+    }
+
+    insertUsage.run(randomUUID(), id)
+  })
+
+  runTransaction()
+
+  return getVdcById(id)!
+}
+
+// ---------------------------------------------------------------------------
+// updateVdc
+// ---------------------------------------------------------------------------
+
+export async function updateVdc(id: string, input: UpdateVdcInput): Promise<VdcWithDetails> {
+  const db = getDb()
+
+  // Verify vDC exists
+  const existing = db.prepare('SELECT id FROM vdcs WHERE id = ?').get(id) as any
+  if (!existing) {
+    throw new Error(`vDC not found: ${id}`)
+  }
+
+  const now = new Date().toISOString()
+
+  const updateVdcStmt = db.prepare(`
+    UPDATE vdcs SET
+      name = COALESCE(?, name),
+      description = COALESCE(?, description),
+      enabled = COALESCE(?, enabled),
+      updated_at = ?
+    WHERE id = ?
+  `)
+
+  const deleteNodes = db.prepare('DELETE FROM vdc_nodes WHERE vdc_id = ?')
+  const insertNode = db.prepare('INSERT INTO vdc_nodes (id, vdc_id, node_name) VALUES (?, ?, ?)')
+  const deleteStorages = db.prepare('DELETE FROM vdc_storages WHERE vdc_id = ?')
+  const insertStorage = db.prepare('INSERT INTO vdc_storages (id, vdc_id, storage_id) VALUES (?, ?, ?)')
+
+  // Upsert quota: try UPDATE first, INSERT if no row exists
+  const upsertQuota = db.prepare(`
+    INSERT INTO vdc_quotas (id, vdc_id, max_vcpus, max_ram_mb, max_storage_mb, max_vms, max_snapshots, max_backups, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(vdc_id) DO UPDATE SET
+      max_vcpus = excluded.max_vcpus,
+      max_ram_mb = excluded.max_ram_mb,
+      max_storage_mb = excluded.max_storage_mb,
+      max_vms = excluded.max_vms,
+      max_snapshots = excluded.max_snapshots,
+      max_backups = excluded.max_backups,
+      updated_at = excluded.updated_at
+  `)
+
+  const runTransaction = db.transaction(() => {
+    updateVdcStmt.run(
+      input.name ?? null,
+      input.description ?? null,
+      input.enabled !== undefined ? (input.enabled ? 1 : 0) : null,
+      now,
+      id
+    )
+
+    if (input.nodes) {
+      deleteNodes.run(id)
+      for (const nodeName of input.nodes) {
+        insertNode.run(randomUUID(), id, nodeName)
+      }
+    }
+
+    if (input.storages) {
+      deleteStorages.run(id)
+      for (const storageId of input.storages) {
+        insertStorage.run(randomUUID(), id, storageId)
+      }
+    }
+
+    if (input.quota) {
+      upsertQuota.run(
+        randomUUID(), id,
+        input.quota.maxVcpus ?? null,
+        input.quota.maxRamMb ?? null,
+        input.quota.maxStorageMb ?? null,
+        input.quota.maxVms ?? null,
+        input.quota.maxSnapshots ?? null,
+        input.quota.maxBackups ?? null,
+        now
+      )
+    }
+  })
+
+  runTransaction()
+
+  return getVdcById(id)!
+}
+
+// ---------------------------------------------------------------------------
+// deleteVdc
+// ---------------------------------------------------------------------------
+
+export async function deleteVdc(id: string): Promise<void> {
+  const db = getDb()
+
+  // 1. Load vDC from DB
+  const row = db.prepare('SELECT * FROM vdcs WHERE id = ?').get(id) as any
+  if (!row) {
+    throw new Error(`vDC not found: ${id}`)
+  }
+  const vdc = rowToVdc(row)
+
+  // 2. Check PVE pool for VMs
+  const conn = await getConnectionById(vdc.connectionId, vdc.tenantId)
+
+  try {
+    const poolData = await pveFetch<{ members?: any[] }>(conn, `/pools/${encodeURIComponent(vdc.pvePoolName)}`)
+    const members = poolData?.members || []
+    const vmMembers = members.filter(
+      (m: any) => m.type === 'qemu' || m.type === 'lxc'
+    )
+    if (vmMembers.length > 0) {
+      throw new Error(
+        `Cannot delete vDC "${vdc.name}": PVE pool "${vdc.pvePoolName}" still contains ${vmMembers.length} VM(s)/container(s). Remove them first.`
+      )
+    }
+  } catch (err: any) {
+    // If the pool doesn't exist on PVE side, that's fine - proceed with DB cleanup
+    const msg = err?.message || ''
+    if (msg.includes('Cannot delete vDC')) {
+      throw err // re-throw our own check error
+    }
+    // Pool not found or unreachable - log and continue
+    console.warn(`[vdc] Could not check PVE pool "${vdc.pvePoolName}": ${msg}`)
+  }
+
+  // 3. Delete PVE pool (best effort)
+  try {
+    await pveFetch(conn, `/pools/${encodeURIComponent(vdc.pvePoolName)}`, { method: 'DELETE' })
+  } catch (err: any) {
+    console.warn(`[vdc] Failed to delete PVE pool "${vdc.pvePoolName}" (best effort): ${err?.message}`)
+  }
+
+  // 4. Delete from DB (CASCADE handles child tables)
+  db.prepare('DELETE FROM vdcs WHERE id = ?').run(id)
+}
+
+// ---------------------------------------------------------------------------
+// refreshVdcUsage
+// ---------------------------------------------------------------------------
+
+export async function refreshVdcUsage(vdcId: string): Promise<VdcUsage> {
+  const db = getDb()
+
+  // 1. Load vDC
+  const row = db.prepare('SELECT * FROM vdcs WHERE id = ?').get(vdcId) as any
+  if (!row) {
+    throw new Error(`vDC not found: ${vdcId}`)
+  }
+  const vdc = rowToVdc(row)
+
+  // 2. Get connection
+  const conn = await getConnectionById(vdc.connectionId, vdc.tenantId)
+
+  // 3. Fetch pool members
+  let members: any[] = []
+  try {
+    const poolData = await pveFetch<{ members?: any[] }>(conn, `/pools/${encodeURIComponent(vdc.pvePoolName)}`)
+    members = poolData?.members || []
+  } catch (err: any) {
+    console.warn(`[vdc] Failed to fetch pool members for "${vdc.pvePoolName}": ${err?.message}`)
+  }
+
+  // 4. Filter for qemu/lxc members
+  const vmMembers = members.filter(
+    (m: any) => m.type === 'qemu' || m.type === 'lxc'
+  )
+
+  // 5. Sum resources
+  let usedVcpus = 0
+  let usedRamMb = 0
+  let usedStorageMb = 0
+  let usedVms = vmMembers.length
+  let usedSnapshots = 0
+  let usedBackups = 0
+
+  for (const vm of vmMembers) {
+    usedVcpus += vm.maxcpu || 0
+    usedRamMb += Math.round((vm.maxmem || 0) / 1048576)
+    usedStorageMb += Math.round((vm.maxdisk || 0) / 1048576)
+  }
+
+  // 6. Count snapshots per VM (non-"current" entries)
+  for (const vm of vmMembers) {
+    try {
+      const snapshots = await pveFetch<any[]>(
+        conn,
+        `/nodes/${encodeURIComponent(vm.node)}/${vm.type}/${vm.vmid}/snapshot`
+      )
+      if (Array.isArray(snapshots)) {
+        usedSnapshots += snapshots.filter((s: any) => s.name !== 'current').length
+      }
+    } catch {
+      // Snapshot fetch failed for this VM - skip
+    }
+  }
+
+  // 7. Upsert into vdc_usage_cache
+  const now = new Date().toISOString()
+
+  db.prepare(`
+    INSERT INTO vdc_usage_cache (id, vdc_id, used_vcpus, used_ram_mb, used_storage_mb, used_vms, used_snapshots, used_backups, last_synced_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(vdc_id) DO UPDATE SET
+      used_vcpus = excluded.used_vcpus,
+      used_ram_mb = excluded.used_ram_mb,
+      used_storage_mb = excluded.used_storage_mb,
+      used_vms = excluded.used_vms,
+      used_snapshots = excluded.used_snapshots,
+      used_backups = excluded.used_backups,
+      last_synced_at = excluded.last_synced_at
+  `).run(randomUUID(), vdcId, usedVcpus, usedRamMb, usedStorageMb, usedVms, usedSnapshots, usedBackups, now)
+
+  return {
+    usedVcpus,
+    usedRamMb,
+    usedStorageMb,
+    usedVms,
+    usedSnapshots,
+    usedBackups,
+    lastSyncedAt: now,
+  }
+}
