@@ -78,6 +78,11 @@ const WhiteLabelTab = dynamic(() => import('@/components/settings/WhiteLabelTab'
   loading: () => <Box sx={{ p: 3, textAlign: 'center' }}><LinearProgress /></Box>
 })
 
+const VdcTab = dynamic(() => import('@/components/settings/VdcTab'), {
+  ssr: false,
+  loading: () => <Box sx={{ p: 3, textAlign: 'center' }}><LinearProgress /></Box>
+})
+
 const TenantsTab = dynamic(() => import('@/components/settings/TenantsTab'), {
   ssr: false,
   loading: () => <Box sx={{ p: 3, textAlign: 'center' }}><LinearProgress /></Box>
@@ -2586,7 +2591,7 @@ export default function SettingsPage() {
     return hasFeature(tab.requiredFeature)
   }
 
-  const allTabNames = ['connections', 'appearance', 'notifications', 'ldap', 'oidc', 'license', 'ai', 'green', 'white-label', 'tenants']
+  const allTabNames = ['connections', 'appearance', 'notifications', 'ldap', 'oidc', 'license', 'ai', 'green', 'white-label', 'vdc', 'tenants']
 
   const allTabs = [
     { label: t('settings.connections'), icon: 'ri-link', component: ConnectionsTab },
@@ -2598,6 +2603,7 @@ export default function SettingsPage() {
     { label: t('settings.ai'), icon: 'ri-robot-line', component: AITab, requiredFeature: Features.AI_INSIGHTS },
     { label: 'RSE / Green IT', icon: 'ri-leaf-line', component: GreenTab, requiredFeature: Features.GREEN_METRICS },
     { label: 'White Label', icon: 'ri-pantone-line', component: WhiteLabelTab, requiredFeature: Features.WHITE_LABEL },
+    { label: t('vdc.title'), icon: 'ri-cloud-line', component: VdcTab, requiredFeature: Features.MULTI_TENANCY, superAdminOnly: true },
     { label: 'Tenants', icon: 'ri-building-line', component: TenantsTab, requiredFeature: Features.MULTI_TENANCY, superAdminOnly: true },
   ]
 

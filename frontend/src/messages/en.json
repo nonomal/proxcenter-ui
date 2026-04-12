@@ -5598,6 +5598,12 @@
     "storage": "Storage",
     "vms": "VMs",
     "snapshots": "Snapshots",
-    "backups": "Backups"
+    "backups": "Backups",
+    "failedLoad": "Failed to load Virtual Datacenters",
+    "failedSave": "Failed to save vDC",
+    "failedDelete": "Failed to delete vDC",
+    "saving": "Saving...",
+    "shared": "Shared",
+    "newVdc": "Create vDC"
   }
 }

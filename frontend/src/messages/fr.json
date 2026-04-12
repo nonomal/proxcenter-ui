@@ -5599,6 +5599,12 @@
     "storage": "Stockage",
     "vms": "VMs",
     "snapshots": "Snapshots",
-    "backups": "Sauvegardes"
+    "backups": "Sauvegardes",
+    "failedLoad": "Impossible de charger les Datacenters Virtuels",
+    "failedSave": "Impossible de sauvegarder le vDC",
+    "failedDelete": "Impossible de supprimer le vDC",
+    "saving": "Enregistrement...",
+    "shared": "Partagé",
+    "newVdc": "Créer un vDC"
   }
 }
