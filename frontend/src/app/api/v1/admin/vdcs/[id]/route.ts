@@ -1,0 +1,131 @@
+import { NextResponse } from "next/server"
+import { getServerSession } from "next-auth"
+import { authOptions } from "@/lib/auth/config"
+import { checkPermission, PERMISSIONS } from "@/lib/rbac"
+import { getVdcById, updateVdc, deleteVdc } from "@/lib/vdc"
+import { audit } from "@/lib/audit"
+
+export const runtime = "nodejs"
+
+type RouteContext = { params: Promise<{ id: string }> | { id: string } }
+
+// GET /api/v1/admin/vdcs/[id] — get vDC detail
+export async function GET(_req: Request, ctx: RouteContext) {
+  try {
+    const params = await Promise.resolve(ctx.params)
+    const id = (params as any)?.id
+
+    if (!id) return NextResponse.json({ error: "Missing vDC ID" }, { status: 400 })
+
+    const denied = await checkPermission(PERMISSIONS.ADMIN_SETTINGS)
+    if (denied) return denied
+
+    const vdc = getVdcById(id)
+    if (!vdc) {
+      return NextResponse.json({ error: "vDC not found" }, { status: 404 })
+    }
+
+    return NextResponse.json({ data: vdc })
+  } catch (e: any) {
+    return NextResponse.json({ error: e?.message || String(e) }, { status: 500 })
+  }
+}
+
+// PUT /api/v1/admin/vdcs/[id] — update vDC
+export async function PUT(req: Request, ctx: RouteContext) {
+  try {
+    const params = await Promise.resolve(ctx.params)
+    const id = (params as any)?.id
+
+    if (!id) return NextResponse.json({ error: "Missing vDC ID" }, { status: 400 })
+
+    const denied = await checkPermission(PERMISSIONS.ADMIN_SETTINGS)
+    if (denied) return denied
+
+    const session = await getServerSession(authOptions)
+    const body = await req.json()
+
+    const vdc = await updateVdc(id, {
+      name: body.name,
+      description: body.description,
+      enabled: body.enabled,
+      nodes: body.nodes,
+      storages: body.storages,
+      quota: body.quota,
+    })
+
+    await audit({
+      action: "update",
+      category: "settings",
+      resourceType: "vdc",
+      resourceId: id,
+      resourceName: vdc.name,
+      details: {
+        updatedFields: Object.keys(body).filter((k) => body[k] !== undefined),
+      },
+      status: "success",
+    })
+
+    return NextResponse.json({ data: vdc })
+  } catch (e: any) {
+    const msg = e?.message || String(e)
+
+    if (msg.includes("not found")) {
+      return NextResponse.json({ error: "vDC not found" }, { status: 404 })
+    }
+
+    return NextResponse.json({ error: msg }, { status: 500 })
+  }
+}
+
+// DELETE /api/v1/admin/vdcs/[id] — delete vDC
+export async function DELETE(_req: Request, ctx: RouteContext) {
+  try {
+    const params = await Promise.resolve(ctx.params)
+    const id = (params as any)?.id
+
+    if (!id) return NextResponse.json({ error: "Missing vDC ID" }, { status: 400 })
+
+    const denied = await checkPermission(PERMISSIONS.ADMIN_SETTINGS)
+    if (denied) return denied
+
+    const session = await getServerSession(authOptions)
+
+    // Get vDC name before deletion for audit log
+    const existing = getVdcById(id)
+    if (!existing) {
+      return NextResponse.json({ error: "vDC not found" }, { status: 404 })
+    }
+
+    await deleteVdc(id)
+
+    await audit({
+      action: "delete",
+      category: "settings",
+      resourceType: "vdc",
+      resourceId: id,
+      resourceName: existing.name,
+      details: {
+        slug: existing.slug,
+        tenantId: existing.tenantId,
+        connectionId: existing.connectionId,
+      },
+      status: "success",
+    })
+
+    return NextResponse.json({ data: { success: true } })
+  } catch (e: any) {
+    const msg = e?.message || String(e)
+
+    if (msg.includes("not found")) {
+      return NextResponse.json({ error: "vDC not found" }, { status: 404 })
+    }
+
+    // VMs still exist in pool
+    if (msg.includes("Cannot delete vDC")) {
+      return NextResponse.json({ error: msg }, { status: 409 })
+    }
+
+    return NextResponse.json({ error: msg }, { status: 500 })
+  }
+}
