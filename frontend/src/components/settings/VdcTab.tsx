@@ -787,68 +787,99 @@ export default function VdcTab() {
                     )}
                   </Typography>
 
-                  {(availableResources.storages || []).map((storage: any) => {
-                    const usagePercent = storage.maxdisk > 0 ? Math.round((storage.disk / storage.maxdisk) * 100) : 0
+                  {(() => {
+                    // Filter storages: shared storages always visible, local storages only if their node is selected
+                    const selectedNodes = new Set(form.nodes)
+                    const visibleStorages = (availableResources.storages || []).filter((storage: any) => {
+                      if (storage.shared) return true
+                      // Local storage: show only if at least one of its nodes is selected
+                      if (selectedNodes.size === 0) return false
+                      // storage.nodes is a comma-separated string of nodes, or null (= all nodes)
+                      if (!storage.nodes) return selectedNodes.size > 0
+                      const storageNodes = String(storage.nodes).split(',').map((n: string) => n.trim())
+                      return storageNodes.some((n: string) => selectedNodes.has(n))
+                    })
 
-                    return (
-                      <Box
-                        key={storage.id}
-                        sx={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: 1.5,
-                          py: 0.75,
-                          px: 1,
-                          borderRadius: 1,
-                          '&:hover': { bgcolor: 'action.hover' },
-                        }}
-                      >
-                        <Checkbox
-                          checked={form.storages.includes(storage.id)}
-                          onChange={(e) => {
-                            setForm((f) => ({
-                              ...f,
-                              storages: e.target.checked
-                                ? [...f.storages, storage.id]
-                                : f.storages.filter((s) => s !== storage.id),
-                            }))
+                    if (visibleStorages.length === 0 && selectedNodes.size === 0) {
+                      return (
+                        <Typography variant="body2" color="text.secondary" sx={{ py: 1, fontStyle: 'italic' }}>
+                          {t('vdc.selectNodes')}
+                        </Typography>
+                      )
+                    }
+
+                    return visibleStorages.map((storage: any) => {
+                      const usagePercent = storage.maxdisk > 0 ? Math.round((storage.disk / storage.maxdisk) * 100) : 0
+                      // For local storages, show which selected nodes have this storage
+                      const nodeHint = !storage.shared && storage.nodeDetails
+                        ? (storage.nodeDetails as any[])
+                            .filter((nd: any) => selectedNodes.has(nd.node))
+                            .map((nd: any) => nd.node)
+                            .join(', ')
+                        : null
+
+                      return (
+                        <Box
+                          key={storage.id}
+                          sx={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 1.5,
+                            py: 0.75,
+                            px: 1,
+                            borderRadius: 1,
+                            '&:hover': { bgcolor: 'action.hover' },
                           }}
-                          size="small"
-                        />
+                        >
+                          <Checkbox
+                            checked={form.storages.includes(storage.id)}
+                            onChange={(e) => {
+                              setForm((f) => ({
+                                ...f,
+                                storages: e.target.checked
+                                  ? [...f.storages, storage.id]
+                                  : f.storages.filter((s) => s !== storage.id),
+                              }))
+                            }}
+                            size="small"
+                          />
 
-                        <i className="ri-hard-drive-2-fill" style={{ fontSize: 18, opacity: 0.7 }} />
+                          <i className="ri-hard-drive-2-fill" style={{ fontSize: 18, opacity: 0.7 }} />
 
-                        {/* Left zone: name + badges (fixed width) */}
-                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, width: 220, flexShrink: 0 }}>
-                          <Typography variant="body2" sx={{ fontWeight: 500 }} noWrap>{storage.id}</Typography>
-                          <Chip label={storage.type} size="small" variant="outlined" sx={{ height: 20, fontSize: '0.65rem' }} />
-                          {storage.shared && (
-                            <Chip label={t('vdc.shared')} size="small" color="info" sx={{ height: 20, fontSize: '0.65rem' }} />
+                          {/* Left zone: name + badges (fixed width) */}
+                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, width: 240, flexShrink: 0 }}>
+                            <Typography variant="body2" sx={{ fontWeight: 500 }} noWrap>{storage.id}</Typography>
+                            <Chip label={storage.type} size="small" variant="outlined" sx={{ height: 20, fontSize: '0.65rem' }} />
+                            {storage.shared ? (
+                              <Chip label={t('vdc.shared')} size="small" color="info" sx={{ height: 20, fontSize: '0.65rem' }} />
+                            ) : nodeHint ? (
+                              <Typography variant="caption" color="text.secondary" noWrap>({nodeHint})</Typography>
+                            ) : null}
+                          </Box>
+
+                          {/* Right zone: progress bar (fills remaining space) */}
+                          {storage.maxdisk > 0 ? (
+                            <Box sx={{ flex: 1, minWidth: 80 }}>
+                              <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.25 }}>
+                                <Typography variant="caption" color="text.secondary">
+                                  {formatBytes(storage.disk || 0)} / {formatBytes(storage.maxdisk || 0)}
+                                </Typography>
+                                <Typography variant="caption" color="text.secondary">{usagePercent}%</Typography>
+                              </Box>
+                              <LinearProgress
+                                variant="determinate"
+                                value={usagePercent}
+                                color={quotaColor(usagePercent)}
+                                sx={{ height: 6, borderRadius: 3 }}
+                              />
+                            </Box>
+                          ) : (
+                            <Box sx={{ flex: 1 }} />
                           )}
                         </Box>
-
-                        {/* Right zone: progress bar (fills remaining space) */}
-                        {storage.maxdisk > 0 ? (
-                          <Box sx={{ flex: 1, minWidth: 80 }}>
-                            <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.25 }}>
-                              <Typography variant="caption" color="text.secondary">
-                                {formatBytes(storage.disk || 0)} / {formatBytes(storage.maxdisk || 0)}
-                              </Typography>
-                              <Typography variant="caption" color="text.secondary">{usagePercent}%</Typography>
-                            </Box>
-                            <LinearProgress
-                              variant="determinate"
-                              value={usagePercent}
-                              color={quotaColor(usagePercent)}
-                              sx={{ height: 6, borderRadius: 3 }}
-                            />
-                          </Box>
-                        ) : (
-                          <Box sx={{ flex: 1 }} />
-                        )}
-                      </Box>
-                    )
-                  })}
+                      )
+                    })
+                  })()}
                 </>
               ) : null}
 

@@ -36,27 +36,42 @@ export async function GET(_req: Request, ctx: RouteContext) {
       maxmem: n.maxmem,
     }))
 
-    // Fetch storages: definition from /storage + usage from /cluster/resources
+    // Fetch storages: definition from /storage + per-node usage from /cluster/resources
     const storagesRaw = await pveFetch<any[]>(conn, "/storage") || []
-    let storageUsage: Record<string, { disk: number; maxdisk: number }> = {}
+    // Per-node usage: { "local": [{ node: "PVE-1", disk: X, maxdisk: Y }, ...], "ceph-pool": [{ node: "PVE-1", ... }] }
+    const storageNodeUsage: Record<string, { node: string; disk: number; maxdisk: number }[]> = {}
     try {
       const resources = await pveFetch<any[]>(conn, "/cluster/resources?type=storage") || []
       for (const r of resources) {
-        if (r.storage && !storageUsage[r.storage]) {
-          storageUsage[r.storage] = { disk: r.disk || 0, maxdisk: r.maxdisk || 0 }
-        }
+        if (!r.storage) continue
+        if (!storageNodeUsage[r.storage]) storageNodeUsage[r.storage] = []
+        storageNodeUsage[r.storage].push({ node: r.node, disk: r.disk || 0, maxdisk: r.maxdisk || 0 })
       }
     } catch {}
 
-    const storages = storagesRaw.map((s: any) => ({
-      id: s.storage,
-      type: s.type,
-      content: s.content,
-      shared: !!s.shared,
-      nodes: s.nodes || null,
-      disk: storageUsage[s.storage]?.disk || 0,
-      maxdisk: storageUsage[s.storage]?.maxdisk || 0,
-    }))
+    const storages = storagesRaw.map((s: any) => {
+      const nodeEntries = storageNodeUsage[s.storage] || []
+      // For shared storages: all nodes report the same usage, take first entry
+      // For local storages: sum across nodes
+      let disk = 0, maxdisk = 0
+      if (s.shared) {
+        disk = nodeEntries[0]?.disk || 0
+        maxdisk = nodeEntries[0]?.maxdisk || 0
+      } else {
+        for (const ne of nodeEntries) { disk += ne.disk; maxdisk += ne.maxdisk }
+      }
+
+      return {
+        id: s.storage,
+        type: s.type,
+        content: s.content,
+        shared: !!s.shared,
+        nodes: s.nodes || null,
+        nodeDetails: !s.shared ? nodeEntries : null,
+        disk,
+        maxdisk,
+      }
+    })
 
     // Fetch existing PVE pools (to show what's taken)
     let pools: string[] = []
