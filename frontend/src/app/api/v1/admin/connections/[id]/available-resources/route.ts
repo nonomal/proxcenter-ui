@@ -2,6 +2,7 @@ import { NextResponse } from "next/server"
 
 import { pveFetch } from "@/lib/proxmox/client"
 import { getConnectionById } from "@/lib/connections/getConnection"
+import { prisma } from "@/lib/db/prisma"
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
 
 export const runtime = "nodejs"
@@ -18,7 +19,11 @@ export async function GET(_req: Request, ctx: RouteContext) {
     const denied = await checkPermission(PERMISSIONS.ADMIN_SETTINGS)
     if (denied) return denied
 
-    const conn = await getConnectionById(id)
+    // Admin endpoint: resolve connection's tenantId to bypass session tenant filter
+    const connMeta = await prisma.connection.findUnique({ where: { id }, select: { tenantId: true } })
+    if (!connMeta) return NextResponse.json({ error: "Connection not found" }, { status: 404 })
+
+    const conn = await getConnectionById(id, connMeta.tenantId)
 
     // Fetch nodes
     const nodesRaw = await pveFetch<any[]>(conn, "/nodes") || []
