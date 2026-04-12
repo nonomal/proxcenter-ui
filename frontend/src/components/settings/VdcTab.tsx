@@ -818,15 +818,17 @@ export default function VdcTab() {
 
                         <i className="ri-hard-drive-2-fill" style={{ fontSize: 18, opacity: 0.7 }} />
 
-                        <Typography variant="body2" sx={{ fontWeight: 500, minWidth: 120 }}>{storage.id}</Typography>
+                        {/* Left zone: name + badges (fixed width) */}
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, width: 220, flexShrink: 0 }}>
+                          <Typography variant="body2" sx={{ fontWeight: 500 }} noWrap>{storage.id}</Typography>
+                          <Chip label={storage.type} size="small" variant="outlined" sx={{ height: 20, fontSize: '0.65rem' }} />
+                          {storage.shared && (
+                            <Chip label={t('vdc.shared')} size="small" color="info" sx={{ height: 20, fontSize: '0.65rem' }} />
+                          )}
+                        </Box>
 
-                        <Chip label={storage.type} size="small" variant="outlined" sx={{ height: 20, fontSize: '0.65rem' }} />
-                        {storage.shared && (
-                          <Chip label={t('vdc.shared')} size="small" color="info" sx={{ height: 20, fontSize: '0.65rem' }} />
-                        )}
-
-                        {/* Usage progress */}
-                        {storage.maxdisk > 0 && (
+                        {/* Right zone: progress bar (fills remaining space) */}
+                        {storage.maxdisk > 0 ? (
                           <Box sx={{ flex: 1, minWidth: 80 }}>
                             <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.25 }}>
                               <Typography variant="caption" color="text.secondary">
@@ -841,6 +843,8 @@ export default function VdcTab() {
                               sx={{ height: 6, borderRadius: 3 }}
                             />
                           </Box>
+                        ) : (
+                          <Box sx={{ flex: 1 }} />
                         )}
                       </Box>
                     )
