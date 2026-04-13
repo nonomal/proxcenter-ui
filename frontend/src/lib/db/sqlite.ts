@@ -418,7 +418,52 @@ export function getDb() {
       used_backups    INTEGER DEFAULT 0,
       last_synced_at  TEXT
     );
+
+    CREATE TABLE IF NOT EXISTS vdc_shared_bridges (
+      id         TEXT PRIMARY KEY,
+      vdc_id     TEXT NOT NULL REFERENCES vdcs(id) ON DELETE CASCADE,
+      bridge     TEXT NOT NULL,
+      label      TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      UNIQUE(vdc_id, bridge)
+    );
+    CREATE INDEX IF NOT EXISTS idx_vdc_shared_bridges_vdc ON vdc_shared_bridges(vdc_id);
+
+    CREATE TABLE IF NOT EXISTS vdc_vnets (
+      id          TEXT PRIMARY KEY,
+      vdc_id      TEXT NOT NULL REFERENCES vdcs(id) ON DELETE CASCADE,
+      pve_name    TEXT NOT NULL,
+      description TEXT,
+      vxlan_tag   INTEGER NOT NULL,
+      firewall    INTEGER DEFAULT 1,
+      created_by  TEXT,
+      created_at  TEXT DEFAULT (datetime('now')),
+      UNIQUE(vdc_id, pve_name),
+      UNIQUE(vdc_id, vxlan_tag)
+    );
+    CREATE INDEX IF NOT EXISTS idx_vdc_vnets_vdc ON vdc_vnets(vdc_id);
   `)
+
+  // Phase 4a migration: vdc_quotas.max_vnets (nullable = unlimited)
+  try {
+    db.prepare('ALTER TABLE vdc_quotas ADD COLUMN max_vnets INTEGER').run()
+  } catch (e: any) {
+    if (!String(e?.message || '').includes('duplicate column')) {
+      throw e
+    }
+  }
+
+  // Phase 4a migration: vdcs.sdn_zone_name + unique index per connection
+  try {
+    db.prepare('ALTER TABLE vdcs ADD COLUMN sdn_zone_name TEXT').run()
+  } catch (e: any) {
+    if (!String(e?.message || '').includes('duplicate column')) {
+      throw e
+    }
+  }
+  db.prepare(
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_vdcs_sdn_zone_name ON vdcs(connection_id, sdn_zone_name)'
+  ).run()
 
   // Auto-create DEFAULT tenant
   {
@@ -630,6 +675,13 @@ export function getDb() {
     { id: 'admin.audit', name: 'admin.audit', category: 'admin', description: 'View audit logs' },
     { id: 'admin.compliance', name: 'admin.compliance', category: 'admin', description: 'Manage compliance and security policies', is_dangerous: 1 },
     { id: 'admin.tenants', name: 'admin.tenants', category: 'admin', description: 'Manage tenants (multi-tenancy)', is_dangerous: 1 },
+
+    // SDN / VNet Operations
+    { id: 'sdn.vnet.view', name: 'View SDN VNets', category: 'SDN', description: 'List and view VNets in own vDCs', is_dangerous: 0 },
+    { id: 'sdn.vnet.create', name: 'Create SDN VNets', category: 'SDN', description: 'Create new VNets in own vDCs', is_dangerous: 0 },
+    { id: 'sdn.vnet.edit', name: 'Edit SDN VNets', category: 'SDN', description: 'Edit VNet metadata and firewall toggle', is_dangerous: 0 },
+    { id: 'sdn.vnet.delete', name: 'Delete SDN VNets', category: 'SDN', description: 'Delete VNets that have no NIC attached', is_dangerous: 1 },
+    { id: 'sdn.vnet.firewall', name: 'Manage VNet firewall', category: 'SDN', description: 'CRUD firewall rules, ipsets, aliases per VNet', is_dangerous: 1 },
   ]
 
   // Utiliser INSERT OR IGNORE pour ajouter les permissions manquantes sans erreur
@@ -731,7 +783,8 @@ export function getDb() {
           'events.view', 'tasks.view',
           'alerts.view', 'alerts.manage',
           'automation.view', 'automation.manage',
-          'reports.view'
+          'reports.view',
+          'sdn.vnet.view', 'sdn.vnet.create', 'sdn.vnet.edit', 'sdn.vnet.delete', 'sdn.vnet.firewall',
         ]
       },
       {
@@ -747,7 +800,8 @@ export function getDb() {
           'backup.view',
           'events.view', 'tasks.view',
           'alerts.view',
-          'reports.view'
+          'reports.view',
+          'sdn.vnet.view',
         ]
       },
       {
@@ -762,7 +816,8 @@ export function getDb() {
           'backup.view',
           'events.view', 'tasks.view',
           'alerts.view',
-          'reports.view'
+          'reports.view',
+          'sdn.vnet.view',
         ]
       },
     ]
@@ -864,7 +919,8 @@ export function getDb() {
         'events.view', 'tasks.view',
         'alerts.view', 'alerts.manage',
         'automation.view', 'automation.manage',
-        'reports.view'
+        'reports.view',
+        'sdn.vnet.view', 'sdn.vnet.create', 'sdn.vnet.edit', 'sdn.vnet.delete', 'sdn.vnet.firewall',
       ],
       role_tenant_operator: [
         'vm.view', 'vm.console', 'vm.start', 'vm.stop', 'vm.restart', 'vm.suspend',
@@ -874,7 +930,8 @@ export function getDb() {
         'backup.view',
         'events.view', 'tasks.view',
         'alerts.view',
-        'reports.view'
+        'reports.view',
+        'sdn.vnet.view',
       ],
       role_tenant_viewer: [
         'vm.view', 'vm.console',
@@ -883,7 +940,8 @@ export function getDb() {
         'backup.view',
         'events.view', 'tasks.view',
         'alerts.view',
-        'reports.view'
+        'reports.view',
+        'sdn.vnet.view',
       ],
     }
     const insertOrIgnoreRolePerm = db.prepare(
