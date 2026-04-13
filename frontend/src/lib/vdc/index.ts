@@ -8,6 +8,8 @@ import { pveFetch } from '@/lib/proxmox/client'
 import { getConnectionById } from '@/lib/connections/getConnection'
 import { prisma } from '@/lib/db/prisma'
 
+import { generateZoneName, createZone, deleteZone, deleteVnetPve, applySdn } from './sdn'
+
 import type {
   Vdc,
   VdcWithDetails,
@@ -33,6 +35,7 @@ function rowToVdc(row: any): Vdc {
     slug: row.slug,
     description: row.description ?? null,
     pvePoolName: row.pve_pool_name,
+    sdnZoneName: row.sdn_zone_name ?? null,
     enabled: !!row.enabled,
     createdBy: row.created_by ?? null,
     createdAt: row.created_at,
@@ -49,6 +52,7 @@ function rowToQuota(row: any): VdcQuota | null {
     maxVms: row.max_vms ?? null,
     maxSnapshots: row.max_snapshots ?? null,
     maxBackups: row.max_backups ?? null,
+    maxVnets: row.max_vnets ?? null,
   }
 }
 
@@ -169,7 +173,11 @@ export async function createVdc(input: CreateVdcInput, createdBy: string | null)
     throw new Error(`A vDC with slug "${input.slug}" already exists for this tenant/connection`)
   }
 
-  // 3. Create PVE pool
+  // 3. Allocate vDC id (needed for zone generation)
+  const id = randomUUID()
+  const now = new Date().toISOString()
+
+  // 4. Create PVE pool (existing behavior)
   const poolName = generatePoolName(tenantSlug, input.slug)
   const connOwnerTenantId = await getConnectionOwnerTenantId(input.connectionId)
   const conn = await getConnectionById(input.connectionId, connOwnerTenantId)
@@ -183,7 +191,6 @@ export async function createVdc(input: CreateVdcInput, createdBy: string | null)
       }),
     })
   } catch (err: any) {
-    // Handle "already exists" errors gracefully (retry / race condition)
     const msg = err?.message || ''
     if (!msg.includes('already exists')) {
       throw new Error(`Failed to create PVE pool "${poolName}": ${msg}`)
@@ -191,19 +198,27 @@ export async function createVdc(input: CreateVdcInput, createdBy: string | null)
     console.warn(`[vdc] PVE pool "${poolName}" already exists, proceeding`)
   }
 
-  // 4. DB transaction
-  const id = randomUUID()
-  const now = new Date().toISOString()
+  // 5. Create SDN zone on PVE
+  const sdnZoneName = generateZoneName(input.connectionId, { id, slug: input.slug })
+  try {
+    await createZone(conn, sdnZoneName)
+  } catch (err: any) {
+    try {
+      await pveFetch(conn, `/pools/${encodeURIComponent(poolName)}`, { method: 'DELETE' })
+    } catch {}
+    throw new Error(`Failed to create SDN zone: ${err?.message}`)
+  }
 
+  // 6. DB transaction
   const insertVdc = db.prepare(`
-    INSERT INTO vdcs (id, tenant_id, connection_id, name, slug, description, pve_pool_name, enabled, created_by, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+    INSERT INTO vdcs (id, tenant_id, connection_id, name, slug, description, pve_pool_name, sdn_zone_name, enabled, created_by, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
   `)
   const insertNode = db.prepare('INSERT INTO vdc_nodes (id, vdc_id, node_name) VALUES (?, ?, ?)')
   const insertStorage = db.prepare('INSERT INTO vdc_storages (id, vdc_id, storage_id) VALUES (?, ?, ?)')
   const insertQuota = db.prepare(`
-    INSERT INTO vdc_quotas (id, vdc_id, max_vcpus, max_ram_mb, max_storage_mb, max_vms, max_snapshots, max_backups, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO vdc_quotas (id, vdc_id, max_vcpus, max_ram_mb, max_storage_mb, max_vms, max_snapshots, max_backups, max_vnets, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
   const insertUsage = db.prepare(`
     INSERT INTO vdc_usage_cache (id, vdc_id, used_vcpus, used_ram_mb, used_storage_mb, used_vms, used_snapshots, used_backups, last_synced_at)
@@ -213,7 +228,7 @@ export async function createVdc(input: CreateVdcInput, createdBy: string | null)
   const runTransaction = db.transaction(() => {
     insertVdc.run(
       id, input.tenantId, input.connectionId, input.name, input.slug,
-      input.description ?? null, poolName, createdBy, now, now
+      input.description ?? null, poolName, sdnZoneName, createdBy, now, now
     )
 
     for (const nodeName of input.nodes) {
@@ -233,14 +248,28 @@ export async function createVdc(input: CreateVdcInput, createdBy: string | null)
         input.quota.maxVms ?? null,
         input.quota.maxSnapshots ?? null,
         input.quota.maxBackups ?? null,
+        input.quota.maxVnets ?? null,
         now
       )
+    }
+
+    const insertShared = db.prepare(
+      'INSERT INTO vdc_shared_bridges (id, vdc_id, bridge, label, created_at) VALUES (?, ?, ?, ?, ?)'
+    )
+    for (const sb of input.sharedBridges ?? []) {
+      insertShared.run(randomUUID(), id, sb.bridge, sb.label ?? null, now)
     }
 
     insertUsage.run(randomUUID(), id)
   })
 
   runTransaction()
+
+  try {
+    await applySdn(conn)
+  } catch (err: any) {
+    console.warn(`[vdc] applySdn failed after creating zone "${sdnZoneName}": ${err?.message}`)
+  }
 
   return getVdcById(id)!
 }
