@@ -677,11 +677,11 @@ export function getDb() {
     { id: 'admin.tenants', name: 'admin.tenants', category: 'admin', description: 'Manage tenants (multi-tenancy)', is_dangerous: 1 },
 
     // SDN / VNet Operations
-    { id: 'sdn.vnet.view', name: 'View SDN VNets', category: 'SDN', description: 'List and view VNets in own vDCs', is_dangerous: 0 },
-    { id: 'sdn.vnet.create', name: 'Create SDN VNets', category: 'SDN', description: 'Create new VNets in own vDCs', is_dangerous: 0 },
-    { id: 'sdn.vnet.edit', name: 'Edit SDN VNets', category: 'SDN', description: 'Edit VNet metadata and firewall toggle', is_dangerous: 0 },
-    { id: 'sdn.vnet.delete', name: 'Delete SDN VNets', category: 'SDN', description: 'Delete VNets that have no NIC attached', is_dangerous: 1 },
-    { id: 'sdn.vnet.firewall', name: 'Manage VNet firewall', category: 'SDN', description: 'CRUD firewall rules, ipsets, aliases per VNet', is_dangerous: 1 },
+    { id: 'sdn.vnet.view', name: 'sdn.vnet.view', category: 'sdn', description: 'List and view VNets in own vDCs', is_dangerous: 0 },
+    { id: 'sdn.vnet.create', name: 'sdn.vnet.create', category: 'sdn', description: 'Create new VNets in own vDCs', is_dangerous: 0 },
+    { id: 'sdn.vnet.edit', name: 'sdn.vnet.edit', category: 'sdn', description: 'Edit VNet metadata and firewall toggle', is_dangerous: 0 },
+    { id: 'sdn.vnet.delete', name: 'sdn.vnet.delete', category: 'sdn', description: 'Delete VNets that have no NIC attached', is_dangerous: 1 },
+    { id: 'sdn.vnet.firewall', name: 'sdn.vnet.firewall', category: 'sdn', description: 'CRUD firewall rules, ipsets, aliases per VNet', is_dangerous: 1 },
   ]
 
   // Utiliser INSERT OR IGNORE pour ajouter les permissions manquantes sans erreur
