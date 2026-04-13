@@ -263,11 +263,21 @@ export async function createVdc(input: CreateVdcInput, createdBy: string | null)
     insertUsage.run(randomUUID(), id)
   })
 
-  runTransaction()
+  try {
+    runTransaction()
+  } catch (err: any) {
+    // DB transaction failed - rollback PVE resources to avoid orphans
+    try { await deleteZone(conn, sdnZoneName) } catch {}
+    try {
+      await pveFetch(conn, `/pools/${encodeURIComponent(poolName)}`, { method: 'DELETE' })
+    } catch {}
+    throw err
+  }
 
   try {
     await applySdn(conn)
   } catch (err: any) {
+    // Do not roll back - config is written to /etc/pve/sdn/*.cfg; admin can retry apply.
     console.warn(`[vdc] applySdn failed after creating zone "${sdnZoneName}": ${err?.message}`)
   }
 
