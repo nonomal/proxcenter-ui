@@ -48,3 +48,27 @@ export function generateZoneNameForTesting(db: any, connectionId: string, vdc: Z
 export function generateZoneName(connectionId: string, vdc: ZoneNameInput): string {
   return generateZoneNameImpl(getDb(), connectionId, vdc)
 }
+
+// ---------------------------------------------------------------------------
+// VNI allocation (local per vDC)
+// ---------------------------------------------------------------------------
+
+const VNI_BASE = 10000
+
+function allocateVniImpl(db: any, vdcId: string): number {
+  const row = db
+    .prepare('SELECT MAX(vxlan_tag) AS max_tag FROM vdc_vnets WHERE vdc_id = ?')
+    .get(vdcId) as { max_tag: number | null } | undefined
+
+  const maxTag = row?.max_tag ?? null
+  return maxTag === null ? VNI_BASE : maxTag + 1
+}
+
+/** @internal exported only for testing */
+export function allocateVniForTesting(db: any, vdcId: string): number {
+  return allocateVniImpl(db, vdcId)
+}
+
+export function allocateVni(vdcId: string): number {
+  return allocateVniImpl(getDb(), vdcId)
+}
