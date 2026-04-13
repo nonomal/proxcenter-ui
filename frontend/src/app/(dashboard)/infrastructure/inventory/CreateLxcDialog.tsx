@@ -67,6 +67,7 @@ function CreateLxcDialog({
   const [templates, setTemplates] = useState<any[]>([])
   const [loadingTemplates, setLoadingTemplates] = useState(false)
   const [pools, setPools] = useState<any[]>([])
+  const [bridges, setBridges] = useState<string[]>([])
   const [loadingData, setLoadingData] = useState(false)
 
   // Formulaire - Général
@@ -339,6 +340,7 @@ return
   useEffect(() => {
     if (selectedConnection && resolvedNode) {
       loadStorages(selectedConnection)
+      loadBridges(selectedConnection, resolvedNode)
     }
   }, [selectedConnection, resolvedNode])
 
@@ -423,6 +425,34 @@ return
       }
     } catch (e) {
       console.error('Error loading storages:', e)
+    }
+  }
+
+  // Load bridges from node via network-choices endpoint
+  const loadBridges = async (connId: string, node: string) => {
+    try {
+      const res = await fetch(
+        `/api/v1/connections/${encodeURIComponent(connId)}/network-choices?node=${encodeURIComponent(node)}`
+      )
+      if (res.ok) {
+        const json = await res.json()
+        const choices = Array.isArray(json.data) ? json.data : []
+        const bridgeList = choices.map((c: any) => c.name)
+
+        if (bridgeList.length > 0) {
+          setBridges(bridgeList)
+          if (!bridgeList.includes(networkBridge)) {
+            setNetworkBridge(bridgeList[0])
+          }
+        } else {
+          setBridges(['vmbr0', 'vmbr1'])
+        }
+      } else {
+        setBridges(['vmbr0', 'vmbr1'])
+      }
+    } catch (e) {
+      console.error('Error loading bridges:', e)
+      setBridges(['vmbr0', 'vmbr1'])
     }
   }
 

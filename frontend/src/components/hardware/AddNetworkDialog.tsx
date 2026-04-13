@@ -65,13 +65,13 @@ export function AddNetworkDialog({ open, onClose, onSave, connId, node, vmid, ex
       setBridgesLoading(true)
 
       try {
-        const res = await fetch(`/api/v1/connections/${encodeURIComponent(connId)}/nodes/${encodeURIComponent(node)}/network`)
-        const json = await res.json()
-
-        if (json.data && Array.isArray(json.data)) {
-          const bridgeList = json.data
-            .filter((n: any) => n.type === 'bridge' || n.type === 'OVSBridge')
-            .map((n: any) => n.iface)
+        const res = await fetch(
+          `/api/v1/connections/${encodeURIComponent(connId)}/network-choices?node=${encodeURIComponent(node)}`
+        )
+        if (res.ok) {
+          const json = await res.json()
+          const choices = Array.isArray(json.data) ? json.data : []
+          const bridgeList = choices.map((c: any) => c.name)
 
           if (bridgeList.length > 0) {
             setBridges(bridgeList)

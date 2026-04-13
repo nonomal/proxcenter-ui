@@ -202,18 +202,21 @@ function CreateVmDialog({
     setVmidError(null)
   }
 
-  // Load bridges from node
+  // Load bridges from node via network-choices endpoint
   const loadBridges = async (connId: string, node: string) => {
     try {
       const res = await fetch(
-        `/api/v1/connections/${encodeURIComponent(connId)}/nodes/${encodeURIComponent(node)}/network`
+        `/api/v1/connections/${encodeURIComponent(connId)}/network-choices?node=${encodeURIComponent(node)}`
       )
       if (res.ok) {
         const json = await res.json()
-        const allInterfaces = json.data || []
-        const bridgeList = allInterfaces.filter((iface: any) =>
-          iface.type === 'bridge' || iface.type === 'OVSBridge'
-        )
+        const choices = Array.isArray(json.data) ? json.data : []
+        const bridgeList = choices.map((c: any) => ({
+          iface: c.name,
+          type: c.kind === 'vnet' ? 'vnet' : c.kind === 'shared' ? 'shared' : (c.type || 'bridge'),
+          label: c.label ?? null,
+          vdc: c.vdc ?? null,
+        }))
         setBridges(bridgeList)
         if (bridgeList.length > 0) {
           setNics(prev => prev.map(nic =>
