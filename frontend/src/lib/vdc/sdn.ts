@@ -132,3 +132,141 @@ export async function deleteZone(conn: any, zoneName: string): Promise<void> {
     console.warn(`[vdc-sdn] SDN zone "${zoneName}" not found, skipping`)
   }
 }
+
+// ---------------------------------------------------------------------------
+// VNet CRUD
+// ---------------------------------------------------------------------------
+
+export interface CreateVnetParams {
+  pveName: string
+  zoneName: string
+  tag: number
+  firewall?: boolean
+}
+
+/**
+ * Creates a VNet on PVE. Caller must invoke applySdn(conn) afterwards.
+ */
+export async function createVnetPve(conn: any, params: CreateVnetParams): Promise<void> {
+  const body = new URLSearchParams()
+  body.append('vnet', params.pveName)
+  body.append('zone', params.zoneName)
+  body.append('tag', String(params.tag))
+  body.append('type', 'vnet')
+  body.append('firewall', params.firewall === false ? '0' : '1')
+
+  try {
+    await pveFetch(conn, '/cluster/sdn/vnets', { method: 'POST', body })
+  } catch (err: any) {
+    throw new Error(`Failed to create SDN VNet "${params.pveName}": ${err?.message}`)
+  }
+}
+
+export async function updateVnetPve(
+  conn: any,
+  pveName: string,
+  patch: { firewall?: boolean; alias?: string }
+): Promise<void> {
+  const body = new URLSearchParams()
+  if (patch.firewall !== undefined) body.append('firewall', patch.firewall ? '1' : '0')
+  if (patch.alias !== undefined) body.append('alias', patch.alias)
+
+  await pveFetch(conn, `/cluster/sdn/vnets/${encodeURIComponent(pveName)}`, { method: 'PUT', body })
+}
+
+export async function deleteVnetPve(conn: any, pveName: string): Promise<void> {
+  try {
+    await pveFetch(conn, `/cluster/sdn/vnets/${encodeURIComponent(pveName)}`, { method: 'DELETE' })
+  } catch (err: any) {
+    const msg = String(err?.message || '')
+    if (!msg.toLowerCase().includes('not found') && !msg.includes('404')) {
+      throw new Error(`Failed to delete SDN VNet "${pveName}": ${msg}`)
+    }
+    console.warn(`[vdc-sdn] SDN VNet "${pveName}" not found, skipping`)
+  }
+}
+
+export async function listVnetsPve(conn: any): Promise<SdnVnet[]> {
+  const items = await pveFetch<any[]>(conn, '/cluster/sdn/vnets')
+  return (items || []).map((v: any) => ({
+    vnet: v.vnet,
+    zone: v.zone,
+    tag: Number(v.tag),
+    firewall: v.firewall ? 1 : 0,
+  }))
+}
+
+// ---------------------------------------------------------------------------
+// Count NIC attachments for a VNet (used before delete)
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns the number of NICs across all VMs/CTs that reference `pveName` as bridge.
+ * Best-effort: skips VMs whose config fails to fetch.
+ */
+export async function countVnetAttachments(conn: any, pveName: string): Promise<number> {
+  const resources = await pveFetch<any[]>(conn, '/cluster/resources?type=vm')
+  let count = 0
+
+  for (const res of resources || []) {
+    const vmid = res.vmid
+    const node = res.node
+    const type = res.type
+    if (!vmid || !node || !type) continue
+
+    try {
+      const config = await pveFetch<any>(conn, `/nodes/${encodeURIComponent(node)}/${type}/${vmid}/config`)
+      for (const key of Object.keys(config)) {
+        if (!/^net\d+$/.test(key)) continue
+        const val = String(config[key] || '')
+        const m = val.match(/bridge=([^,]+)/)
+        if (m && m[1] === pveName) count++
+      }
+    } catch {
+      // Skip VMs whose config fails
+    }
+  }
+
+  return count
+}
+
+// ---------------------------------------------------------------------------
+// Reconcile DB mirror with PVE state
+// ---------------------------------------------------------------------------
+
+/**
+ * Compare DB `vdc_vnets` rows with PVE SDN state for the given zone.
+ * If a DB row exists for a VNet not in PVE: delete the DB row.
+ * If PVE has a VNet in this zone not in DB: log warning (don't auto-create).
+ */
+export async function reconcileVnets(vdcId: string, zoneName: string, conn: any): Promise<void> {
+  const db = getDb()
+  const dbRows = db
+    .prepare('SELECT id, pve_name FROM vdc_vnets WHERE vdc_id = ?')
+    .all(vdcId) as Array<{ id: string; pve_name: string }>
+
+  let pveVnets: SdnVnet[] = []
+  try {
+    const all = await listVnetsPve(conn)
+    pveVnets = all.filter((v) => v.zone === zoneName)
+  } catch (err: any) {
+    console.warn(`[vdc-sdn] reconcileVnets: listVnetsPve failed for zone ${zoneName}: ${err?.message}`)
+    return
+  }
+
+  const pveSet = new Set(pveVnets.map((v) => v.vnet))
+  const dbSet = new Set(dbRows.map((r) => r.pve_name))
+
+  for (const row of dbRows) {
+    if (!pveSet.has(row.pve_name)) {
+      db.prepare('DELETE FROM vdc_vnets WHERE id = ?').run(row.id)
+      console.warn(`[vdc-sdn] reconcileVnets: removed stale DB row for VNet ${row.pve_name}`)
+    }
+  }
+
+  for (const v of pveVnets) {
+    if (!dbSet.has(v.vnet)) {
+      console.warn(`[vdc-sdn] reconcileVnets: orphan VNet ${v.vnet} in zone ${zoneName} (not in DB)`)
+    }
+  }
+}
