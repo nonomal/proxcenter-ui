@@ -22,6 +22,12 @@ export const menuData = (t = (key) => key) => [
         permissions: ['vm.view', 'node.view'] // Au moins une de ces permissions
       },
       {
+        label: t('navigation.myVdc'),
+        icon: 'ri-cloud-line',
+        href: '/my-vdc',
+        permissions: ['sdn.vnet.view']
+      },
+      {
         label: t('navigation.topology'),
         icon: 'ri-mind-map',
         href: '/infrastructure/topology',

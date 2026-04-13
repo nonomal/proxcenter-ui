@@ -187,7 +187,8 @@
     "topology": "Topologie",
     "compliance": "Conformité",
     "changes": "Suivi des changements",
-    "networkFlows": "Flux réseau"
+    "networkFlows": "Flux réseau",
+    "myVdc": "Mon datacenter"
   },
   "navbar": {
     "language": "Langue",
@@ -5613,5 +5614,29 @@
     "sharedBridgeLabelPlaceholder": "Libellé optionnel (ex: WAN /29 - 203.0.113.24/29)",
     "maxVnets": "Max VNets",
     "maxVnetsHint": "Nombre maximal de VNets que le tenant peut créer dans ce vDC. Vide = illimité."
+  },
+  "myVdc": {
+    "title": "Mon datacenter",
+    "selectVdc": "Sélectionner un vDC",
+    "noVdcs": "Aucun datacenter virtuel n'est assigné à votre tenant.",
+    "nodes": "Nœuds",
+    "storages": "Stockages",
+    "quotas": "Quotas et usage",
+    "uplinks": "Uplinks provider (bridges partagés autorisés)",
+    "noUplinks": "Aucun uplink autorisé par le provider.",
+    "vnetsTitle": "Mes VNets",
+    "createVnet": "Créer un VNet",
+    "vnetName": "Nom",
+    "vnetNameHint": "Lettres minuscules et chiffres, commence par une lettre, 15 caractères maximum.",
+    "vnetDescription": "Description",
+    "vnetFirewall": "Firewall",
+    "vnetFirewallToggle": "Activer le firewall VNet",
+    "vnetVniAutoAllocated": "Le VNI est alloué automatiquement par ProxCenter.",
+    "fwOn": "Actif",
+    "fwOff": "Inactif",
+    "errorInvalidName": "Nom invalide. Doit matcher ^[a-z][a-z0-9]{0,14}$ (ex: prodlan, dmz, app1).",
+    "deleteVnetTitle": "Supprimer le VNet",
+    "deleteVnetConfirm": "Êtes-vous sûr de vouloir supprimer le VNet « {name} » ?",
+    "deleteVnetHint": "Le VNet ne doit plus avoir de NIC attachée. Si des VMs l'utilisent encore, la suppression sera rejetée."
   }
 }
