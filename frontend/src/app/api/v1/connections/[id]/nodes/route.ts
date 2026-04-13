@@ -6,7 +6,8 @@ import { checkPermission, PERMISSIONS } from "@/lib/rbac"
 import { resolveManagementIp } from "@/lib/proxmox/resolveManagementIp"
 import { extractHostFromUrl, extractPortFromUrl } from "@/lib/proxmox/urlUtils"
 import { setNodeIps } from "@/lib/cache/nodeIpCache"
-import { getSessionPrisma } from "@/lib/tenant"
+import { getSessionPrisma, getCurrentTenantId } from "@/lib/tenant"
+import { getVdcScope } from "@/lib/vdc/scope"
 
 export const runtime = "nodejs"
 
@@ -35,9 +36,13 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
   const denied = await checkPermission(PERMISSIONS.NODE_VIEW)
   if (denied) return denied
 
-  // Check response cache
+  // Resolve tenant for vDC-aware caching and filtering
+  const tenantId = await getCurrentTenantId()
+  const cacheKey = `${tenantId}:${id}`
+
+  // Check response cache (keyed by tenant to avoid cross-tenant leaks)
   const cache = getNodesCache()
-  const cached = cache.get(id)
+  const cached = cache.get(cacheKey)
   if (cached && Date.now() - cached.timestamp < NODES_CACHE_TTL) {
     return NextResponse.json({ data: cached.data, connectedNode: cached.connectedNode })
   }
@@ -175,14 +180,25 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
     }
   } catch {}
 
-  const nodesWithSsh = enrichedNodes.map((n: any) => ({
+  let nodesWithSsh = enrichedNodes.map((n: any) => ({
     ...n,
     sshAddress: sshOverrides[n.node || n.name]?.sshAddress || null,
     hostId: sshOverrides[n.node || n.name]?.hostId || null,
   }))
 
-  // Cache the response for 30s
-  cache.set(id, { data: nodesWithSsh, connectedNode, timestamp: Date.now() })
+  // vDC filtering: restrict to nodes assigned to the tenant's vDC
+  const vdcScope = getVdcScope(tenantId)
+  if (vdcScope) {
+    const allowedNodes = vdcScope.nodesByConnection.get(id)
+    if (allowedNodes) {
+      nodesWithSsh = nodesWithSsh.filter((n: any) => allowedNodes.has(n.node || n.name))
+    } else {
+      nodesWithSsh = []
+    }
+  }
+
+  // Cache the response for 30s (keyed by tenant)
+  cache.set(cacheKey, { data: nodesWithSsh, connectedNode, timestamp: Date.now() })
 
   return NextResponse.json({ data: nodesWithSsh, connectedNode })
 }

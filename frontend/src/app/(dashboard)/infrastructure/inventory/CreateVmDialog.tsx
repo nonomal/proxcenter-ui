@@ -2,6 +2,7 @@
 
 import React, { useEffect, useMemo, useState } from 'react'
 import { useTranslations } from 'next-intl'
+import { useRBAC } from '@/contexts/RBACContext'
 import { getOsSvgIcon } from '@/lib/utils/osIcons'
 
 import {
@@ -104,7 +105,8 @@ function CreateVmDialog({
 }) {
   const t = useTranslations()
   const theme = useTheme()
-  
+  const { isAdmin } = useRBAC()
+
   // États du formulaire
   const [activeTab, setActiveTab] = useState(0)
   const [creating, setCreating] = useState(false)
@@ -767,8 +769,8 @@ return
                 MenuProps={{ PaperProps: { sx: { maxHeight: 400 } } }}
               >
                 {groupedNodes.map(group => [
-                  // Cluster header (si multi-nodes)
-                  group.isCluster && (
+                  // Cluster header (si multi-nodes) — hidden for vDC tenant users
+                  isAdmin && group.isCluster && (
                     <MenuItem
                       key={`cluster:${group.connId}`}
                       value={`cluster:${group.connId}`}
@@ -821,7 +823,7 @@ return
                       key={`${n.connId}-${n.node}`}
                       value={n.node}
                       disabled={isDisabled}
-                      sx={{ pl: group.isCluster ? 4 : 2 }}
+                      sx={{ pl: (isAdmin && group.isCluster) ? 4 : 2 }}
                     >
                       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, width: '100%' }}>
                         <Box sx={{ position: 'relative', display: 'inline-flex', alignItems: 'center', width: 14, height: 14, flexShrink: 0 }}>
@@ -873,27 +875,30 @@ return
                 ]).flat().filter(Boolean)}
               </Select>
             </FormControl>
-            <FormControl fullWidth size="small">
-              <InputLabel>{t('inventory.createVm.resourcePool')}</InputLabel>
-              <Select value={resourcePool} onChange={(e) => setResourcePool(e.target.value)} label={t('inventory.createVm.resourcePool')}>
-                <MenuItem value="">({t('common.none')})</MenuItem>
-                {pools.map((p) => (
-                  <MenuItem key={p.poolid} value={p.poolid}>
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                      <i className="ri-folder-line" style={{ fontSize: 14, opacity: 0.7 }} />
-                      <Box>
-                        <Typography variant="body2">{p.poolid}</Typography>
-                        {p.comment && (
-                          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontSize: '0.65rem' }}>
-                            {p.comment}
-                          </Typography>
-                        )}
+            {/* Resource pool selector — hidden for vDC tenants (pool assigned automatically) */}
+            {isAdmin && (
+              <FormControl fullWidth size="small">
+                <InputLabel>{t('inventory.createVm.resourcePool')}</InputLabel>
+                <Select value={resourcePool} onChange={(e) => setResourcePool(e.target.value)} label={t('inventory.createVm.resourcePool')}>
+                  <MenuItem value="">({t('common.none')})</MenuItem>
+                  {pools.map((p) => (
+                    <MenuItem key={p.poolid} value={p.poolid}>
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                        <i className="ri-folder-line" style={{ fontSize: 14, opacity: 0.7 }} />
+                        <Box>
+                          <Typography variant="body2">{p.poolid}</Typography>
+                          {p.comment && (
+                            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontSize: '0.65rem' }}>
+                              {p.comment}
+                            </Typography>
+                          )}
+                        </Box>
                       </Box>
-                    </Box>
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+            )}
             <TextField
               label="VM ID"
               value={vmid}

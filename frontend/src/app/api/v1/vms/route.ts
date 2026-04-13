@@ -1,10 +1,11 @@
 import { NextResponse } from "next/server"
 
-import { getSessionPrisma } from "@/lib/tenant"
+import { getSessionPrisma, getCurrentTenantId } from "@/lib/tenant"
 import { pveFetch } from "@/lib/proxmox/client"
 import { getConnectionById } from "@/lib/connections/getConnection"
 import { getRBACContext, filterVmsByPermission, PERMISSIONS, checkPermission } from "@/lib/rbac"
 import { formatBytes, formatUptime } from "@/utils/format"
+import { getVdcScope } from "@/lib/vdc/scope"
 
 export const runtime = "nodejs"
 
@@ -117,6 +118,18 @@ return []
 
     if (rbacCtx && !rbacCtx.isAdmin) {
       allVms = filterVmsByPermission(rbacCtx.userId, allVms, PERMISSIONS.VM_VIEW, rbacCtx.tenantId)
+    }
+
+    // vDC filtering: restrict VMs to those in the tenant's vDC pools
+    const tenantId = await getCurrentTenantId()
+    const vdcScope = getVdcScope(tenantId)
+
+    if (vdcScope) {
+      allVms = allVms.filter(vm => {
+        const pools = vdcScope.poolsByConnection.get(vm.connId)
+        if (!pools) return false // connection not in any vDC
+        return vm.pool != null && pools.has(vm.pool)
+      })
     }
 
     // Trier par vmid

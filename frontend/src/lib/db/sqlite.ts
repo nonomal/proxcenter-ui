@@ -848,7 +848,7 @@ export function getDb() {
         'alerts.view', 'alerts.manage', 'automation.view', 'automation.manage', 'reports.view'
       ],
       role_viewer: [
-        'vm.view', 'node.view', 'connection.view', 'backup.view',
+        'vm.view', 'node.view', 'connection.view', 'storage.view', 'backup.view',
         'events.view', 'alerts.view', 'automation.view', 'reports.view', 'tasks.view'
       ],
       role_vm_user: [
@@ -869,6 +869,7 @@ export function getDb() {
       role_tenant_operator: [
         'vm.view', 'vm.console', 'vm.start', 'vm.stop', 'vm.restart', 'vm.suspend',
         'vm.snapshot', 'vm.migrate',
+        'storage.view',
         'node.view', 'connection.view',
         'backup.view',
         'events.view', 'tasks.view',
@@ -877,6 +878,7 @@ export function getDb() {
       ],
       role_tenant_viewer: [
         'vm.view', 'vm.console',
+        'storage.view',
         'node.view', 'connection.view',
         'backup.view',
         'events.view', 'tasks.view',

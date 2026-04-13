@@ -4,6 +4,8 @@ import { pveFetch } from "@/lib/proxmox/client"
 import { getConnectionById } from "@/lib/connections/getConnection"
 import { formatBytes } from "@/utils/format"
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
+import { getCurrentTenantId } from "@/lib/tenant"
+import { getVdcScope } from "@/lib/vdc/scope"
 
 export const runtime = "nodejs"
 
@@ -145,7 +147,19 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
       }
     }
 
-    const result = Array.from(aggregatedMap.values())
+    let result = Array.from(aggregatedMap.values())
+
+    // vDC filtering: restrict to storages assigned to the tenant's vDC
+    const tenantId = await getCurrentTenantId()
+    const vdcScope = getVdcScope(tenantId)
+    if (vdcScope) {
+      const allowedStorages = vdcScope.storagesByConnection.get(id)
+      if (allowedStorages) {
+        result = result.filter((s: any) => allowedStorages.has(s.storage))
+      } else {
+        result = []
+      }
+    }
 
     // Trier: partagés d'abord, puis par utilisation décroissante
     result.sort((a, b) => {

@@ -3,6 +3,8 @@ import { NextResponse } from "next/server"
 import { pveFetch } from "@/lib/proxmox/client"
 import { getConnectionById } from "@/lib/connections/getConnection"
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
+import { getCurrentTenantId } from "@/lib/tenant"
+import { resolveVdcForTenant, checkVdcQuota } from "@/lib/vdc/quota"
 
 export const runtime = "nodejs"
 
@@ -33,6 +35,41 @@ export async function POST(
     // Valider les champs requis
     if (!body.vmid) {
       return NextResponse.json({ error: "vmid is required" }, { status: 400 })
+    }
+
+    // vDC quota enforcement
+    const tenantId = await getCurrentTenantId()
+    try {
+      const vdcInfo = resolveVdcForTenant(tenantId, id, node)
+
+      if (vdcInfo) {
+        // Estimate resources from body
+        const vcpus = parseInt(body.cores || '1') * parseInt(body.sockets || '1')
+        const ramMb = parseInt(body.memory || '512')
+
+        const quotaCheck = await checkVdcQuota(id, vdcInfo.poolName, vdcInfo.quota, {
+          type: 'create',
+          addVcpus: vcpus,
+          addRamMb: ramMb,
+          addVms: 1,
+        })
+
+        if (!quotaCheck.allowed) {
+          return NextResponse.json({
+            error: 'Quota exceeded',
+            violations: quotaCheck.violations,
+            currentUsage: quotaCheck.currentUsage,
+          }, { status: 409 })
+        }
+
+        // Force pool assignment - inject into body before PVE call
+        body.pool = vdcInfo.poolName
+      }
+    } catch (e: any) {
+      if (e?.message === 'NODE_NOT_AUTHORIZED') {
+        return NextResponse.json({ error: 'This node is not authorized for your vDC' }, { status: 403 })
+      }
+      throw e
     }
 
     // Construire l'URL Proxmox

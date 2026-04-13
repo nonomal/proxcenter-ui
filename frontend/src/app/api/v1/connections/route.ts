@@ -1,7 +1,9 @@
 // src/app/api/v1/connections/route.ts
 import { NextResponse } from "next/server"
 
-import { getSessionPrisma } from "@/lib/tenant"
+import { getSessionPrisma, getCurrentTenantId } from "@/lib/tenant"
+import { prisma as globalPrisma } from "@/lib/db/prisma"
+import { getVdcScope } from "@/lib/vdc/scope"
 import { encryptSecret } from "@/lib/crypto/secret"
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
 import { createConnectionSchema } from "@/lib/schemas"
@@ -31,7 +33,16 @@ export async function GET(req: Request) {
     if (typeFilter) where.type = typeFilter
     if (hasCephFilter === 'true') where.hasCeph = true
 
-    const prisma = await getSessionPrisma()
+    // vDC-aware: tenant's connections belong to the provider, use vDC scope to filter
+    const tenantId = await getCurrentTenantId()
+    const vdcScope = getVdcScope(tenantId)
+    const prisma = vdcScope ? globalPrisma : await getSessionPrisma()
+
+    // For vDC tenants, restrict to connections referenced by their vDCs
+    if (vdcScope) {
+      where.id = { in: [...vdcScope.connectionIds] }
+    }
+
     const connections = await prisma.connection.findMany({
       where: Object.keys(where).length > 0 ? where : undefined,
       orderBy: { createdAt: "desc" },

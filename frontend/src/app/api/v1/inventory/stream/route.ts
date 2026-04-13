@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server"
 
 import { getSessionPrisma, getCurrentTenantId } from "@/lib/tenant"
+import { prisma as globalPrisma } from "@/lib/db/prisma"
 import { demoResponse } from "@/lib/demo/demo-api"
 import { getConnectionById, getPbsConnectionById } from "@/lib/connections/getConnection"
 import { pveFetch } from "@/lib/proxmox/client"
@@ -11,6 +12,7 @@ import {
   getInventoryFromCache,
   setCachedInventory,
 } from "@/lib/cache/inventoryCache"
+import { getVdcScope, applyVdcFilter } from "@/lib/vdc/scope"
 
 export const runtime = "nodejs"
 
@@ -149,10 +151,11 @@ type PbsServerData = {
 async function fetchOneCluster(conn: {
   id: string; name: string; type: string;
   latitude?: number | null; longitude?: number | null;
-  locationLabel?: string | null; sshEnabled?: boolean | null
+  locationLabel?: string | null; sshEnabled?: boolean | null;
+  tenantId?: string | null
 }): Promise<ClusterData> {
   try {
-    const connConfig = await getConnectionById(conn.id)
+    const connConfig = await getConnectionById(conn.id, conn.tenantId || undefined)
 
     // Call /nodes FIRST to establish failover cache if the primary is down.
     // This prevents the race condition where parallel calls fail before failover activates.
@@ -541,6 +544,7 @@ export async function GET(request: NextRequest) {
     // Serve cached data as a quick burst of events
     const cached = cacheResult.data
     const rbacCtx = await getRBACContext()
+    const vdcScope = getVdcScope(tenantId)
 
     const stream = new ReadableStream({
       start(controller) {
@@ -548,21 +552,29 @@ export async function GET(request: NextRequest) {
           controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`))
         }
 
+        // Filter clusters visible to this tenant's vDC scope
+        const visibleClusters = vdcScope
+          ? cached.clusters.filter(c => vdcScope.connectionIds.has(c.id))
+          : cached.clusters
+
         send('init', {
-          totalPve: cached.clusters.length,
+          totalPve: visibleClusters.length,
           totalPbs: cached.pbsServers.length,
           totalExt: cached.externalHypervisors.length,
           cached: true,
         })
 
-        for (const cluster of cached.clusters) {
-          send('cluster', applyRbacToCluster(cluster, rbacCtx))
+        for (const cluster of visibleClusters) {
+          send('cluster', applyVdcFilter(applyRbacToCluster(cluster, rbacCtx), vdcScope))
         }
         for (const pbs of cached.pbsServers) {
           send('pbs', pbs)
         }
         if (cached.storages) {
-          for (const storage of cached.storages) {
+          const visibleStorages = vdcScope
+            ? cached.storages.filter((s: any) => vdcScope.connectionIds.has(s.connId))
+            : cached.storages
+          for (const storage of visibleStorages) {
             send('storage', storage)
           }
         }
@@ -586,6 +598,7 @@ export async function GET(request: NextRequest) {
 
   // Cache miss — stream progressively as each connection resolves
   const rbacCtx = await getRBACContext()
+  const vdcScope = getVdcScope(tenantId)
 
   const stream = new ReadableStream({
     async start(controller) {
@@ -600,12 +613,21 @@ export async function GET(request: NextRequest) {
       try {
         const startTime = Date.now()
 
-        // Load all connections from DB
+        // Load connections from DB
+        // For tenants with vDCs: load connections referenced by vDCs (they belong to the provider tenant)
+        // For tenants without vDCs (including default): load tenant's own connections
+        const connSelect = { id: true, name: true, type: true, latitude: true, longitude: true, locationLabel: true, sshEnabled: true, tenantId: true } as const
+        const connPrisma = vdcScope ? globalPrisma : prisma
+
+        const pveWhere = vdcScope
+          ? { type: 'pve' as const, id: { in: [...vdcScope.connectionIds] } }
+          : { type: 'pve' as const }
+
         const [pveConnections, pbsConnections, externalConnections] = await Promise.all([
-          prisma.connection.findMany({
-            where: { type: 'pve' },
+          connPrisma.connection.findMany({
+            where: pveWhere,
             orderBy: { createdAt: 'desc' },
-            select: { id: true, name: true, type: true, latitude: true, longitude: true, locationLabel: true, sshEnabled: true },
+            select: connSelect,
           }),
           prisma.connection.findMany({
             where: { type: 'pbs' },
@@ -619,9 +641,19 @@ export async function GET(request: NextRequest) {
           }),
         ])
 
+        // Determine which PVE connections are visible under this tenant's vDC scope.
+        // We fetch ALL connections (for the cache), but only stream visible ones to the client.
+        const visiblePveConnectionIds = vdcScope
+          ? new Set(pveConnections.filter(c => vdcScope.connectionIds.has(c.id)).map(c => c.id))
+          : null
+
+        const visiblePveCount = visiblePveConnectionIds
+          ? visiblePveConnectionIds.size
+          : pveConnections.length
+
         // Send init event so frontend knows how many items to expect
         send('init', {
-          totalPve: pveConnections.length,
+          totalPve: visiblePveCount,
           totalPbs: pbsConnections.length,
           totalExt: externalConnections.length,
           cached: false,
@@ -640,12 +672,19 @@ export async function GET(request: NextRequest) {
         const clusterPromises = pveConnections.map(async (conn) => {
           const cluster = await fetchOneCluster(conn)
           allClusters.push(cluster)
-          send('cluster', applyRbacToCluster(cluster, rbacCtx))
 
-          // Fetch storage data for this cluster and emit immediately
+          // Only stream clusters visible to this tenant's vDC scope
+          const isVisible = !visiblePveConnectionIds || visiblePveConnectionIds.has(conn.id)
+          if (isVisible) {
+            send('cluster', applyVdcFilter(applyRbacToCluster(cluster, rbacCtx), vdcScope))
+          }
+
+          // Fetch storage data for this cluster and emit immediately (only if visible)
           const storageData = await fetchStoragesForCluster(conn, cluster)
           allStorages.push(storageData)
-          send('storage', storageData)
+          if (isVisible) {
+            send('storage', storageData)
+          }
         })
 
         const pbsPromises = pbsConnections.map(async (conn) => {

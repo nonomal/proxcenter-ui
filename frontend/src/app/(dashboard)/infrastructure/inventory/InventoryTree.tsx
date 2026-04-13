@@ -50,6 +50,7 @@ const PowerSettingsNewIcon = (props: any) => <i className="ri-shut-down-line" st
 /* PauseIcon, TerminalIcon, MoveUpIcon, ContentCopyIcon, DescriptionIcon → ./components/TreeDialogs */
 
 import EntityTagManager from './components/EntityTagManager'
+import { useRBAC } from '@/contexts/RBACContext'
 import { useTagColors } from '@/contexts/TagColorContext'
 import { useTaskTracker } from '@/hooks/useTaskTracker'
 import { MigrateVmDialog, CrossClusterMigrateParams } from '@/components/MigrateVmDialog'
@@ -422,6 +423,7 @@ export default function InventoryTree({ selected, onSelect, onRefreshRef, onOpti
   const t = useTranslations()
   const theme = useTheme()
   const router = useRouter()
+  const { isAdmin } = useRBAC()
   const { trackTask } = useTaskTracker()
   const { getColor: getTagColor, loadConnection } = useTagColors()
   const [loading, setLoading] = useState(true)
@@ -3198,6 +3200,78 @@ return (
             )
           }
 
+          // Pour un tenant vDC (non-admin), on n'affiche pas le noeud cluster,
+          // on rend les nodes directement au premier niveau
+          if (!isAdmin) {
+            return clu.nodes.map(n => (
+              <TreeItem
+                key={`${clu.connId}:${n.node}`}
+                itemId={`node:${clu.connId}:${n.node}`}
+                onContextMenu={(e) => handleNodeContextMenu(e, clu.connId, n.node, n.maintenance, clu.sshEnabled)}
+                label={
+                  <Tooltip
+                    title={<NodeTooltipContent name={n.node} status={n.status} cpu={n.cpu} mem={n.mem} maxmem={n.maxmem} maintenance={n.maintenance} />}
+                    enterDelay={1000} enterNextDelay={1000} placement="right" slotProps={tooltipSlotProps}
+                  >
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
+                    <NodeIcon status={n.status} maintenance={n.maintenance} size={16} />
+                    <span style={{ fontSize: 13 }}>{n.node}</span>
+                    <span style={{ opacity: 0.5, fontSize: 11 }}>({n.vms.length})</span>
+                  </Box>
+                  </Tooltip>
+                }
+              >
+                {n.vms.map(vm => {
+                  const vmKey = `${clu.connId}:${n.node}:${vm.type}:${vm.vmid}`
+                  const isMigrating = isVmMigrating(clu.connId, vm.vmid)
+                  const vmContent = (
+                  <TreeItem
+                    key={vmKey}
+                    itemId={`vm:${clu.connId}:${n.node}:${vm.type}:${vm.vmid}`}
+                    disabled={isMigrating}
+                    onContextMenu={(e) => !isMigrating && handleContextMenu(e, clu.connId, n.node, vm.type, vm.vmid, vm.name, vm.status, clu.isCluster, vm.template, clu.sshEnabled)}
+                    sx={{
+                      opacity: isMigrating ? 0.5 : 1,
+                      '& > .MuiTreeItem-content': {
+                        cursor: isMigrating ? 'not-allowed' : 'pointer',
+                      }
+                    }}
+                    label={
+                      <VmItem
+                        vmKey={vmKey}
+                        connId={clu.connId}
+                        connName={clu.name}
+                        node={n.node}
+                        vmType={vm.type}
+                        vmid={vm.vmid}
+                        name={vm.name}
+                        status={vm.status}
+                        cpu={vm.cpu}
+                        mem={vm.mem}
+                        maxmem={vm.maxmem}
+                        template={vm.template}
+                        isCluster={clu.isCluster}
+                        isSelected={false}
+                        isMigrating={isMigrating}
+                        isPendingAction={isVmPendingAction(clu.connId, vm.vmid)}
+                        isFavorite={favorites.has(vmKey)}
+                        onFavoriteToggle={() => toggleFavorite(clu.connId, n.node, vm.type, vm.vmid, vm.name)}
+                        onClick={() => {}}
+                        onDoubleClick={() => openConsoleWindow(clu.connId, n.node, vm.type, vm.vmid)}
+                        onContextMenu={() => {}}
+                        variant="tree"
+                        t={t}
+                        tags={vm.tags ? String(vm.tags).split(';').filter(Boolean) : undefined}
+                      />
+                    }
+                  />
+                  )
+                  return isMigrating ? <Tooltip key={vmKey} title={t('audit.actions.migrate') + "..."} placement="right">{vmContent}</Tooltip> : vmContent
+                })}
+              </TreeItem>
+            ))
+          }
+
           // Pour un cluster (multi-nodes), on affiche le cluster puis les nodes
           return (
             <TreeItem
@@ -3906,6 +3980,7 @@ return (
         onCreateLxc={onCreateLxc}
         onNodeAction={onNodeAction}
         clusters={clusters}
+        isAdmin={isAdmin}
         maintenanceBusy={maintenanceBusy}
         maintenanceTarget={maintenanceTarget}
         setMaintenanceTarget={setMaintenanceTarget}

@@ -3,6 +3,7 @@
 import React, { useState } from 'react'
 import { useTranslations } from 'next-intl'
 import { useBranding } from '@/contexts/BrandingContext'
+import { useRBAC } from '@/contexts/RBACContext'
 
 import {
   Accordion,
@@ -275,6 +276,7 @@ function InventorySummary({
   const netOutBps = latestIo?.netOutBps ?? 0
 
   const consoleWidth = { xs: '100%', md: 360 }
+  const { isAdmin } = useRBAC()
 
   // État pour les blocs collapsibles dans la vue host
   const [hostBlocksCollapsed, setHostBlocksCollapsed] = useState<{
@@ -626,8 +628,8 @@ return `${mins}m`
               </Stack>
             </Box>
 
-            {/* Colonne 4 - Mises à jour disponibles */}
-            {hostInfo.updates && hostInfo.updates.length > 0 && (
+            {/* Colonne 4 - Mises à jour disponibles (admin only) */}
+            {isAdmin && hostInfo.updates && hostInfo.updates.length > 0 && (
               <Box
                 sx={{
                   flex: hostBlocksCollapsed.updates ? '0 0 auto' : 1,
@@ -754,8 +756,8 @@ return `${mins}m`
               </Box>
             )}
 
-            {/* Colonne 5 - Subscription Status */}
-            {(!branding.enabled || branding.showSubscription !== false) && hostInfo.subscription && (() => {
+            {/* Colonne 5 - Subscription Status (admin only) */}
+            {isAdmin && (!branding.enabled || branding.showSubscription !== false) && hostInfo.subscription && (() => {
               // Calculer si l'échéance est proche (moins de 30 jours)
               const isActive = hostInfo.subscription.status === 'active'
               const nextDueDate = hostInfo.subscription.nextDueDate ? new Date(hostInfo.subscription.nextDueDate) : null

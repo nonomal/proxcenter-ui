@@ -6,6 +6,7 @@ import { randomUUID } from 'crypto'
 import { getDb } from '@/lib/db/sqlite'
 import { pveFetch } from '@/lib/proxmox/client'
 import { getConnectionById } from '@/lib/connections/getConnection'
+import { prisma } from '@/lib/db/prisma'
 
 import type {
   Vdc,
@@ -66,6 +67,13 @@ function rowToUsage(row: any): VdcUsage | null {
 
 function generatePoolName(tenantSlug: string, vdcSlug: string): string {
   return `vdc-${tenantSlug}-${vdcSlug}`
+}
+
+/** Resolve the real owner tenantId of a connection (it may differ from the vDC's tenantId) */
+async function getConnectionOwnerTenantId(connectionId: string): Promise<string> {
+  const conn = await prisma.connection.findUnique({ where: { id: connectionId }, select: { tenantId: true } })
+  if (!conn) throw new Error(`Connection not found: ${connectionId}`)
+  return conn.tenantId
 }
 
 // ---------------------------------------------------------------------------
@@ -163,7 +171,8 @@ export async function createVdc(input: CreateVdcInput, createdBy: string | null)
 
   // 3. Create PVE pool
   const poolName = generatePoolName(tenantSlug, input.slug)
-  const conn = await getConnectionById(input.connectionId, input.tenantId)
+  const connOwnerTenantId = await getConnectionOwnerTenantId(input.connectionId)
+  const conn = await getConnectionById(input.connectionId, connOwnerTenantId)
 
   try {
     await pveFetch(conn, '/pools', {
@@ -336,7 +345,8 @@ export async function deleteVdc(id: string): Promise<void> {
   const vdc = rowToVdc(row)
 
   // 2. Check PVE pool for VMs
-  const conn = await getConnectionById(vdc.connectionId, vdc.tenantId)
+  const connOwnerTenantId = await getConnectionOwnerTenantId(vdc.connectionId)
+  const conn = await getConnectionById(vdc.connectionId, connOwnerTenantId)
 
   try {
     const poolData = await pveFetch<{ members?: any[] }>(conn, `/pools/${encodeURIComponent(vdc.pvePoolName)}`)
@@ -384,8 +394,9 @@ export async function refreshVdcUsage(vdcId: string): Promise<VdcUsage> {
   }
   const vdc = rowToVdc(row)
 
-  // 2. Get connection
-  const conn = await getConnectionById(vdc.connectionId, vdc.tenantId)
+  // 2. Get connection (use the connection's owner tenantId, not the vDC's tenantId)
+  const connOwnerTenantId = await getConnectionOwnerTenantId(vdc.connectionId)
+  const conn = await getConnectionById(vdc.connectionId, connOwnerTenantId)
 
   // 3. Fetch pool members
   let members: any[] = []

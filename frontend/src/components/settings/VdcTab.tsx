@@ -394,14 +394,23 @@ export default function VdcTab() {
     {
       field: 'nodes',
       headerName: t('vdc.nodes'),
-      width: 100,
-      renderCell: (params) => (
-        <Chip
-          label={Array.isArray(params.value) ? params.value.length : 0}
-          size="small"
-          variant="outlined"
-        />
-      ),
+      minWidth: 150,
+      flex: 1,
+      renderCell: (params) => {
+        const nodes = Array.isArray(params.value) ? params.value : []
+        return (
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, overflow: 'hidden' }}>
+            {nodes.map((name: string) => (
+              <Tooltip key={name} title={name} arrow>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.25, flexShrink: 0 }}>
+                  <img src="/images/proxmox-logo.svg" alt="" width={16} height={16} style={{ opacity: 0.85 }} />
+                  <Typography variant="caption" noWrap>{name}</Typography>
+                </Box>
+              </Tooltip>
+            ))}
+          </Box>
+        )
+      },
     },
     {
       field: 'quotaCpu',
@@ -433,18 +442,6 @@ export default function VdcTab() {
       renderCell: (params) => renderQuotaGauge(
         params.row.usage?.usedVms,
         params.row.quota?.maxVms,
-      ),
-    },
-    {
-      field: 'enabled',
-      headerName: t('common.status'),
-      width: 100,
-      renderCell: (params) => (
-        <Chip
-          label={params.value ? t('common.active') : t('common.disabled')}
-          size="small"
-          color={params.value ? 'success' : 'default'}
-        />
       ),
     },
     {
@@ -491,7 +488,6 @@ export default function VdcTab() {
             checked={form[unlimitedKey] as boolean}
             onChange={(e) => {
               const unlimited = e.target.checked
-
               setForm((f) => ({
                 ...f,
                 [unlimitedKey]: unlimited,
@@ -788,39 +784,61 @@ export default function VdcTab() {
                   </Typography>
 
                   {(() => {
-                    // Filter storages: shared storages always visible, local storages only if their node is selected
                     const selectedNodes = new Set(form.nodes)
-                    const visibleStorages = (availableResources.storages || []).filter((storage: any) => {
-                      if (storage.shared) return true
-                      // Local storage: show only if at least one of its nodes is selected
-                      if (selectedNodes.size === 0) return false
-                      // storage.nodes is a comma-separated string of nodes, or null (= all nodes)
-                      if (!storage.nodes) return selectedNodes.size > 0
-                      const storageNodes = String(storage.nodes).split(',').map((n: string) => n.trim())
-                      return storageNodes.some((n: string) => selectedNodes.has(n))
-                    })
 
-                    if (visibleStorages.length === 0 && selectedNodes.size === 0) {
-                      return (
-                        <Typography variant="body2" color="text.secondary" sx={{ py: 1, fontStyle: 'italic' }}>
-                          {t('vdc.selectNodes')}
-                        </Typography>
-                      )
+                    if (selectedNodes.size === 0) {
+                      // Show only shared storages when no nodes selected
+                      const sharedOnly = (availableResources.storages || []).filter((s: any) => s.shared)
+                      if (sharedOnly.length === 0) {
+                        return (
+                          <Typography variant="body2" color="text.secondary" sx={{ py: 1, fontStyle: 'italic' }}>
+                            {t('vdc.selectNodes')}
+                          </Typography>
+                        )
+                      }
                     }
 
-                    return visibleStorages.map((storage: any) => {
-                      const usagePercent = storage.maxdisk > 0 ? Math.round((storage.disk / storage.maxdisk) * 100) : 0
-                      // For local storages, show which selected nodes have this storage
-                      const nodeHint = !storage.shared && storage.nodeDetails
-                        ? (storage.nodeDetails as any[])
-                            .filter((nd: any) => selectedNodes.has(nd.node))
-                            .map((nd: any) => nd.node)
-                            .join(', ')
-                        : null
+                    // Build flat list: shared storages as-is, local storages expanded per selected node
+                    type StorageRow = { key: string; storageId: string; type: string; shared: boolean; node: string | null; disk: number; maxdisk: number }
+                    const rows: StorageRow[] = []
+
+                    for (const storage of (availableResources.storages || [])) {
+                      if (storage.shared) {
+                        rows.push({ key: storage.id, storageId: storage.id, type: storage.type, shared: true, node: null, disk: storage.disk, maxdisk: storage.maxdisk })
+                      } else {
+                        // Local storage: expand into one row per selected node
+                        const nodeDetails = (storage.nodeDetails || []) as { node: string; disk: number; maxdisk: number }[]
+                        // Which nodes is this storage available on?
+                        const storageNodeNames = storage.nodes
+                          ? String(storage.nodes).split(',').map((n: string) => n.trim())
+                          : null // null = available on all nodes
+
+                        for (const nodeName of selectedNodes) {
+                          // Check if this storage is available on this node
+                          if (storageNodeNames && !storageNodeNames.includes(nodeName)) continue
+
+                          const nd = nodeDetails.find((d: any) => d.node === nodeName)
+                          rows.push({
+                            key: `${storage.id}:${nodeName}`,
+                            storageId: storage.id,
+                            type: storage.type,
+                            shared: false,
+                            node: nodeName,
+                            disk: nd?.disk || 0,
+                            maxdisk: nd?.maxdisk || 0,
+                          })
+                        }
+                      }
+                    }
+
+                    return rows.map((row) => {
+                      const usagePercent = row.maxdisk > 0 ? Math.round((row.disk / row.maxdisk) * 100) : 0
+                      // For storage selection, we use the storage ID (not per-node) since PVE pools reference storage IDs
+                      const isChecked = form.storages.includes(row.storageId)
 
                       return (
                         <Box
-                          key={storage.id}
+                          key={row.key}
                           sx={{
                             display: 'flex',
                             alignItems: 'center',
@@ -832,37 +850,49 @@ export default function VdcTab() {
                           }}
                         >
                           <Checkbox
-                            checked={form.storages.includes(storage.id)}
+                            checked={isChecked}
                             onChange={(e) => {
                               setForm((f) => ({
                                 ...f,
                                 storages: e.target.checked
-                                  ? [...f.storages, storage.id]
-                                  : f.storages.filter((s) => s !== storage.id),
+                                  ? [...new Set([...f.storages, row.storageId])]
+                                  : f.storages.filter((s) => s !== row.storageId),
                               }))
                             }}
                             size="small"
                           />
 
-                          <i className="ri-hard-drive-2-fill" style={{ fontSize: 18, opacity: 0.7 }} />
+                          {/* Storage icon: Ceph logo for rbd/cephfs, disk icon for others */}
+                          {row.type === 'rbd' || row.type === 'cephfs' ? (
+                            <Tooltip title={`Ceph ${row.type.toUpperCase()}`} arrow>
+                              <img src="/images/ceph-logo.svg" alt="Ceph" width={18} height={18} style={{ opacity: 0.8 }} />
+                            </Tooltip>
+                          ) : (
+                            <Tooltip title={row.type} arrow>
+                              <i className="ri-hard-drive-2-fill" style={{ fontSize: 18, opacity: 0.7 }} />
+                            </Tooltip>
+                          )}
 
-                          {/* Left zone: name + badges (fixed width) */}
-                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, width: 240, flexShrink: 0 }}>
-                            <Typography variant="body2" sx={{ fontWeight: 500 }} noWrap>{storage.id}</Typography>
-                            <Chip label={storage.type} size="small" variant="outlined" sx={{ height: 20, fontSize: '0.65rem' }} />
-                            {storage.shared ? (
-                              <Chip label={t('vdc.shared')} size="small" color="info" sx={{ height: 20, fontSize: '0.65rem' }} />
-                            ) : nodeHint ? (
-                              <Typography variant="caption" color="text.secondary" noWrap>({nodeHint})</Typography>
-                            ) : null}
+                          {/* Left zone: name + node + shared icon (fixed width) */}
+                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, width: 280, flexShrink: 0 }}>
+                            <Typography variant="body2" sx={{ fontWeight: 500 }} noWrap>{row.storageId}</Typography>
+                            {row.node && (
+                              <Typography variant="caption" color="text.secondary" noWrap>({row.node})</Typography>
+                            )}
+                            <Chip label={row.type} size="small" variant="outlined" sx={{ height: 18, fontSize: '0.6rem', opacity: 0.6 }} />
+                            {row.shared && (
+                              <Tooltip title={t('vdc.shared')} arrow>
+                                <i className="ri-share-line" style={{ fontSize: 15, color: 'var(--mui-palette-info-main)', opacity: 0.9 }} />
+                              </Tooltip>
+                            )}
                           </Box>
 
-                          {/* Right zone: progress bar (fills remaining space) */}
-                          {storage.maxdisk > 0 ? (
+                          {/* Right zone: progress bar */}
+                          {row.maxdisk > 0 ? (
                             <Box sx={{ flex: 1, minWidth: 80 }}>
                               <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.25 }}>
                                 <Typography variant="caption" color="text.secondary">
-                                  {formatBytes(storage.disk || 0)} / {formatBytes(storage.maxdisk || 0)}
+                                  {formatBytes(row.disk || 0)} / {formatBytes(row.maxdisk || 0)}
                                 </Typography>
                                 <Typography variant="caption" color="text.secondary">{usagePercent}%</Typography>
                               </Box>

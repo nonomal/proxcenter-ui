@@ -3,6 +3,7 @@ import { NextResponse } from "next/server"
 import { getServerSession } from "next-auth"
 
 import { getSessionPrisma, getCurrentTenantId } from "@/lib/tenant"
+import { getVdcScope } from '@/lib/vdc/scope'
 import { pveFetch } from "@/lib/proxmox/client"
 import { pbsFetch } from "@/lib/proxmox/pbs-client"
 import { getConnectionById, getPbsConnectionById } from "@/lib/connections/getConnection"
@@ -122,14 +123,22 @@ export async function GET(req: Request) {
     const userId = session.user.id
     const tenantId = (session as any).user?.tenantId || 'default'
 
+    // vDC scope: restrict dashboard to tenant's vDC resources
+    const vdcScope = getVdcScope(tenantId)
+
     // Récupérer toutes les connexions (PVE et PBS) en une seule requête
     const allConnections = await prisma.connection.findMany({
       orderBy: { createdAt: "desc" },
       select: { id: true, name: true, type: true, hasCeph: true },
     })
 
-    const pveConnections = allConnections.filter(c => c.type === 'pve')
+    let pveConnections = allConnections.filter(c => c.type === 'pve')
     const pbsConnections = allConnections.filter(c => c.type === 'pbs')
+
+    // If vDC scope is active, only fetch PVE connections that have vDCs for this tenant
+    if (vdcScope) {
+      pveConnections = pveConnections.filter(c => vdcScope.connectionIds.has(c.id))
+    }
 
     // ============================================
     // CHARGER PVE ET PBS EN PARALLÈLE
@@ -331,11 +340,36 @@ return null
     for (const data of validPve) {
       if (data.isCluster) totalClusters++
 
+      // vDC filtering: restrict nodes and guests to what the tenant's vDCs allow
+      const allowedNodes = vdcScope?.nodesByConnection.get(data.conn.id)
+      const allowedPools = vdcScope?.poolsByConnection.get(data.conn.id)
+
+      // Filter nodes by vDC scope (when scope is active, only keep allowed nodes)
+      const scopedNodes = vdcScope
+        ? data.nodes.filter((n: any) => allowedNodes?.has(n.node))
+        : data.nodes
+
+      // Filter VMs/LXCs by vDC pool membership
+      const scopedVms = vdcScope
+        ? data.vms.filter((vm: any) => {
+            const pool = vm.pool
+            if (!pool || pool === '') return false
+            return allowedPools?.has(pool) ?? false
+          })
+        : data.vms
+      const scopedLxcs = vdcScope
+        ? data.lxcs.filter((lxc: any) => {
+            const pool = lxc.pool
+            if (!pool || pool === '') return false
+            return allowedPools?.has(pool) ?? false
+          })
+        : data.lxcs
+
       // Aggregate real storage per connection
       globalStorageUsed += data.connStorageUsed || 0
       globalStorageMax += data.connStorageMax || 0
 
-      for (const node of data.nodes) {
+      for (const node of scopedNodes) {
         allNodes.push({
           connId: data.conn.id, node: node.node,
           name: node.node, connection: data.conn.name || data.conn.id, connectionId: data.conn.id,
@@ -345,12 +379,12 @@ return null
         })
       }
 
-      for (const vm of data.vms) allVms.push({ ...vm, connId: data.conn.id, connection: data.conn.name, connectionId: data.conn.id })
-      for (const lxc of data.lxcs) allLxcs.push({ ...lxc, connId: data.conn.id, connection: data.conn.name, connectionId: data.conn.id })
+      for (const vm of scopedVms) allVms.push({ ...vm, connId: data.conn.id, connection: data.conn.name, connectionId: data.conn.id })
+      for (const lxc of scopedLxcs) allLxcs.push({ ...lxc, connId: data.conn.id, connection: data.conn.name, connectionId: data.conn.id })
 
       clusterInfos.push({
-        id: data.conn.id, name: data.clusterName, isCluster: data.isCluster, nodes: data.nodes.length,
-        onlineNodes: data.nodes.filter(n => n.status === 'online').length,
+        id: data.conn.id, name: data.clusterName, isCluster: data.isCluster, nodes: scopedNodes.length,
+        onlineNodes: scopedNodes.filter((n: any) => n.status === 'online').length,
         quorum: data.quorum ? { quorate: data.quorum.quorate, votes: data.quorum.votes, expected_votes: data.quorum.expected_votes } : null,
         cephHealth: data.cephStatus?.health?.status || null,
       })

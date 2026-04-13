@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/db/prisma"
 import { decryptSecret } from "@/lib/crypto/secret"
 import { getCurrentTenantId } from "@/lib/tenant"
+import { getDb } from "@/lib/db/sqlite"
 
 export type PveConn = {
   id: string
@@ -69,9 +70,16 @@ export async function getConnectionById(id: string, tenantId?: string): Promise<
 
   if (!c) throw new Error(`Connection not found: ${id}`)
 
-  // Tenant isolation: always verify the connection belongs to the requesting tenant
+  // Tenant isolation: verify the connection belongs to the requesting tenant
+  // OR the tenant has a vDC assignment on this connection
   if (c.tenantId !== resolvedTenantId) {
-    throw new Error(`Connection not found: ${id}`)
+    const db = getDb()
+    const vdcAccess = db.prepare(
+      'SELECT 1 FROM vdcs WHERE tenant_id = ? AND connection_id = ? AND enabled = 1 LIMIT 1'
+    ).get(resolvedTenantId, id)
+    if (!vdcAccess) {
+      throw new Error(`Connection not found: ${id}`)
+    }
   }
 
   if (!c.baseUrl) throw new Error(`Connection ${id} has no baseUrl`)

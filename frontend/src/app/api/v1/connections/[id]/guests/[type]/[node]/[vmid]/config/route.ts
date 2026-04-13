@@ -3,6 +3,8 @@ import { NextResponse } from "next/server"
 import { pveFetch } from "@/lib/proxmox/client"
 import { getConnectionById } from "@/lib/connections/getConnection"
 import { checkPermission, buildVmResourceId, PERMISSIONS } from "@/lib/rbac"
+import { getCurrentTenantId } from "@/lib/tenant"
+import { resolveVdcForTenant, checkVdcQuota } from "@/lib/vdc/quota"
 
 export const runtime = "nodejs"
 
@@ -139,6 +141,52 @@ export async function PUT(
     }
 
     const conn = await getConnectionById(id)
+
+    // ── vDC Quota Check (CPU/RAM increases) ──
+    const tenantId = await getCurrentTenantId()
+    try {
+      const vdcInfo = resolveVdcForTenant(tenantId, id, node)
+
+      if (vdcInfo && (body.cores || body.sockets || body.memory)) {
+        // Fetch current VM config from PVE to compute deltas
+        const currentConfig = await pveFetch<any>(
+          conn,
+          `/nodes/${encodeURIComponent(node)}/${type}/${encodeURIComponent(vmid)}/config`
+        )
+
+        const currentVcpus = (currentConfig?.cores || 1) * (currentConfig?.sockets || 1)
+        const newCores = body.cores ? parseInt(String(body.cores)) : (currentConfig?.cores || 1)
+        const newSockets = body.sockets ? parseInt(String(body.sockets)) : (currentConfig?.sockets || 1)
+        const newVcpus = newCores * newSockets
+        const vcpuDelta = newVcpus - currentVcpus
+
+        const currentRamMb = currentConfig?.memory || 512
+        const newRamMb = body.memory ? parseInt(String(body.memory)) : currentRamMb
+        const ramDelta = newRamMb - currentRamMb
+
+        // Only enforce quota when resources are INCREASING (decreases are always allowed)
+        if (vcpuDelta > 0 || ramDelta > 0) {
+          const quotaCheck = await checkVdcQuota(id, vdcInfo.poolName, vdcInfo.quota, {
+            type: 'config',
+            addVcpus: Math.max(0, vcpuDelta),
+            addRamMb: Math.max(0, ramDelta),
+            addVms: 0,
+          })
+
+          if (!quotaCheck.allowed) {
+            return NextResponse.json({
+              error: 'Quota exceeded',
+              violations: quotaCheck.violations,
+            }, { status: 409 })
+          }
+        }
+      }
+    } catch (e: any) {
+      if (e?.message === 'NODE_NOT_AUTHORIZED') {
+        return NextResponse.json({ error: 'This node is not authorized for your vDC' }, { status: 403 })
+      }
+      throw e
+    }
 
     // Sélectionner les champs autorisés selon le type
     const allowedFields = type === 'qemu' ? ALLOWED_QEMU_FIELDS : ALLOWED_LXC_FIELDS

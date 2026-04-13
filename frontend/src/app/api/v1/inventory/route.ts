@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 
 import { getSessionPrisma, getCurrentTenantId } from "@/lib/tenant"
+import { prisma as globalPrisma } from "@/lib/db/prisma"
 import { demoResponse } from "@/lib/demo/demo-api"
 import { getConnectionById, getPbsConnectionById } from "@/lib/connections/getConnection"
 import { pveFetch } from "@/lib/proxmox/client"
@@ -13,6 +14,7 @@ import {
   getInflightFetch,
   setInflightFetch,
 } from "@/lib/cache/inventoryCache"
+import { getVdcScope, applyVdcFilter } from "@/lib/vdc/scope"
 
 export const runtime = "nodejs"
 
@@ -121,7 +123,7 @@ type ExternalHypervisor = {
   type: string
 }
 
-async function fetchRawInventory(): Promise<{
+async function fetchRawInventory(vdcScope?: import('@/lib/vdc/scope').VdcScope | null): Promise<{
   clusters: ClusterData[]
   pbsServers: PbsServerData[]
   externalHypervisors: ExternalHypervisor[]
@@ -129,12 +131,17 @@ async function fetchRawInventory(): Promise<{
   stats: { totalClusters: number; totalNodes: number; totalGuests: number; onlineNodes: number; runningGuests: number; totalPbsServers: number; totalDatastores: number; totalBackups: number }
 }> {
   const prisma = await getSessionPrisma()
-  // 1) Charger toutes les connexions PVE, PBS et hyperviseurs externes en parallèle
+  // For tenants with vDCs: load connections referenced by vDCs (they belong to the provider tenant)
+  const connPrisma = vdcScope ? globalPrisma : prisma
+  const pveWhere = vdcScope
+    ? { type: 'pve' as const, id: { in: [...vdcScope.connectionIds] } }
+    : { type: 'pve' as const }
+
   const [pveConnections, pbsConnections, externalConnections] = await Promise.all([
-    prisma.connection.findMany({
-      where: { type: 'pve' },
+    connPrisma.connection.findMany({
+      where: pveWhere,
       orderBy: { createdAt: 'desc' },
-      select: { id: true, name: true, type: true, latitude: true, longitude: true, locationLabel: true, sshEnabled: true },
+      select: { id: true, name: true, type: true, latitude: true, longitude: true, locationLabel: true, sshEnabled: true, tenantId: true },
     }),
     prisma.connection.findMany({
       where: { type: 'pbs' },
@@ -167,7 +174,7 @@ async function fetchRawInventory(): Promise<{
   // 2) Pour chaque connexion PVE, charger nodes et guests EN PARALLÈLE
   const clusterPromises = pveConnections.map(async (conn): Promise<ClusterData | null> => {
     try {
-      const connConfig = await getConnectionById(conn.id)
+      const connConfig = await getConnectionById(conn.id, (conn as any).tenantId)
 
       const [nodesResult, guestsResult, haResult, cephResult, nodeResourcesResult] = await Promise.allSettled([
         pveFetch<NodeData[]>(connConfig, '/nodes'),
@@ -511,12 +518,12 @@ return aId - bId
  * Blocking fetch with thundering-herd protection.
  * Used on cache miss or force refresh — the caller awaits the result.
  */
-async function blockingFetch(tenantId: string) {
+async function blockingFetch(tenantId: string, vdcScope?: import('@/lib/vdc/scope').VdcScope | null) {
   let inflight = getInflightFetch(tenantId)
 
   if (inflight === null) {
     const startTime = Date.now()
-    inflight = fetchRawInventory()
+    inflight = fetchRawInventory(vdcScope)
       .then(result => {
         console.log(`[inventory] Fetched from Proxmox in ${Date.now() - startTime}ms`)
         setCachedInventory(result, tenantId)
@@ -537,11 +544,11 @@ async function blockingFetch(tenantId: string) {
  * Trigger a background revalidation if one isn't already in progress.
  * Fire-and-forget — errors are logged but don't affect the current request.
  */
-function triggerBackgroundRevalidation(tenantId: string) {
+function triggerBackgroundRevalidation(tenantId: string, vdcScope?: import('@/lib/vdc/scope').VdcScope | null) {
   if (getInflightFetch(tenantId) !== null) return
 
   const startTime = Date.now()
-  const revalidation = fetchRawInventory()
+  const revalidation = fetchRawInventory(vdcScope)
     .then(result => {
       console.log(`[inventory] Background revalidation completed in ${Date.now() - startTime}ms`)
       setCachedInventory(result, tenantId)
@@ -568,6 +575,7 @@ export async function GET(request: NextRequest) {
 
     const forceRefresh = request.nextUrl.searchParams.get('refresh') === 'true'
     const tenantId = await getCurrentTenantId()
+    const vdcScope = getVdcScope(tenantId)
 
     // 1) Tenter le cache (sauf si refresh forcé)
     const cacheResult = forceRefresh ? { status: 'miss' as const } : getInventoryFromCache(tenantId)
@@ -581,14 +589,20 @@ export async function GET(request: NextRequest) {
       // Cache is stale — serve immediately, trigger background revalidation
       console.log('[inventory] Serving stale data, revalidating in background')
       raw = cacheResult.data
-      triggerBackgroundRevalidation(tenantId)
+      triggerBackgroundRevalidation(tenantId, vdcScope)
     } else {
       // Cache miss or force refresh — blocking fetch required
-      raw = await blockingFetch(tenantId)
+      raw = await blockingFetch(tenantId, vdcScope)
     }
 
     // 2) Deep-clone clusters pour le filtrage RBAC (ne pas muter le cache)
-    let clusters: ClusterData[] = raw.clusters.map(c => ({
+    //    Also filter by vDC connection scope — only include clusters whose
+    //    connection is part of the tenant's vDC assignments.
+    const visibleRawClusters = vdcScope
+      ? raw.clusters.filter(c => vdcScope.connectionIds.has(c.id))
+      : raw.clusters
+
+    let clusters: ClusterData[] = visibleRawClusters.map(c => ({
       ...c,
       nodes: c.nodes.map(n => ({
         ...n,
@@ -596,28 +610,34 @@ export async function GET(request: NextRequest) {
       }))
     }))
 
-    // 3) RBAC: Filtrer les guests selon les permissions de l'utilisateur
+    // 3) RBAC + vDC: Filter guests by user permissions, then by vDC scope (nodes + pools)
     const rbacCtx = await getRBACContext()
 
-    if (rbacCtx && !rbacCtx.isAdmin) {
-      clusters = clusters.map(cluster => ({
-        ...cluster,
-        nodes: cluster.nodes.map(node => ({
-          ...node,
-          guests: filterVmsByPermission(
-            rbacCtx.userId,
-            node.guests.map(g => ({
-              ...g,
-              connId: cluster.id,
-              node: node.node,
-              vmid: String(g.vmid),
-            })),
-            PERMISSIONS.VM_VIEW,
-            rbacCtx.tenantId
-          )
-        }))
-      }))
-    }
+    clusters = clusters.map(cluster => {
+      // Apply RBAC first
+      let filtered = cluster
+      if (rbacCtx && !rbacCtx.isAdmin) {
+        filtered = {
+          ...cluster,
+          nodes: cluster.nodes.map(node => ({
+            ...node,
+            guests: filterVmsByPermission(
+              rbacCtx.userId,
+              node.guests.map(g => ({
+                ...g,
+                connId: cluster.id,
+                node: node.node,
+                vmid: String(g.vmid),
+              })),
+              PERMISSIONS.VM_VIEW,
+              rbacCtx.tenantId
+            )
+          }))
+        }
+      }
+      // Then apply vDC filter (nodes + pool membership)
+      return applyVdcFilter(filtered, vdcScope)
+    })
 
     // 4) Recalculer les stats après filtrage RBAC
     let totalNodes = 0
