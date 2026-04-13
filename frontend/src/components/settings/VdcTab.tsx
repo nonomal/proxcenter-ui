@@ -19,6 +19,7 @@ import {
   FormControlLabel,
   IconButton,
   LinearProgress,
+  Stack,
   Switch,
   TextField,
   Tooltip,
@@ -43,6 +44,7 @@ interface VdcFormState {
   maxVms: string
   maxSnapshots: string
   maxBackups: string
+  maxVnets: string
   unlimitedVcpus: boolean
   unlimitedRam: boolean
   unlimitedStorage: boolean
@@ -65,6 +67,7 @@ const emptyForm: VdcFormState = {
   maxVms: '',
   maxSnapshots: '',
   maxBackups: '',
+  maxVnets: '',
   unlimitedVcpus: true,
   unlimitedRam: true,
   unlimitedStorage: true,
@@ -110,6 +113,10 @@ export default function VdcTab() {
 
   // Delete confirmation
   const [deleteVdc, setDeleteVdc] = useState<any>(null)
+
+  // Shared bridges (SDN)
+  const [providerBridges, setProviderBridges] = useState<Array<{ iface: string; nodes: string[]; type: string }>>([])
+  const [selectedSharedBridges, setSelectedSharedBridges] = useState<Map<string, string>>(new Map())
 
   // Auto-clear success after 5s
   useEffect(() => {
@@ -198,6 +205,26 @@ export default function VdcTab() {
     return () => { cancelled = true }
   }, [form.connectionId])
 
+  // Fetch provider bridges when connectionId changes
+  useEffect(() => {
+    if (!form.connectionId) {
+      setProviderBridges([])
+      return
+    }
+    void (async () => {
+      try {
+        const res = await fetch(`/api/v1/admin/connections/${encodeURIComponent(form.connectionId)}/provider-bridges`)
+        if (res.ok) {
+          const json = await res.json()
+          setProviderBridges(Array.isArray(json.data) ? json.data : [])
+        }
+      } catch (err) {
+        console.error('Failed to load provider bridges', err)
+        setProviderBridges([])
+      }
+    })()
+  }, [form.connectionId])
+
   // ------- Helpers -------
 
   const getConnectionName = (connectionId: string) => {
@@ -216,6 +243,7 @@ export default function VdcTab() {
     setEditingVdc(null)
     setForm(emptyForm)
     setAvailableResources(null)
+    setSelectedSharedBridges(new Map())
     setDialogOpen(true)
   }
 
@@ -235,6 +263,7 @@ export default function VdcTab() {
       maxVms: vdc.quota?.maxVms ? String(vdc.quota.maxVms) : '',
       maxSnapshots: vdc.quota?.maxSnapshots ? String(vdc.quota.maxSnapshots) : '',
       maxBackups: vdc.quota?.maxBackups ? String(vdc.quota.maxBackups) : '',
+      maxVnets: vdc.quota?.maxVnets ? String(vdc.quota.maxVnets) : '',
       unlimitedVcpus: vdc.quota?.maxVcpus == null,
       unlimitedRam: vdc.quota?.maxRamMb == null,
       unlimitedStorage: vdc.quota?.maxStorageMb == null,
@@ -242,6 +271,17 @@ export default function VdcTab() {
       unlimitedSnapshots: vdc.quota?.maxSnapshots == null,
       unlimitedBackups: vdc.quota?.maxBackups == null,
     })
+
+    if (vdc.sharedBridges?.length) {
+      const map = new Map<string, string>()
+      for (const sb of vdc.sharedBridges) {
+        map.set(sb.bridge, sb.label ?? '')
+      }
+      setSelectedSharedBridges(map)
+    } else {
+      setSelectedSharedBridges(new Map())
+    }
+
     setDialogOpen(true)
   }
 
@@ -259,6 +299,7 @@ export default function VdcTab() {
       if (!form.unlimitedVms && form.maxVms) quota.maxVms = parseInt(form.maxVms)
       if (!form.unlimitedSnapshots && form.maxSnapshots) quota.maxSnapshots = parseInt(form.maxSnapshots)
       if (!form.unlimitedBackups && form.maxBackups) quota.maxBackups = parseInt(form.maxBackups)
+      if (form.maxVnets) quota.maxVnets = parseInt(form.maxVnets)
 
       // For unlimited fields, explicitly set null so the backend clears them
       if (form.unlimitedVcpus) quota.maxVcpus = null
@@ -268,6 +309,11 @@ export default function VdcTab() {
       if (form.unlimitedSnapshots) quota.maxSnapshots = null
       if (form.unlimitedBackups) quota.maxBackups = null
 
+      const sharedBridgesPayload = Array.from(selectedSharedBridges.entries()).map(([bridge, label]) => ({
+        bridge,
+        label: label.trim() || undefined,
+      }))
+
       if (editingVdc) {
         // PUT - update
         const body: any = {
@@ -275,6 +321,7 @@ export default function VdcTab() {
           description: form.description || undefined,
           nodes: form.nodes,
           storages: form.storages,
+          sharedBridges: sharedBridgesPayload,
           quota,
         }
 
@@ -298,6 +345,7 @@ export default function VdcTab() {
           description: form.description || undefined,
           nodes: form.nodes,
           storages: form.storages,
+          sharedBridges: sharedBridgesPayload,
           quota: Object.keys(quota).some((k) => quota[k] !== null) ? quota : undefined,
         }
 
@@ -910,6 +958,61 @@ export default function VdcTab() {
                       )
                     })
                   })()}
+                  {/* Shared Bridges */}
+                  <Divider />
+
+                  <Box sx={{ mt: 2 }}>
+                    <Typography variant="subtitle2" gutterBottom>{t('vdc.sharedBridgesTitle')}</Typography>
+                    <Typography variant="caption" color="text.secondary">{t('vdc.sharedBridgesHint')}</Typography>
+
+                    {providerBridges.length === 0 ? (
+                      <Typography variant="body2" sx={{ mt: 1, fontStyle: 'italic' }}>
+                        {t('vdc.sharedBridgesNoDetected')}
+                      </Typography>
+                    ) : (
+                      <Stack spacing={1} sx={{ mt: 1 }}>
+                        {providerBridges.map((pb) => {
+                          const selected = selectedSharedBridges.has(pb.iface)
+                          const label = selectedSharedBridges.get(pb.iface) ?? ''
+                          return (
+                            <Stack key={pb.iface} direction="row" spacing={1} alignItems="center">
+                              <FormControlLabel
+                                sx={{ minWidth: 180 }}
+                                control={
+                                  <Checkbox
+                                    checked={selected}
+                                    onChange={(e) => {
+                                      setSelectedSharedBridges((prev) => {
+                                        const next = new Map(prev)
+                                        if (e.target.checked) next.set(pb.iface, label)
+                                        else next.delete(pb.iface)
+                                        return next
+                                      })
+                                    }}
+                                  />
+                                }
+                                label={<Typography fontFamily="monospace">{pb.iface}</Typography>}
+                              />
+                              <TextField
+                                size="small"
+                                fullWidth
+                                placeholder={t('vdc.sharedBridgeLabelPlaceholder')}
+                                value={label}
+                                disabled={!selected}
+                                onChange={(e) => {
+                                  setSelectedSharedBridges((prev) => {
+                                    const next = new Map(prev)
+                                    if (next.has(pb.iface)) next.set(pb.iface, e.target.value)
+                                    return next
+                                  })
+                                }}
+                              />
+                            </Stack>
+                          )
+                        })}
+                      </Stack>
+                    )}
+                  </Box>
                 </>
               ) : null}
 
@@ -927,6 +1030,17 @@ export default function VdcTab() {
               {renderQuotaField(t('vdc.maxVms'), 'maxVms', 'unlimitedVms')}
               {renderQuotaField(t('vdc.maxSnapshots'), 'maxSnapshots', 'unlimitedSnapshots')}
               {renderQuotaField(t('vdc.maxBackups'), 'maxBackups', 'unlimitedBackups')}
+
+              <TextField
+                label={t('vdc.maxVnets')}
+                type="number"
+                value={form.maxVnets}
+                onChange={(e) => setForm((f) => ({ ...f, maxVnets: e.target.value }))}
+                helperText={t('vdc.maxVnetsHint')}
+                slotProps={{ htmlInput: { min: 0 } }}
+                size="small"
+                fullWidth
+              />
             </>
           )}
         </DialogContent>

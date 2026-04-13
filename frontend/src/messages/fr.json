@@ -5605,6 +5605,13 @@
     "failedDelete": "Impossible de supprimer le vDC",
     "saving": "Enregistrement...",
     "shared": "Partagé",
-    "newVdc": "Créer un vDC"
+    "newVdc": "Créer un vDC",
+    "sharedBridgesTitle": "Bridges partagés (uplinks)",
+    "sharedBridgesHint": "Bridges du cluster que ce vDC peut utiliser en plus de ses propres VNets. Typiquement pour les uplinks WAN ou management.",
+    "sharedBridgesDetected": "Bridges détectés sur ce cluster",
+    "sharedBridgesNoDetected": "Aucun bridge détecté sur ce cluster.",
+    "sharedBridgeLabelPlaceholder": "Libellé optionnel (ex: WAN /29 - 203.0.113.24/29)",
+    "maxVnets": "Max VNets",
+    "maxVnetsHint": "Nombre maximal de VNets que le tenant peut créer dans ce vDC. Vide = illimité."
   }
 }

@@ -5604,6 +5604,13 @@
     "failedDelete": "Failed to delete vDC",
     "saving": "Saving...",
     "shared": "Shared",
-    "newVdc": "Create vDC"
+    "newVdc": "Create vDC",
+    "sharedBridgesTitle": "Shared bridges (uplinks)",
+    "sharedBridgesHint": "Bridges from the cluster that this vDC is allowed to attach to (in addition to its own VNets). Typically used for WAN or management uplinks.",
+    "sharedBridgesDetected": "Detected bridges on this cluster",
+    "sharedBridgesNoDetected": "No bridges detected on this cluster.",
+    "sharedBridgeLabelPlaceholder": "Optional label (e.g. WAN /29 - 203.0.113.24/29)",
+    "maxVnets": "Max VNets",
+    "maxVnetsHint": "Maximum number of VNets the tenant can create in this vDC. Empty = unlimited."
   }
 }
