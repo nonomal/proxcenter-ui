@@ -6,6 +6,7 @@ export interface Vdc {
   slug: string
   description: string | null
   pvePoolName: string
+  sdnZoneName: string | null
   enabled: boolean
   createdBy: string | null
   createdAt: string
@@ -19,6 +20,8 @@ export interface VdcWithDetails extends Vdc {
   storages: string[]
   quota: VdcQuota | null
   usage: VdcUsage | null
+  sharedBridges: VdcSharedBridge[]
+  vnets: VdcVnet[]
 }
 
 export interface VdcQuota {
@@ -28,6 +31,7 @@ export interface VdcQuota {
   maxVms: number | null
   maxSnapshots: number | null
   maxBackups: number | null
+  maxVnets: number | null
 }
 
 export interface VdcUsage {
@@ -40,6 +44,39 @@ export interface VdcUsage {
   lastSyncedAt: string | null
 }
 
+export interface VdcSharedBridge {
+  id: string
+  vdcId: string
+  bridge: string
+  label: string | null
+  createdAt: string
+}
+
+export interface VdcVnet {
+  id: string
+  vdcId: string
+  pveName: string
+  description: string | null
+  vxlanTag: number
+  firewall: boolean
+  createdBy: string | null
+  createdAt: string
+}
+
+// PVE-native shapes used by lib/vdc/sdn.ts
+export interface SdnZone {
+  zone: string
+  type: 'vxlan'
+  peers: string[]
+}
+
+export interface SdnVnet {
+  vnet: string
+  zone: string
+  tag: number
+  firewall: 0 | 1
+}
+
 export interface CreateVdcInput {
   tenantId: string
   connectionId: string
@@ -49,6 +86,7 @@ export interface CreateVdcInput {
   nodes: string[]
   storages: string[]
   quota?: Partial<VdcQuota>
+  sharedBridges?: Array<{ bridge: string; label?: string }>
 }
 
 export interface UpdateVdcInput {
@@ -58,4 +96,5 @@ export interface UpdateVdcInput {
   nodes?: string[]
   storages?: string[]
   quota?: Partial<VdcQuota>
+  sharedBridges?: Array<{ bridge: string; label?: string }>
 }
