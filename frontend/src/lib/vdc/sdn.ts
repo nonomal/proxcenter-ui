@@ -72,3 +72,63 @@ export function allocateVniForTesting(db: any, vdcId: string): number {
 export function allocateVni(vdcId: string): number {
   return allocateVniImpl(getDb(), vdcId)
 }
+
+// ---------------------------------------------------------------------------
+// PVE SDN: apply pending changes
+// ---------------------------------------------------------------------------
+
+/**
+ * Applies pending SDN changes: triggers ifreload on every node.
+ * Should be called once at the end of a batch of SDN mutations.
+ */
+export async function applySdn(conn: any): Promise<void> {
+  await pveFetch(conn, '/cluster/sdn', { method: 'PUT' })
+}
+
+// ---------------------------------------------------------------------------
+// Zone CRUD
+// ---------------------------------------------------------------------------
+
+async function listClusterNodeIps(conn: any): Promise<string[]> {
+  const entries = await pveFetch<any[]>(conn, '/cluster/status')
+  return (entries || [])
+    .filter((e: any) => e.type === 'node' && e.ip)
+    .map((e: any) => e.ip as string)
+}
+
+/**
+ * Creates a VXLAN zone on PVE. Caller must invoke applySdn(conn) afterwards.
+ */
+export async function createZone(conn: any, zoneName: string): Promise<void> {
+  const peers = await listClusterNodeIps(conn)
+  const params = new URLSearchParams()
+  params.append('type', 'vxlan')
+  params.append('zone', zoneName)
+  params.append('peers', peers.join(','))
+
+  try {
+    await pveFetch(conn, '/cluster/sdn/zones', { method: 'POST', body: params })
+  } catch (err: any) {
+    const msg = String(err?.message || '')
+    if (!msg.includes('already exists')) {
+      throw new Error(`Failed to create SDN zone "${zoneName}": ${msg}`)
+    }
+    console.warn(`[vdc-sdn] SDN zone "${zoneName}" already exists, proceeding`)
+  }
+}
+
+/**
+ * Deletes a VXLAN zone (idempotent - tolerates "not found").
+ * Caller must invoke applySdn(conn) afterwards.
+ */
+export async function deleteZone(conn: any, zoneName: string): Promise<void> {
+  try {
+    await pveFetch(conn, `/cluster/sdn/zones/${encodeURIComponent(zoneName)}`, { method: 'DELETE' })
+  } catch (err: any) {
+    const msg = String(err?.message || '')
+    if (!msg.toLowerCase().includes('not found') && !msg.includes('404')) {
+      throw new Error(`Failed to delete SDN zone "${zoneName}": ${msg}`)
+    }
+    console.warn(`[vdc-sdn] SDN zone "${zoneName}" not found, skipping`)
+  }
+}
