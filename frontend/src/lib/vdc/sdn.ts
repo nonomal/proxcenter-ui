@@ -13,7 +13,7 @@ import type { SdnVnet } from './types'
 // ---------------------------------------------------------------------------
 
 function stripSlug(slug: string): string {
-  return slug.replace(/-/g, '').slice(0, 14)
+  return slug.replace(/[^a-z0-9]/g, '').slice(0, 14)
 }
 
 interface ZoneNameInput { id: string; slug: string }

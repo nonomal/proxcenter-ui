@@ -45,4 +45,16 @@ describe('generateZoneName', () => {
     const hash = crypto.createHash('sha1').update('vdc-3').digest('hex').slice(0, 2)
     expect(name).toBe('zacmeprod' + hash)
   })
+
+  it('throws on double collision', () => {
+    const db = newDb()
+    const hash = crypto.createHash('sha1').update('vdc-4').digest('hex').slice(0, 2)
+    db.prepare('INSERT INTO vdcs (id, connection_id, slug, sdn_zone_name) VALUES (?, ?, ?, ?)')
+      .run('other-1', 'conn1', 'acme-prod', 'zacmeprod')
+    db.prepare('INSERT INTO vdcs (id, connection_id, slug, sdn_zone_name) VALUES (?, ?, ?, ?)')
+      .run('other-2', 'conn1', 'acme-prod', 'zacmeprod' + hash)
+    expect(() =>
+      generateZoneNameForTesting(db, 'conn1', { id: 'vdc-4', slug: 'acme-prod' })
+    ).toThrow('Cannot generate unique SDN zone name')
+  })
 })
