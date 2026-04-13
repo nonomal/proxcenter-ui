@@ -100,6 +100,8 @@ export function listVdcs(tenantId?: string): VdcWithDetails[] {
   const stmtStorages = db.prepare('SELECT storage_id FROM vdc_storages WHERE vdc_id = ?')
   const stmtQuota = db.prepare('SELECT * FROM vdc_quotas WHERE vdc_id = ?')
   const stmtUsage = db.prepare('SELECT * FROM vdc_usage_cache WHERE vdc_id = ?')
+  const stmtShared = db.prepare('SELECT id, vdc_id, bridge, label, created_at FROM vdc_shared_bridges WHERE vdc_id = ? ORDER BY bridge')
+  const stmtVnets = db.prepare('SELECT id, vdc_id, pve_name, description, vxlan_tag, firewall, created_by, created_at FROM vdc_vnets WHERE vdc_id = ? ORDER BY pve_name')
 
   return (rows as any[]).map((row) => {
     const vdc = rowToVdc(row)
@@ -107,6 +109,23 @@ export function listVdcs(tenantId?: string): VdcWithDetails[] {
     const storages = (stmtStorages.all(vdc.id) as any[]).map((r) => r.storage_id)
     const quota = rowToQuota(stmtQuota.get(vdc.id))
     const usage = rowToUsage(stmtUsage.get(vdc.id))
+    const sharedBridges = (stmtShared.all(vdc.id) as any[]).map((r) => ({
+      id: r.id,
+      vdcId: r.vdc_id,
+      bridge: r.bridge,
+      label: r.label ?? null,
+      createdAt: r.created_at,
+    }))
+    const vnets = (stmtVnets.all(vdc.id) as any[]).map((r) => ({
+      id: r.id,
+      vdcId: r.vdc_id,
+      pveName: r.pve_name,
+      description: r.description ?? null,
+      vxlanTag: r.vxlan_tag,
+      firewall: !!r.firewall,
+      createdBy: r.created_by ?? null,
+      createdAt: r.created_at,
+    }))
 
     return {
       ...vdc,
@@ -115,6 +134,8 @@ export function listVdcs(tenantId?: string): VdcWithDetails[] {
       storages,
       quota,
       usage,
+      sharedBridges,
+      vnets,
     } as VdcWithDetails
   })
 }
@@ -140,6 +161,23 @@ export function getVdcById(id: string): VdcWithDetails | null {
   const storages = (db.prepare('SELECT storage_id FROM vdc_storages WHERE vdc_id = ?').all(id) as any[]).map((r) => r.storage_id)
   const quota = rowToQuota(db.prepare('SELECT * FROM vdc_quotas WHERE vdc_id = ?').get(id))
   const usage = rowToUsage(db.prepare('SELECT * FROM vdc_usage_cache WHERE vdc_id = ?').get(id))
+  const sharedBridges = (db.prepare('SELECT id, vdc_id, bridge, label, created_at FROM vdc_shared_bridges WHERE vdc_id = ? ORDER BY bridge').all(id) as any[]).map((r) => ({
+    id: r.id,
+    vdcId: r.vdc_id,
+    bridge: r.bridge,
+    label: r.label ?? null,
+    createdAt: r.created_at,
+  }))
+  const vnets = (db.prepare('SELECT id, vdc_id, pve_name, description, vxlan_tag, firewall, created_by, created_at FROM vdc_vnets WHERE vdc_id = ? ORDER BY pve_name').all(id) as any[]).map((r) => ({
+    id: r.id,
+    vdcId: r.vdc_id,
+    pveName: r.pve_name,
+    description: r.description ?? null,
+    vxlanTag: r.vxlan_tag,
+    firewall: !!r.firewall,
+    createdBy: r.created_by ?? null,
+    createdAt: r.created_at,
+  }))
 
   return {
     ...vdc,
@@ -148,6 +186,8 @@ export function getVdcById(id: string): VdcWithDetails | null {
     storages,
     quota,
     usage,
+    sharedBridges,
+    vnets,
   }
 }
 
@@ -315,8 +355,8 @@ export async function updateVdc(id: string, input: UpdateVdcInput): Promise<VdcW
 
   // Upsert quota: try UPDATE first, INSERT if no row exists
   const upsertQuota = db.prepare(`
-    INSERT INTO vdc_quotas (id, vdc_id, max_vcpus, max_ram_mb, max_storage_mb, max_vms, max_snapshots, max_backups, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO vdc_quotas (id, vdc_id, max_vcpus, max_ram_mb, max_storage_mb, max_vms, max_snapshots, max_backups, max_vnets, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(vdc_id) DO UPDATE SET
       max_vcpus = excluded.max_vcpus,
       max_ram_mb = excluded.max_ram_mb,
@@ -324,6 +364,7 @@ export async function updateVdc(id: string, input: UpdateVdcInput): Promise<VdcW
       max_vms = excluded.max_vms,
       max_snapshots = excluded.max_snapshots,
       max_backups = excluded.max_backups,
+      max_vnets = excluded.max_vnets,
       updated_at = excluded.updated_at
   `)
 
@@ -350,6 +391,16 @@ export async function updateVdc(id: string, input: UpdateVdcInput): Promise<VdcW
       }
     }
 
+    if (input.sharedBridges) {
+      db.prepare('DELETE FROM vdc_shared_bridges WHERE vdc_id = ?').run(id)
+      const insertShared = db.prepare(
+        'INSERT INTO vdc_shared_bridges (id, vdc_id, bridge, label, created_at) VALUES (?, ?, ?, ?, ?)'
+      )
+      for (const sb of input.sharedBridges) {
+        insertShared.run(randomUUID(), id, sb.bridge, sb.label ?? null, now)
+      }
+    }
+
     if (input.quota) {
       upsertQuota.run(
         randomUUID(), id,
@@ -359,6 +410,7 @@ export async function updateVdc(id: string, input: UpdateVdcInput): Promise<VdcW
         input.quota.maxVms ?? null,
         input.quota.maxSnapshots ?? null,
         input.quota.maxBackups ?? null,
+        input.quota.maxVnets ?? null,
         now
       )
     }
@@ -408,14 +460,42 @@ export async function deleteVdc(id: string): Promise<void> {
     console.warn(`[vdc] Could not check PVE pool "${vdc.pvePoolName}": ${msg}`)
   }
 
-  // 3. Delete PVE pool (best effort)
+  // 3. Delete all VNets in the vDC zone (best effort)
+  if (vdc.sdnZoneName) {
+    const vnetRows = db.prepare('SELECT pve_name FROM vdc_vnets WHERE vdc_id = ?').all(id) as Array<{ pve_name: string }>
+    for (const v of vnetRows) {
+      try {
+        await deleteVnetPve(conn, v.pve_name)
+      } catch (err: any) {
+        console.warn(`[vdc] Failed to delete VNet "${v.pve_name}": ${err?.message}`)
+      }
+    }
+
+    // Delete the SDN zone
+    try {
+      await deleteZone(conn, vdc.sdnZoneName)
+    } catch (err: any) {
+      console.warn(`[vdc] Failed to delete SDN zone "${vdc.sdnZoneName}": ${err?.message}`)
+    }
+  }
+
+  // 4. Delete PVE pool (best effort)
   try {
     await pveFetch(conn, `/pools/${encodeURIComponent(vdc.pvePoolName)}`, { method: 'DELETE' })
   } catch (err: any) {
     console.warn(`[vdc] Failed to delete PVE pool "${vdc.pvePoolName}" (best effort): ${err?.message}`)
   }
 
-  // 4. Delete from DB (CASCADE handles child tables)
+  // 5. Apply SDN changes if zone was removed
+  if (vdc.sdnZoneName) {
+    try {
+      await applySdn(conn)
+    } catch (err: any) {
+      console.warn(`[vdc] applySdn failed after deleting zone "${vdc.sdnZoneName}": ${err?.message}`)
+    }
+  }
+
+  // 6. Delete from DB (CASCADE handles child tables)
   db.prepare('DELETE FROM vdcs WHERE id = ?').run(id)
 }
 
