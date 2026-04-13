@@ -5,6 +5,7 @@ import { getConnectionById } from "@/lib/connections/getConnection"
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
 import { getCurrentTenantId } from "@/lib/tenant"
 import { resolveVdcForTenant, checkVdcQuota } from "@/lib/vdc/quota"
+import { getAllowedBridgesForTenant, parseBridgeFromNet } from "@/lib/vdc/vnets"
 
 export const runtime = "nodejs"
 
@@ -70,6 +71,21 @@ export async function POST(
         return NextResponse.json({ error: 'This node is not authorized for your vDC' }, { status: 403 })
       }
       throw e
+    }
+
+    // Phase 4b: Enforce bridge whitelist
+    const allowedBridges = getAllowedBridgesForTenant(tenantId, id)
+    if (allowedBridges !== null) {
+      for (const key of Object.keys(body || {})) {
+        if (!/^net\d+$/.test(key)) continue
+        const bridge = parseBridgeFromNet(String(body[key] || ""))
+        if (bridge && !allowedBridges.has(bridge)) {
+          return NextResponse.json(
+            { error: `Bridge "${bridge}" is not authorized for this vDC. Allowed: ${Array.from(allowedBridges).join(", ")}` },
+            { status: 403 }
+          )
+        }
+      }
     }
 
     // Construire l'URL Proxmox
