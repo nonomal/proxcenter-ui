@@ -20,6 +20,10 @@ export interface VdcScope {
   storagesByConnection: Map<string, Set<string>>
   /** Per-connection: PVE pool names (VMs must be in one of these pools) */
   poolsByConnection: Map<string, Set<string>>
+  /** Per-connection: allowed SDN VNet names */
+  vnetsByConnection: Map<string, Set<string>>
+  /** Per-connection: allowed shared bridge names */
+  sharedBridgesByConnection: Map<string, Set<string>>
 }
 
 // ---------------------------------------------------------------------------
@@ -92,12 +96,16 @@ function buildVdcScope(tenantId: string): VdcScope | null {
   // 2. Prepare statements for child tables
   const stmtNodes = db.prepare('SELECT node_name FROM vdc_nodes WHERE vdc_id = ?')
   const stmtStorages = db.prepare('SELECT storage_id FROM vdc_storages WHERE vdc_id = ?')
+  const stmtVnets = db.prepare('SELECT pve_name FROM vdc_vnets WHERE vdc_id = ?')
+  const stmtShared = db.prepare('SELECT bridge FROM vdc_shared_bridges WHERE vdc_id = ?')
 
   // 3. Build the scope
   const connectionIds = new Set<string>()
   const nodesByConnection = new Map<string, Set<string>>()
   const storagesByConnection = new Map<string, Set<string>>()
   const poolsByConnection = new Map<string, Set<string>>()
+  const vnetsByConnection = new Map<string, Set<string>>()
+  const sharedBridgesByConnection = new Map<string, Set<string>>()
 
   for (const row of vdcRows) {
     const connId = row.connection_id
@@ -131,6 +139,24 @@ function buildVdcScope(tenantId: string): VdcScope | null {
     }
 
     poolsByConnection.get(connId)!.add(row.pve_pool_name)
+
+    // VNets: merge across multiple vDCs on the same connection
+    if (!vnetsByConnection.has(connId)) {
+      vnetsByConnection.set(connId, new Set())
+    }
+
+    for (const vr of stmtVnets.all(row.id) as Array<{ pve_name: string }>) {
+      vnetsByConnection.get(connId)!.add(vr.pve_name)
+    }
+
+    // Shared bridges: merge across multiple vDCs on the same connection
+    if (!sharedBridgesByConnection.has(connId)) {
+      sharedBridgesByConnection.set(connId, new Set())
+    }
+
+    for (const sb of stmtShared.all(row.id) as Array<{ bridge: string }>) {
+      sharedBridgesByConnection.get(connId)!.add(sb.bridge)
+    }
   }
 
   return {
@@ -138,6 +164,8 @@ function buildVdcScope(tenantId: string): VdcScope | null {
     nodesByConnection,
     storagesByConnection,
     poolsByConnection,
+    vnetsByConnection,
+    sharedBridgesByConnection,
   }
 }
 
