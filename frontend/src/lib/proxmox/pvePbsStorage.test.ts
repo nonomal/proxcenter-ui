@@ -49,18 +49,18 @@ describe('createPbsStorage', () => {
       nodes: ['pve01', 'pve02'],
     })
     expect(mock.mock.calls[1][1]).toBe('/storage')
-    expect(mock.mock.calls[1][2].body).toMatchObject({
-      storage: 'pbs-acme-prod',
-      type: 'pbs',
-      server: 'pbs.local',
-      datastore: 'store1',
-      namespace: 'tenant-acme/vdc-prod',
-      username: 'root@pam!vdc-abc',
-      password: 'sekret',
-      fingerprint: 'AA:BB:CC',
-      content: 'backup',
-      nodes: 'pve01,pve02',
-    })
+    const body = mock.mock.calls[1][2].body as URLSearchParams
+    expect(body).toBeInstanceOf(URLSearchParams)
+    expect(body.get('storage')).toBe('pbs-acme-prod')
+    expect(body.get('type')).toBe('pbs')
+    expect(body.get('server')).toBe('pbs.local')
+    expect(body.get('datastore')).toBe('store1')
+    expect(body.get('namespace')).toBe('tenant-acme/vdc-prod')
+    expect(body.get('username')).toBe('root@pam!vdc-abc')
+    expect(body.get('password')).toBe('sekret')
+    expect(body.get('fingerprint')).toBe('AA:BB:CC')
+    expect(body.get('content')).toBe('backup')
+    expect(body.get('nodes')).toBe('pve01,pve02')
   })
 
   it('skips POST when storage already exists', async () => {

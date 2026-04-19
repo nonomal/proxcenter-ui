@@ -33,22 +33,20 @@ export interface CreatePbsStorageArgs {
 
 export async function createPbsStorage(conn: PveConn, args: CreatePbsStorageArgs): Promise<void> {
   if (await pbsStorageExists(conn, args.storage)) return
-  const body: Record<string, any> = {
-    storage: args.storage,
-    type: 'pbs',
-    server: args.server,
-    datastore: args.datastore,
-    namespace: args.namespace,
-    username: args.username,
-    password: args.password,
-    fingerprint: args.fingerprint,
-    content: 'backup',
-  }
-  if (args.nodes.length) body.nodes = args.nodes.join(',')
-  if (args.port) body.port = args.port
-  const { password: _p, ...safe } = body
-  console.log(`[pve-pbs-storage] POST /storage (secret redacted):`, JSON.stringify(safe))
-  await pveFetch(conn, '/storage', { method: 'POST', body: body as any })
+  const params = new URLSearchParams()
+  params.append('storage', args.storage)
+  params.append('type', 'pbs')
+  params.append('server', args.server)
+  params.append('datastore', args.datastore)
+  params.append('namespace', args.namespace)
+  params.append('username', args.username)
+  params.append('password', args.password)
+  params.append('fingerprint', args.fingerprint)
+  params.append('content', 'backup')
+  if (args.nodes.length) params.append('nodes', args.nodes.join(','))
+  if (args.port) params.append('port', String(args.port))
+  console.log(`[pve-pbs-storage] POST /storage (form-encoded, secret redacted): storage=${args.storage} server=${args.server} datastore=${args.datastore} namespace=${args.namespace} username=${args.username} fingerprint=${args.fingerprint} nodes=${args.nodes.join(',')}`)
+  await pveFetch(conn, '/storage', { method: 'POST', body: params })
 }
 
 export async function deletePbsStorage(conn: PveConn, storage: string): Promise<void> {
