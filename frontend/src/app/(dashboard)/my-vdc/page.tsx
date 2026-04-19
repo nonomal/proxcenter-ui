@@ -3,10 +3,9 @@
 import { useEffect, useState } from 'react'
 import { useTranslations } from 'next-intl'
 
-import { Box, Typography, MenuItem, Select, FormControl, InputLabel, Alert, Stack, Divider } from '@mui/material'
+import { Box, Typography, MenuItem, Select, FormControl, InputLabel, Alert, Stack } from '@mui/material'
 
 import MyVdcOverview from '@/components/mydc/MyVdcOverview'
-import VnetList from '@/components/mydc/VnetList'
 
 export default function MyVdcPage() {
   const t = useTranslations()
@@ -65,11 +64,7 @@ export default function MyVdcPage() {
       </Stack>
 
       {selectedVdc && (
-        <>
-          <MyVdcOverview vdc={selectedVdc} />
-          <Divider sx={{ my: 3 }} />
-          <VnetList vdcId={selectedVdc.id} quota={selectedVdc.quota} />
-        </>
+        <MyVdcOverview vdc={selectedVdc} />
       )}
     </Box>
   )

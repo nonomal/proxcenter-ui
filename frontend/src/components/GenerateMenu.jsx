@@ -110,7 +110,7 @@ export const GenerateVerticalMenu = ({ menuData }) => {
       }
 
       // If the current item is neither a section nor a sub menu, return a MenuItem component
-      const { label, icon, prefix, suffix, permissions, requiredFeature, ...rest } = menuItem
+      const { label, icon, prefix, suffix, permissions, requiredFeature, requires, ...rest } = menuItem
 
       const Icon = icon ? <i className={icon} /> : null
       const menuItemPrefix = prefix && prefix.label ? <Chip size='small' {...prefix} /> : prefix
@@ -197,7 +197,7 @@ export const GenerateHorizontalMenu = ({ menuData }) => {
       }
 
       // If the current item is not a sub menu, return a MenuItem component
-      const { label, icon, prefix, suffix, permissions, requiredFeature, ...rest } = menuItem
+      const { label, icon, prefix, suffix, permissions, requiredFeature, requires, ...rest } = menuItem
 
       const Icon = icon ? <i className={icon} /> : null
       const menuItemPrefix = prefix && prefix.label ? <Chip size='small' {...prefix} /> : prefix
