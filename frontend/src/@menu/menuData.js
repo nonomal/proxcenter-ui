@@ -6,8 +6,14 @@ export const menuData = (t = (key) => key) => [
     label: t('navigation.dashboard'),
     icon: 'ri-dashboard-line',
     href: '/home',
-
-    // Accessible à tous les utilisateurs authentifiés
+    requires: { hasVdc: false }, // provider / tenant-without-vdc landing
+  },
+  {
+    label: t('navigation.myVdc'),
+    icon: 'ri-cloud-line',
+    href: '/my-vdc',
+    permissions: ['sdn.vnet.view'],
+    requires: { hasVdc: true }, // tenant cockpit
   },
 
   {
@@ -20,12 +26,6 @@ export const menuData = (t = (key) => key) => [
         icon: 'ri-database-fill',
         href: '/infrastructure/inventory',
         permissions: ['vm.view', 'node.view'] // Au moins une de ces permissions
-      },
-      {
-        label: t('navigation.myVdc'),
-        icon: 'ri-cloud-line',
-        href: '/my-vdc',
-        permissions: ['sdn.vnet.view']
       },
       {
         label: t('navigation.topology'),

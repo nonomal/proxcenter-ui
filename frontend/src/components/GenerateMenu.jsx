@@ -13,14 +13,20 @@ import { useRBAC } from '@/contexts/RBACContext'
 // License Hook
 import { useLicense } from '@/contexts/LicenseContext'
 
+// VDC Hook
+import { useMyVdcs } from '@/hooks/useMyVdcs'
+
 // Generate a menu from the menu data array
 export const GenerateVerticalMenu = ({ menuData }) => {
   const { hasAnyPermission, loading } = useRBAC()
   const { hasFeature, loading: licenseLoading } = useLicense()
+  const { hasVdc, loading: vdcLoading } = useMyVdcs()
 
   // Fonction pour vérifier si un item doit être affiché (RBAC)
   const canView = (item) => {
-    if (loading) return true // Afficher pendant le chargement
+    if (loading || vdcLoading) return true // Afficher pendant le chargement
+    if (item.requires?.hasVdc === true && !hasVdc) return false
+    if (item.requires?.hasVdc === false && hasVdc) return false
     if (!item.permissions || item.permissions.length === 0) return true
 
     return hasAnyPermission(item.permissions)
@@ -131,9 +137,12 @@ export const GenerateVerticalMenu = ({ menuData }) => {
 export const GenerateHorizontalMenu = ({ menuData }) => {
   const { hasAnyPermission, loading } = useRBAC()
   const { hasFeature, loading: licenseLoading } = useLicense()
+  const { hasVdc, loading: vdcLoading } = useMyVdcs()
 
   const canView = (item) => {
-    if (loading) return true
+    if (loading || vdcLoading) return true // Afficher pendant le chargement
+    if (item.requires?.hasVdc === true && !hasVdc) return false
+    if (item.requires?.hasVdc === false && hasVdc) return false
     if (!item.permissions || item.permissions.length === 0) return true
 
     return hasAnyPermission(item.permissions)
