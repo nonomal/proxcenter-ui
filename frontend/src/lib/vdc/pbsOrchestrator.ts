@@ -116,14 +116,19 @@ export async function bindPbsToVdc(args: BindAutoArgs): Promise<{ binding: PbsBi
 
     const steps: StepStatus = { namespace: 'skipped', token: 'skipped', acl: 'skipped', pveStorages: [] }
 
+    console.log(`[pbs-orchestrator] bind vdc=${args.vdcId} pbs=${args.pbsConnectionId} store=${args.datastore} ns=${namespace} base=${pbs.conn.baseUrl} rootUser=${pbs.rootUser}`)
+
     await ensureNamespacePath(pbs.conn, args.datastore, namespace)
+    console.log(`[pbs-orchestrator] namespace ensured: ${namespace}`)
     steps.namespace = 'ok'
 
     const tokenShortId = `vdc-${args.vdcId.slice(0, 8)}`
     let tokenResult = await ensureSubToken(pbs.conn, pbs.rootUser, tokenShortId)
+    console.log(`[pbs-orchestrator] ensureSubToken first call → tokenId=${tokenResult.tokenId} secret=${tokenResult.secret ? 'yes' : 'no'}`)
     if (!tokenResult.secret) {
       await deleteSubToken(pbs.conn, pbs.rootUser, tokenShortId)
       tokenResult = await ensureSubToken(pbs.conn, pbs.rootUser, tokenShortId)
+      console.log(`[pbs-orchestrator] ensureSubToken after rotate → tokenId=${tokenResult.tokenId} secret=${tokenResult.secret ? 'yes' : 'no'}`)
       if (!tokenResult.secret) throw new Error('Failed to mint sub-token (no secret)')
     }
     steps.token = 'ok'
@@ -131,10 +136,8 @@ export async function bindPbsToVdc(args: BindAutoArgs): Promise<{ binding: PbsBi
     const effectiveSecret = tokenResult.secret
 
     await setNamespaceAcl(pbs.conn, args.datastore, namespace, effectiveTokenId)
-    // Grant DatastoreAudit on the datastore root (propagate=false) so PVE's
-    // pbs: storage probe can confirm the datastore exists. Isolation remains
-    // intact because siblings namespaces are not covered.
     await setDatastoreAuditAcl(pbs.conn, args.datastore, effectiveTokenId)
+    console.log(`[pbs-orchestrator] ACLs set on ${args.datastore} for ${effectiveTokenId}`)
     steps.acl = 'ok'
 
     const binding = insertBinding({
