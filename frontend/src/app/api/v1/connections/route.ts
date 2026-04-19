@@ -57,6 +57,7 @@ export async function GET(req: Request) {
         latitude: true,
         longitude: true,
         locationLabel: true,
+        fingerprint: true,
         // SSH fields (sans les secrets)
         sshEnabled: true,
         sshPort: true,
