@@ -819,7 +819,44 @@
       "osPresets": "Presets rapides",
       "installMedia": "Média d'installation",
       "hardware": "Matériel",
-      "uefiHint": "UEFI nécessite une machine q35 et un disque EFI sera ajouté automatiquement."
+      "uefiHint": "UEFI nécessite une machine q35 et un disque EFI sera ajouté automatiquement.",
+      "vlanTagVnetPlaceholder": "géré par le VNet",
+      "vlanTagVnetHint": "Non applicable : les VNets VXLAN portent leur propre isolation via le VNI.",
+      "quotaBanner": {
+        "title": "Quota vDC",
+        "titleBlocked": "Quota vDC dépassé",
+        "unlimited": "Illimité",
+        "labels": {
+          "vcpus": "vCPUs",
+          "ram": "RAM",
+          "storage": "Stockage",
+          "vms": "VMs"
+        },
+        "violations": {
+          "vcpus": "vCPUs : {projected} demandés, limite {max}",
+          "ramGb": "RAM : {projected} Go demandés, limite {max} Go",
+          "storageGb": "Stockage : {projected} Go demandés, limite {max} Go",
+          "vms": "VMs : {projected} demandées, limite {max}"
+        }
+      },
+      "emptyState": {
+        "noStorage": "Aucun stockage disponible",
+        "noImageStorage": "Aucun stockage ne supporte les disques VM",
+        "imageStorageHint": "Les stockages de votre vDC ne supportent pas le contenu « images ». Demandez au provider d'en ajouter un (ex. lvm-thin, ceph, zfs).",
+        "noBridge": "Aucun réseau autorisé",
+        "bridgeHint": "Créez un VNet dans « Mon Datacenter » ou demandez au provider un bridge partagé."
+      },
+      "confirmStep": {
+        "ready": "Prêt à créer. Vérifiez le récapitulatif ci-dessous puis cliquez sur Créer.",
+        "blockersTitle": "Corrigez les points suivants avant de créer la VM :",
+        "noVmid": "Aucun VMID défini (onglet Général).",
+        "invalidVmid": "VMID invalide : {error}",
+        "noNode": "Aucun nœud sélectionné (onglet Général).",
+        "quotaViolation": "Quota dépassé — {violation} (onglet CPU / Mémoire / Disques).",
+        "noBridgeBlocker": "Aucun bridge autorisé dans votre vDC. Créez un VNet dans « Mon Datacenter » ou demandez au provider un bridge partagé — ou cochez « Pas de carte réseau ».",
+        "invalidBridgeBlocker": "Bridge non autorisé sur {nicDetails}. Choisissez un bridge proposé dans l'onglet Réseau.",
+        "nicLabel": "NIC {index} (bridge « {bridge} »)"
+      }
     },
     "createLxc": {
       "title": "Créer : Conteneur LXC",

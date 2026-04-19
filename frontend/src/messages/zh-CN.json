@@ -790,7 +790,44 @@
       "osPresets": "快速预设",
       "installMedia": "安装介质",
       "hardware": "硬件",
-      "uefiHint": "UEFI 需要 q35 机器类型，EFI 磁盘将自动添加。"
+      "uefiHint": "UEFI 需要 q35 机器类型，EFI 磁盘将自动添加。",
+      "vlanTagVnetPlaceholder": "由 VNet 管理",
+      "vlanTagVnetHint": "不适用：VXLAN VNet 通过 VNI 自带隔离。",
+      "quotaBanner": {
+        "title": "vDC 配额",
+        "titleBlocked": "vDC 配额已超出",
+        "unlimited": "无限制",
+        "labels": {
+          "vcpus": "vCPUs",
+          "ram": "内存",
+          "storage": "存储",
+          "vms": "虚拟机"
+        },
+        "violations": {
+          "vcpus": "vCPUs：请求 {projected}，上限 {max}",
+          "ramGb": "内存：请求 {projected} GB，上限 {max} GB",
+          "storageGb": "存储：请求 {projected} GB，上限 {max} GB",
+          "vms": "虚拟机：请求 {projected}，上限 {max}"
+        }
+      },
+      "emptyState": {
+        "noStorage": "无可用存储",
+        "noImageStorage": "无支持虚拟机磁盘的存储",
+        "imageStorageHint": "您的 vDC 中的存储不支持 \"images\" 内容类型。请联系提供商添加一个（如 lvm-thin、ceph、zfs）。",
+        "noBridge": "无授权网络",
+        "bridgeHint": "在 \"我的数据中心\" 创建 VNet 或向提供商申请共享网桥。"
+      },
+      "confirmStep": {
+        "ready": "可以创建。请确认下方摘要后点击 Create。",
+        "blockersTitle": "创建虚拟机前请修复以下项：",
+        "noVmid": "缺少 VMID（常规标签页）。",
+        "invalidVmid": "VMID 无效：{error}",
+        "noNode": "未选择节点（常规标签页）。",
+        "quotaViolation": "配额超出 — {violation}（CPU / 内存 / 磁盘 标签页）。",
+        "noBridgeBlocker": "您的 vDC 未授权任何网桥。请在 \"我的数据中心\" 创建 VNet、向提供商申请共享网桥，或勾选 \"无网卡\"。",
+        "invalidBridgeBlocker": "{nicDetails} 上的网桥未授权。请在网络标签页中选择允许的网桥。",
+        "nicLabel": "NIC {index}（网桥 \"{bridge}\"）"
+      }
     },
     "createLxc": {
       "title": "创建：LXC 容器",
@@ -5491,5 +5528,29 @@
     "noTimelineData": "此对端没有可用的时间线数据（需要 InfluxDB）",
     "compare": "对比",
     "yesterday": "昨天"
+  },
+  "myVdc": {
+    "title": "我的数据中心",
+    "selectVdc": "选择 vDC",
+    "noVdcs": "您的租户未分配任何虚拟数据中心。",
+    "nodes": "节点",
+    "storages": "存储",
+    "quotas": "配额与使用",
+    "uplinks": "提供商上行链路（授权的共享网桥）",
+    "noUplinks": "提供商未授权任何上行链路。",
+    "vnetsTitle": "我的 VNet",
+    "createVnet": "创建 VNet",
+    "vnetName": "名称",
+    "vnetNameHint": "小写字母和数字，以字母开头，最多 15 个字符。",
+    "vnetDescription": "描述",
+    "vnetFirewall": "防火墙",
+    "vnetFirewallToggle": "启用 VNet 防火墙",
+    "vnetVniAutoAllocated": "VNI 由 ProxCenter 自动分配。",
+    "fwOn": "开",
+    "fwOff": "关",
+    "errorInvalidName": "名称无效。必须匹配 ^[a-z][a-z0-9]{0,14}$（例如 prodlan、dmz、app1）。",
+    "deleteVnetTitle": "删除 VNet",
+    "deleteVnetConfirm": "确定要删除 VNet \"{name}\" 吗？",
+    "deleteVnetHint": "VNet 不能连接任何 NIC。如果仍有 VM 使用它，删除将被拒绝。"
   }
 }

@@ -819,7 +819,44 @@
       "osPresets": "Quick presets",
       "installMedia": "Installation media",
       "hardware": "Hardware",
-      "uefiHint": "UEFI requires a q35 machine type and an EFI disk will be added automatically."
+      "uefiHint": "UEFI requires a q35 machine type and an EFI disk will be added automatically.",
+      "vlanTagVnetPlaceholder": "handled by VNet",
+      "vlanTagVnetHint": "Not applicable: VXLAN VNets carry their own isolation via the VNI.",
+      "quotaBanner": {
+        "title": "vDC quota",
+        "titleBlocked": "vDC quota exceeded",
+        "unlimited": "Unlimited",
+        "labels": {
+          "vcpus": "vCPUs",
+          "ram": "RAM",
+          "storage": "Storage",
+          "vms": "VMs"
+        },
+        "violations": {
+          "vcpus": "vCPUs: {projected} requested, limit {max}",
+          "ramGb": "RAM: {projected} GB requested, limit {max} GB",
+          "storageGb": "Storage: {projected} GB requested, limit {max} GB",
+          "vms": "VMs: {projected} requested, limit {max}"
+        }
+      },
+      "emptyState": {
+        "noStorage": "No storage available",
+        "noImageStorage": "No storage supports VM disks",
+        "imageStorageHint": "Storages in your vDC don't allow \"images\" content. Ask the provider to add one (e.g. lvm-thin, ceph, zfs).",
+        "noBridge": "No network authorised",
+        "bridgeHint": "Create a VNet in \"My Datacenter\" or ask the provider for a shared bridge."
+      },
+      "confirmStep": {
+        "ready": "Ready to create. Review the summary below and click Create.",
+        "blockersTitle": "Fix the following before creating the VM:",
+        "noVmid": "VMID missing (General tab).",
+        "invalidVmid": "Invalid VMID: {error}",
+        "noNode": "No node selected (General tab).",
+        "quotaViolation": "Quota exceeded — {violation} (CPU / Memory / Disks tab).",
+        "noBridgeBlocker": "No bridge authorised in your vDC. Create a VNet in \"My Datacenter\" or ask the provider for a shared bridge — or tick \"No network device\".",
+        "invalidBridgeBlocker": "Bridge not authorised on {nicDetails}. Pick one of the allowed bridges in the Network tab.",
+        "nicLabel": "NIC {index} (bridge \"{bridge}\")"
+      }
     },
     "createLxc": {
       "title": "Create: LXC Container",

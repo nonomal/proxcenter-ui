@@ -786,7 +786,44 @@
       "osPresets": "Schnellvorlagen",
       "installMedia": "Installationsmedium",
       "hardware": "Hardware",
-      "uefiHint": "UEFI erfordert einen q35-Maschinentyp und ein EFI-Disk wird automatisch hinzugefügt."
+      "uefiHint": "UEFI erfordert einen q35-Maschinentyp und ein EFI-Disk wird automatisch hinzugefügt.",
+      "vlanTagVnetPlaceholder": "vom VNet verwaltet",
+      "vlanTagVnetHint": "Nicht anwendbar: VXLAN-VNets tragen ihre eigene Isolation über die VNI.",
+      "quotaBanner": {
+        "title": "vDC-Kontingent",
+        "titleBlocked": "vDC-Kontingent überschritten",
+        "unlimited": "Unbegrenzt",
+        "labels": {
+          "vcpus": "vCPUs",
+          "ram": "RAM",
+          "storage": "Speicher",
+          "vms": "VMs"
+        },
+        "violations": {
+          "vcpus": "vCPUs: {projected} angefragt, Limit {max}",
+          "ramGb": "RAM: {projected} GB angefragt, Limit {max} GB",
+          "storageGb": "Speicher: {projected} GB angefragt, Limit {max} GB",
+          "vms": "VMs: {projected} angefragt, Limit {max}"
+        }
+      },
+      "emptyState": {
+        "noStorage": "Kein Speicher verfügbar",
+        "noImageStorage": "Kein Speicher unterstützt VM-Disks",
+        "imageStorageHint": "Die Speicher Ihres vDC erlauben keinen „images“-Inhalt. Bitten Sie den Provider, einen hinzuzufügen (z. B. lvm-thin, ceph, zfs).",
+        "noBridge": "Kein Netzwerk autorisiert",
+        "bridgeHint": "Erstellen Sie ein VNet in „Mein Datacenter“ oder bitten Sie den Provider um eine geteilte Bridge."
+      },
+      "confirmStep": {
+        "ready": "Bereit zur Erstellung. Prüfen Sie die Zusammenfassung unten und klicken Sie auf Create.",
+        "blockersTitle": "Beheben Sie Folgendes vor der VM-Erstellung:",
+        "noVmid": "VMID fehlt (Tab Allgemein).",
+        "invalidVmid": "Ungültige VMID: {error}",
+        "noNode": "Kein Knoten ausgewählt (Tab Allgemein).",
+        "quotaViolation": "Kontingent überschritten — {violation} (Tab CPU / Speicher / Disks).",
+        "noBridgeBlocker": "Keine Bridge in Ihrem vDC autorisiert. Erstellen Sie ein VNet in „Mein Datacenter“ oder bitten Sie den Provider um eine geteilte Bridge — oder aktivieren Sie „Keine Netzwerkkarte“.",
+        "invalidBridgeBlocker": "Bridge nicht autorisiert auf {nicDetails}. Wählen Sie eine erlaubte Bridge im Tab Netzwerk.",
+        "nicLabel": "NIC {index} (Bridge „{bridge}“)"
+      }
     },
     "createLxc": {
       "title": "erstellen: LXC Container",
@@ -5493,5 +5530,29 @@
     "noTimelineData": "Keine Zeitreihendaten für dieses Paar verfügbar (erfordert InfluxDB)",
     "compare": "Vergleichen",
     "yesterday": "Gestern"
+  },
+  "myVdc": {
+    "title": "Mein Datacenter",
+    "selectVdc": "vDC auswählen",
+    "noVdcs": "Ihrem Mandanten ist kein virtuelles Datacenter zugewiesen.",
+    "nodes": "Knoten",
+    "storages": "Speicher",
+    "quotas": "Kontingente & Nutzung",
+    "uplinks": "Provider-Uplinks (autorisierte geteilte Bridges)",
+    "noUplinks": "Keine vom Provider autorisierten Uplinks.",
+    "vnetsTitle": "Meine VNets",
+    "createVnet": "VNet erstellen",
+    "vnetName": "Name",
+    "vnetNameHint": "Kleinbuchstaben und Ziffern, muss mit einem Buchstaben beginnen, max. 15 Zeichen.",
+    "vnetDescription": "Beschreibung",
+    "vnetFirewall": "Firewall",
+    "vnetFirewallToggle": "VNet-Firewall aktivieren",
+    "vnetVniAutoAllocated": "Die VNI wird von ProxCenter automatisch zugewiesen.",
+    "fwOn": "Ein",
+    "fwOff": "Aus",
+    "errorInvalidName": "Ungültiger Name. Muss auf ^[a-z][a-z0-9]{0,14}$ passen (z. B. prodlan, dmz, app1).",
+    "deleteVnetTitle": "VNet löschen",
+    "deleteVnetConfirm": "Sind Sie sicher, dass Sie das VNet „{name}“ löschen möchten?",
+    "deleteVnetHint": "Das VNet darf keine NIC angebunden haben. Wenn es noch von VMs verwendet wird, wird die Löschung abgelehnt."
   }
 }
