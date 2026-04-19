@@ -29,7 +29,7 @@ export async function ensureNamespace(
 
   await pbsFetch(conn, `/admin/datastore/${encodeURIComponent(datastore)}/namespace`, {
     method: 'POST',
-    body,
+    body: body as any,
   })
 }
 
@@ -66,7 +66,7 @@ export async function ensureSubToken(
   const created = await pbsFetch<any>(
     conn,
     `/access/users/${user}/token/${tokenId}`,
-    { method: 'POST', body: {} },
+    { method: 'POST', body: {} as any },
   )
   return { tokenId: created.tokenid ?? full, secret: created.value ?? null }
 }
@@ -85,7 +85,7 @@ export async function setNamespaceAcl(
       'auth-id': authId,
       role,
       propagate: 1,
-    },
+    } as any,
   })
 }
 

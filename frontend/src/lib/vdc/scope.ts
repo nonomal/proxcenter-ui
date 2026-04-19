@@ -24,6 +24,8 @@ export interface VdcScope {
   vnetsByConnection: Map<string, Set<string>>
   /** Per-connection: allowed shared bridge names */
   sharedBridgesByConnection: Map<string, Set<string>>
+  /** Per-PBS-connection: list of { datastore, namespace } the tenant is authorised on. */
+  pbsNamespacesByConnection: Map<string, Array<{ datastore: string; namespace: string }>>
 }
 
 // ---------------------------------------------------------------------------
@@ -164,6 +166,18 @@ function buildVdcScope(tenantId: string): VdcScope | null {
     }
   }
 
+  const pbsNamespacesByConnection = new Map<string, Array<{ datastore: string; namespace: string }>>()
+  const stmtPbs = db.prepare(
+    `SELECT pbs_connection_id, datastore, namespace FROM vdc_pbs_namespaces WHERE vdc_id = ?`
+  )
+  for (const row of vdcRows) {
+    for (const pr of stmtPbs.all(row.id) as Array<{ pbs_connection_id: string; datastore: string; namespace: string }>) {
+      const list = pbsNamespacesByConnection.get(pr.pbs_connection_id) ?? []
+      list.push({ datastore: pr.datastore, namespace: pr.namespace })
+      pbsNamespacesByConnection.set(pr.pbs_connection_id, list)
+    }
+  }
+
   return {
     connectionIds,
     nodesByConnection,
@@ -171,6 +185,7 @@ function buildVdcScope(tenantId: string): VdcScope | null {
     poolsByConnection,
     vnetsByConnection,
     sharedBridgesByConnection,
+    pbsNamespacesByConnection,
   }
 }
 

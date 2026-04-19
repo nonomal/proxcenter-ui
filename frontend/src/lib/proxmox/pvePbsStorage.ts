@@ -44,7 +44,7 @@ export async function createPbsStorage(conn: PveConn, args: CreatePbsStorageArgs
   }
   if (args.nodes.length) body.nodes = args.nodes.join(',')
   if (args.port) body.port = args.port
-  await pveFetch(conn, '/storage', { method: 'POST', body })
+  await pveFetch(conn, '/storage', { method: 'POST', body: body as any })
 }
 
 export async function deletePbsStorage(conn: PveConn, storage: string): Promise<void> {
