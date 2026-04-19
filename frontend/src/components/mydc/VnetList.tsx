@@ -73,8 +73,7 @@ export default function VnetList({ vdcId, quota }: Props) {
 
   return (
     <Box>
-      <Stack direction="row" justifyContent="space-between" alignItems="center" mb={2}>
-        <Typography variant="h6">{t('myVdc.vnetsTitle')}</Typography>
+      <Stack direction="row" justifyContent="flex-end" alignItems="center" mb={2}>
         <Button
           variant="contained"
           startIcon={<i className="ri-add-line" />}
@@ -95,7 +94,8 @@ export default function VnetList({ vdcId, quota }: Props) {
         density="compact"
         rowHeight={38}
         columnHeaderHeight={40}
-        pageSizeOptions={[10, 25, 50]}
+        pageSizeOptions={[5, 10, 25]}
+        initialState={{ pagination: { paginationModel: { pageSize: 5 } } }}
         sx={{
           '& .MuiDataGrid-cell': {
             display: 'flex',

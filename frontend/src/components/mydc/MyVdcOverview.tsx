@@ -1,85 +1,91 @@
 'use client'
 
-import { useEffect, useState } from 'react'
 import { useTranslations } from 'next-intl'
 
-import { Box, Typography, Stack, Chip, Paper } from '@mui/material'
+import { Box, Paper, Typography } from '@mui/material'
 
 import QuotaDonut from './QuotaDonut'
+import UplinksCard from './UplinksCard'
+import MyStoragesCard from './MyStoragesCard'
+import MyVmsCard from './MyVmsCard'
+import VnetList from './VnetList'
 
 interface Props {
   vdc: any
 }
 
+/**
+ * Tenant cockpit for a single vDC: quota donuts across the top, then a
+ * 2-column grid (1 column on mobile) with VMs / VNets / Storages / Uplinks.
+ * All data-fetching lives in the children; this file composes.
+ */
 export default function MyVdcOverview({ vdc }: Props) {
   const t = useTranslations()
-  const [sharedBridges, setSharedBridges] = useState<Array<{ bridge: string; label: string | null }>>([])
-
-  useEffect(() => {
-    void (async () => {
-      try {
-        const res = await fetch(`/api/v1/vdcs/${encodeURIComponent(vdc.id)}/shared-bridges`)
-        const json = await res.json()
-        setSharedBridges(Array.isArray(json.data) ? json.data : [])
-      } catch {}
-    })()
-  }, [vdc.id])
-
   const usage = vdc.usage || {}
   const quota = vdc.quota || {}
   const unlimitedLabel = t('vdc.quotaUnlimited')
   const formatMbAsGb = (mb: number) => `${(mb / 1024).toFixed(1)} GB`
 
+  const connectionIds: string[] = vdc.connectionId ? [vdc.connectionId] : []
+  const allowedStorages: string[] = Array.isArray(vdc.storages) ? vdc.storages : []
+
   return (
-    <Paper sx={{ p: 2 }}>
-      <Typography variant="h6" gutterBottom>{vdc.name}</Typography>
-
-      <Stack direction="row" spacing={3} mb={2} flexWrap="wrap">
-        <Box><Typography variant="caption" color="text.secondary">{t('myVdc.nodes')}</Typography><Typography>{(vdc.nodes || []).join(', ')}</Typography></Box>
-        <Box><Typography variant="caption" color="text.secondary">{t('myVdc.storages')}</Typography><Typography>{(vdc.storages || []).join(', ')}</Typography></Box>
-      </Stack>
-
-      <Typography variant="subtitle2" sx={{ mt: 2 }}>{t('myVdc.quotas')}</Typography>
-      <Box
-        sx={{
-          mt: 2,
-          display: 'grid',
-          gap: 2,
-          gridTemplateColumns: {
-            xs: 'repeat(2, 1fr)',
-            sm: 'repeat(4, 1fr)',
-          },
-          justifyItems: 'center',
-        }}
-      >
-        <QuotaDonut icon="ri-cpu-line" label={t('vdc.maxVcpus')} used={usage.usedVcpus || 0} max={quota.maxVcpus} unlimitedLabel={unlimitedLabel} />
-        <QuotaDonut
-          icon="ri-ram-2-line"
-          label={t('vdc.maxRam')}
-          used={usage.usedRamMb || 0}
-          max={quota.maxRamMb ?? null}
-          formatValue={formatMbAsGb}
-          unlimitedLabel={unlimitedLabel}
-        />
-        <QuotaDonut icon="ri-computer-line" label={t('vdc.maxVms')} used={usage.usedVms || 0} max={quota.maxVms} unlimitedLabel={unlimitedLabel} />
-        <QuotaDonut icon="ri-git-branch-line" label={t('vdc.maxVnets')} used={(vdc.vnets || []).length} max={quota.maxVnets} unlimitedLabel={unlimitedLabel} />
+    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+      {/* Header */}
+      <Box>
+        <Typography variant="h6">{vdc.name}</Typography>
+        {vdc.description && (
+          <Typography variant="caption" color="text.secondary">{vdc.description}</Typography>
+        )}
       </Box>
 
-      <Typography variant="subtitle2" sx={{ mt: 2 }}>{t('myVdc.uplinks')}</Typography>
-      <Stack direction="row" spacing={1} flexWrap="wrap" mt={1}>
-        {sharedBridges.length === 0 ? (
-          <Typography variant="caption" color="text.secondary">{t('myVdc.noUplinks')}</Typography>
-        ) : (
-          sharedBridges.map((sb) => (
-            <Chip
-              key={sb.bridge}
-              label={sb.label ? `${sb.bridge} — ${sb.label}` : sb.bridge}
-              size="small"
-              sx={{ fontFamily: 'monospace' }}
-            />
-          ))
-        )}
-      </Stack>
-    </Paper>
+      {/* Block 1: Quota donuts */}
+      <Paper sx={{ p: 2 }} variant="outlined">
+        <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 1.5, display: 'flex', alignItems: 'center', gap: 1 }}>
+          <i className="ri-gauge-line" />
+          {t('myVdc.quotas')}
+        </Typography>
+        <Box
+          sx={{
+            display: 'grid',
+            gap: 2,
+            gridTemplateColumns: { xs: 'repeat(2, 1fr)', sm: 'repeat(4, 1fr)' },
+            justifyItems: 'center',
+          }}
+        >
+          <QuotaDonut icon="ri-cpu-line" label={t('vdc.maxVcpus')} used={usage.usedVcpus || 0} max={quota.maxVcpus} unlimitedLabel={unlimitedLabel} />
+          <QuotaDonut
+            icon="ri-ram-2-line"
+            label={t('vdc.maxRam')}
+            used={usage.usedRamMb || 0}
+            max={quota.maxRamMb ?? null}
+            formatValue={formatMbAsGb}
+            unlimitedLabel={unlimitedLabel}
+          />
+          <QuotaDonut icon="ri-computer-line" label={t('vdc.maxVms')} used={usage.usedVms || 0} max={quota.maxVms} unlimitedLabel={unlimitedLabel} />
+          <QuotaDonut icon="ri-git-branch-line" label={t('vdc.maxVnets')} used={(vdc.vnets || []).length} max={quota.maxVnets} unlimitedLabel={unlimitedLabel} />
+        </Box>
+      </Paper>
+
+      {/* Blocks 2-5 in a 2x2 grid */}
+      <Box
+        sx={{
+          display: 'grid',
+          gap: 2,
+          gridTemplateColumns: { xs: '1fr', md: '1fr 1fr' },
+        }}
+      >
+        <MyVmsCard connectionIds={connectionIds} />
+        <Paper sx={{ p: 2 }} variant="outlined">
+          <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 1.5, display: 'flex', alignItems: 'center', gap: 1 }}>
+            <i className="ri-git-branch-line" />
+            {t('myVdc.vnetsTitle')}
+          </Typography>
+          <VnetList vdcId={vdc.id} quota={{ maxVnets: quota.maxVnets ?? null }} />
+        </Paper>
+        <MyStoragesCard connectionIds={connectionIds} allowedStorages={allowedStorages} />
+        <UplinksCard vdcId={vdc.id} />
+      </Box>
+    </Box>
   )
 }
