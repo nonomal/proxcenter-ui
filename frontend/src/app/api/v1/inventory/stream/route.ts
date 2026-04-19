@@ -139,6 +139,68 @@ function scopeStorageDataForTenant(
   return { ...data, nodes, sharedStorages: [] }
 }
 
+/**
+ * Restrict a PbsServerData payload to the namespaces the tenant's vDC allows.
+ * Counts are recomputed from only the permitted namespaces.
+ * Returns null if no datastores remain after filtering (caller should skip the send).
+ */
+async function scopePbsDataForTenant(
+  data: PbsServerData,
+  scope: ReturnType<typeof getVdcScope>,
+): Promise<PbsServerData | null> {
+  if (!scope) return data
+  const allowed = scope.pbsNamespacesByConnection.get(data.id)
+  if (!allowed || allowed.length === 0) return null
+
+  const { getPbsConnectionById } = await import('@/lib/connections/getConnection')
+  const { listSnapshotsInNamespace } = await import('@/lib/proxmox/pbsNamespace')
+  const conn = await getPbsConnectionById(data.id).catch(() => null)
+  if (!conn) return null
+
+  const byStore = new Map<string, string[]>()
+  for (const { datastore, namespace } of allowed) {
+    const list = byStore.get(datastore) ?? []
+    list.push(namespace)
+    byStore.set(datastore, list)
+  }
+
+  let vmCount = 0, ctCount = 0, hostCount = 0, backupCount = 0
+  const datastores: PbsDatastoreData[] = []
+
+  for (const ds of data.datastores) {
+    const namespaces = byStore.get(ds.name)
+    if (!namespaces) continue
+    let dsVm = 0, dsCt = 0, dsHost = 0, dsBackup = 0
+    for (const ns of namespaces) {
+      try {
+        const snapshots = await listSnapshotsInNamespace(conn, ds.name, ns)
+        for (const s of snapshots) {
+          dsBackup++
+          const t = s['backup-type']
+          if (t === 'vm') dsVm++
+          else if (t === 'ct') dsCt++
+          else if (t === 'host') dsHost++
+        }
+      } catch { /* ignore per-namespace failure */ }
+    }
+    datastores.push({ ...ds, backupCount: dsBackup, vmCount: dsVm, ctCount: dsCt, hostCount: dsHost })
+    vmCount += dsVm; ctCount += dsCt; hostCount += dsHost; backupCount += dsBackup
+  }
+
+  if (datastores.length === 0) return null
+
+  return {
+    ...data,
+    datastores,
+    stats: {
+      datastoreCount: datastores.length,
+      backupCount,
+      totalSize: datastores.reduce((s, d) => s + d.total, 0),
+      totalUsed: datastores.reduce((s, d) => s + d.used, 0),
+    },
+  }
+}
+
 type PbsDatastoreData = {
   name: string
   path?: string
@@ -572,43 +634,47 @@ export async function GET(request: NextRequest) {
     const vdcScope = getVdcScope(tenantId)
 
     const stream = new ReadableStream({
-      start(controller) {
+      async start(controller) {
         const send = (event: string, data: any) => {
           controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`))
         }
 
-        // Filter clusters visible to this tenant's vDC scope
-        const visibleClusters = vdcScope
-          ? cached.clusters.filter(c => vdcScope.connectionIds.has(c.id))
-          : cached.clusters
+        try {
+          // Filter clusters visible to this tenant's vDC scope
+          const visibleClusters = vdcScope
+            ? cached.clusters.filter(c => vdcScope.connectionIds.has(c.id))
+            : cached.clusters
 
-        send('init', {
-          totalPve: visibleClusters.length,
-          totalPbs: cached.pbsServers.length,
-          totalExt: cached.externalHypervisors.length,
-          cached: true,
-        })
+          send('init', {
+            totalPve: visibleClusters.length,
+            totalPbs: cached.pbsServers.length,
+            totalExt: cached.externalHypervisors.length,
+            cached: true,
+          })
 
-        for (const cluster of visibleClusters) {
-          send('cluster', applyVdcFilter(applyRbacToCluster(cluster, rbacCtx), vdcScope))
-        }
-        for (const pbs of cached.pbsServers) {
-          send('pbs', pbs)
-        }
-        if (cached.storages) {
-          const visibleStorages = vdcScope
-            ? cached.storages.filter((s: any) => vdcScope.connectionIds.has(s.connId))
-            : cached.storages
-          for (const storage of visibleStorages) {
-            const scoped = scopeStorageDataForTenant(storage, vdcScope)
-            if (scoped) send('storage', scoped)
+          for (const cluster of visibleClusters) {
+            send('cluster', applyVdcFilter(applyRbacToCluster(cluster, rbacCtx), vdcScope))
           }
+          for (const pbs of cached.pbsServers) {
+            const scoped = await scopePbsDataForTenant(pbs, vdcScope)
+            if (scoped) send('pbs', scoped)
+          }
+          if (cached.storages) {
+            const visibleStorages = vdcScope
+              ? cached.storages.filter((s: any) => vdcScope.connectionIds.has(s.connId))
+              : cached.storages
+            for (const storage of visibleStorages) {
+              const scoped = scopeStorageDataForTenant(storage, vdcScope)
+              if (scoped) send('storage', scoped)
+            }
+          }
+          if (cached.externalHypervisors.length > 0) {
+            send('external', cached.externalHypervisors)
+          }
+          send('done', { stats: cached.stats })
+        } finally {
+          controller.close()
         }
-        if (cached.externalHypervisors.length > 0) {
-          send('external', cached.externalHypervisors)
-        }
-        send('done', { stats: cached.stats })
-        controller.close()
       }
     })
 
@@ -717,7 +783,8 @@ export async function GET(request: NextRequest) {
         const pbsPromises = pbsConnections.map(async (conn) => {
           const pbs = await fetchOnePbs(conn)
           allPbsServers.push(pbs)
-          send('pbs', pbs)
+          const scoped = await scopePbsDataForTenant(pbs, vdcScope)
+          if (scoped) send('pbs', scoped)
         })
 
         // Wait for all to complete (each already sent its event)
