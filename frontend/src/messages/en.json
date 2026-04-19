@@ -5673,6 +5673,23 @@
     "errorInvalidName": "Invalid name. Must match ^[a-z][a-z0-9]{0,14}$ (e.g. prodlan, dmz, app1).",
     "deleteVnetTitle": "Delete VNet",
     "deleteVnetConfirm": "Are you sure you want to delete VNet \"{name}\"?",
-    "deleteVnetHint": "The VNet must have no NIC attached. If VMs are still using it, the delete will be rejected."
+    "deleteVnetHint": "The VNet must have no NIC attached. If VMs are still using it, the delete will be rejected.",
+    "cockpit": {
+      "myVmsTitle": "My VMs",
+      "viewAllVms": "View all {count} VMs →",
+      "createVm": "Create a VM",
+      "noVms": "No VM yet.",
+      "vmStatus": {
+        "running": "running",
+        "stopped": "stopped",
+        "paused": "paused",
+        "template": "templates"
+      },
+      "storagesTitle": "My storages",
+      "storageUsage": "{used} / {total}",
+      "noStorages": "No storage assigned to this vDC.",
+      "uplinksTitle": "Provider uplinks",
+      "loadError": "Load failed"
+    }
   }
 }

@@ -5551,6 +5551,23 @@
     "errorInvalidName": "名称无效。必须匹配 ^[a-z][a-z0-9]{0,14}$（例如 prodlan、dmz、app1）。",
     "deleteVnetTitle": "删除 VNet",
     "deleteVnetConfirm": "确定要删除 VNet \"{name}\" 吗？",
-    "deleteVnetHint": "VNet 不能连接任何 NIC。如果仍有 VM 使用它，删除将被拒绝。"
+    "deleteVnetHint": "VNet 不能连接任何 NIC。如果仍有 VM 使用它，删除将被拒绝。",
+    "cockpit": {
+      "myVmsTitle": "我的虚拟机",
+      "viewAllVms": "查看全部 {count} 台虚拟机 →",
+      "createVm": "创建虚拟机",
+      "noVms": "暂无虚拟机。",
+      "vmStatus": {
+        "running": "运行中",
+        "stopped": "已停止",
+        "paused": "已暂停",
+        "template": "模板"
+      },
+      "storagesTitle": "我的存储",
+      "storageUsage": "{used} / {total}",
+      "noStorages": "此 vDC 未分配存储。",
+      "uplinksTitle": "提供商上行链路",
+      "loadError": "加载失败"
+    }
   }
 }

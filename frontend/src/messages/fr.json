@@ -5674,6 +5674,23 @@
     "errorInvalidName": "Nom invalide. Doit matcher ^[a-z][a-z0-9]{0,14}$ (ex: prodlan, dmz, app1).",
     "deleteVnetTitle": "Supprimer le VNet",
     "deleteVnetConfirm": "Êtes-vous sûr de vouloir supprimer le VNet « {name} » ?",
-    "deleteVnetHint": "Le VNet ne doit plus avoir de NIC attachée. Si des VMs l'utilisent encore, la suppression sera rejetée."
+    "deleteVnetHint": "Le VNet ne doit plus avoir de NIC attachée. Si des VMs l'utilisent encore, la suppression sera rejetée.",
+    "cockpit": {
+      "myVmsTitle": "Mes VMs",
+      "viewAllVms": "Voir toutes les {count} VMs →",
+      "createVm": "Créer une VM",
+      "noVms": "Aucune VM pour l'instant.",
+      "vmStatus": {
+        "running": "en cours",
+        "stopped": "arrêtées",
+        "paused": "suspendues",
+        "template": "modèles"
+      },
+      "storagesTitle": "Mes stockages",
+      "storageUsage": "{used} / {total}",
+      "noStorages": "Aucun stockage assigné à ce vDC.",
+      "uplinksTitle": "Uplinks provider",
+      "loadError": "Échec du chargement"
+    }
   }
 }

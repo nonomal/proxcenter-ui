@@ -5553,6 +5553,23 @@
     "errorInvalidName": "Ungültiger Name. Muss auf ^[a-z][a-z0-9]{0,14}$ passen (z. B. prodlan, dmz, app1).",
     "deleteVnetTitle": "VNet löschen",
     "deleteVnetConfirm": "Sind Sie sicher, dass Sie das VNet „{name}“ löschen möchten?",
-    "deleteVnetHint": "Das VNet darf keine NIC angebunden haben. Wenn es noch von VMs verwendet wird, wird die Löschung abgelehnt."
+    "deleteVnetHint": "Das VNet darf keine NIC angebunden haben. Wenn es noch von VMs verwendet wird, wird die Löschung abgelehnt.",
+    "cockpit": {
+      "myVmsTitle": "Meine VMs",
+      "viewAllVms": "Alle {count} VMs anzeigen →",
+      "createVm": "VM erstellen",
+      "noVms": "Noch keine VM.",
+      "vmStatus": {
+        "running": "laufend",
+        "stopped": "gestoppt",
+        "paused": "pausiert",
+        "template": "Vorlagen"
+      },
+      "storagesTitle": "Meine Speicher",
+      "storageUsage": "{used} / {total}",
+      "noStorages": "Diesem vDC ist kein Speicher zugewiesen.",
+      "uplinksTitle": "Provider-Uplinks",
+      "loadError": "Laden fehlgeschlagen"
+    }
   }
 }
