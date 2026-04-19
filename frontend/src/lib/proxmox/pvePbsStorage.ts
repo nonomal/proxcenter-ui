@@ -46,6 +46,8 @@ export async function createPbsStorage(conn: PveConn, args: CreatePbsStorageArgs
   }
   if (args.nodes.length) body.nodes = args.nodes.join(',')
   if (args.port) body.port = args.port
+  const { password: _p, ...safe } = body
+  console.log(`[pve-pbs-storage] POST /storage (secret redacted):`, JSON.stringify(safe))
   await pveFetch(conn, '/storage', { method: 'POST', body: body as any })
 }
 
