@@ -3,9 +3,12 @@ import { NextResponse } from "next/server"
 
 import { nanoid } from "nanoid"
 
+import { getServerSession } from "next-auth"
+
 import { getDb } from "@/lib/db/sqlite"
 import { hashPassword } from "@/lib/auth/password"
-import { checkPermission, PERMISSIONS } from "@/lib/rbac"
+import { authOptions } from "@/lib/auth/config"
+import { checkPermission, PERMISSIONS, isUserSuperAdmin, PROTECTED_ROLE_ID_LIST_SQL } from "@/lib/rbac"
 import { getCurrentTenantId } from "@/lib/tenant"
 
 export const runtime = "nodejs"
@@ -21,11 +24,26 @@ export async function GET() {
     const db = getDb()
     const tenantId = await getCurrentTenantId()
 
+    // Hide provider-level accounts (super_admin + provider_admin, both
+    // wildcard) from non-super-admin callers so a tenant admin — who holds
+    // admin.users scoped to their tenant — can't enumerate, edit, or delete
+    // a provider operator.
+    const session = await getServerSession(authOptions)
+    const callerIsSuperAdmin = session?.user?.id ? isUserSuperAdmin(session.user.id) : false
+    const hideSuperAdminFilter = callerIsSuperAdmin
+      ? ""
+      : `AND NOT EXISTS (
+           SELECT 1 FROM rbac_user_roles ur
+           WHERE ur.user_id = u.id AND ur.role_id IN ${PROTECTED_ROLE_ID_LIST_SQL}
+             AND (ur.expires_at IS NULL OR ur.expires_at > datetime('now'))
+         )`
+
     const users = db
       .prepare(
         `SELECT u.id, u.email, u.name, u.role, u.auth_provider, u.enabled, u.last_login_at, u.created_at, u.updated_at
          FROM users u JOIN user_tenants ut ON ut.user_id = u.id
          WHERE ut.tenant_id = ?
+           ${hideSuperAdminFilter}
          ORDER BY u.created_at DESC`
       )
       .all(tenantId)
@@ -34,7 +52,8 @@ export async function GET() {
     const adminCount = db
       .prepare(
         `SELECT COUNT(*) as count FROM users u JOIN user_tenants ut ON ut.user_id = u.id
-         WHERE u.role = 'admin' AND ut.tenant_id = ?`
+         WHERE u.role = 'admin' AND ut.tenant_id = ?
+           ${hideSuperAdminFilter}`
       )
       .get(tenantId) as { count: number }
 

@@ -7,12 +7,33 @@ import { getServerSession } from "next-auth"
 import { authOptions } from "@/lib/auth/config"
 import { getDb } from "@/lib/db/sqlite"
 import { audit } from "@/lib/audit"
-import { hasPermission } from "@/lib/rbac"
+import { hasPermission, isUserSuperAdmin, isUserProtected, PROTECTED_ROLE_IDS } from "@/lib/rbac"
 import { getCurrentTenantId } from "@/lib/tenant"
 import { demoResponse } from "@/lib/demo/demo-api"
 
 interface RouteContext {
   params: Promise<{ id: string }>
+}
+
+/**
+ * 404 non-super-admin callers when the assignment (or its target user) is
+ * associated with a protected role (super_admin + provider_admin). Prevents
+ * tenant admins from touching provider-level operators via the assignments
+ * API.
+ */
+function denyIfAssignmentTouchesProtected(
+  assignment: { role_id: string; user_id: string } | null,
+  callerUserId: string
+): NextResponse | null {
+  if (!assignment) return null
+  if (isUserSuperAdmin(callerUserId)) return null
+  if (
+    (PROTECTED_ROLE_IDS as readonly string[]).includes(assignment.role_id) ||
+    isUserProtected(assignment.user_id)
+  ) {
+    return NextResponse.json({ error: "Assignation non trouvée" }, { status: 404 })
+  }
+  return null
 }
 
 // GET /api/v1/rbac/assignments/[id] - Détails d'une assignation
@@ -49,6 +70,9 @@ export async function GET(req: NextRequest, context: RouteContext) {
     if (!assignment) {
       return NextResponse.json({ error: "Assignation non trouvée" }, { status: 404 })
     }
+
+    const superAdminBlock = denyIfAssignmentTouchesProtected(assignment, session.user.id)
+    if (superAdminBlock) return superAdminBlock
 
     return NextResponse.json({
       data: assignment
@@ -96,6 +120,17 @@ export async function DELETE(req: NextRequest, context: RouteContext) {
 
     if (!assignment) {
       return NextResponse.json({ error: "Assignation non trouvée" }, { status: 404 })
+    }
+
+    const superAdminBlock = denyIfAssignmentTouchesProtected(assignment, session.user.id)
+    if (superAdminBlock) return superAdminBlock
+
+    // Prevent self-lockout: nobody may revoke their own role.
+    if (assignment.user_id === session.user.id) {
+      return NextResponse.json(
+        { error: "Vous ne pouvez pas révoquer vos propres rôles" },
+        { status: 400 }
+      )
     }
 
     // Supprimer l'assignation
@@ -166,6 +201,27 @@ export async function PATCH(req: NextRequest, context: RouteContext) {
 
     if (!assignment) {
       return NextResponse.json({ error: "Assignation non trouvée" }, { status: 404 })
+    }
+
+    const superAdminBlock = denyIfAssignmentTouchesProtected(assignment, session.user.id)
+    if (superAdminBlock) return superAdminBlock
+
+    // Prevent self-escalation: nobody may change their own role assignment.
+    if (assignment.user_id === session.user.id) {
+      return NextResponse.json(
+        { error: "Vous ne pouvez pas modifier vos propres rôles" },
+        { status: 400 }
+      )
+    }
+
+    // Refuse PATCHes that would promote a regular user to any protected
+    // wildcard role (super_admin or provider_admin).
+    if (
+      !isUserSuperAdmin(session.user.id) &&
+      role_id &&
+      (PROTECTED_ROLE_IDS as readonly string[]).includes(role_id)
+    ) {
+      return NextResponse.json({ error: "Rôle non trouvé" }, { status: 404 })
     }
 
     // Construire les champs à mettre à jour

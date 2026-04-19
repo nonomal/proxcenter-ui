@@ -97,7 +97,11 @@ return <Chip size='small' label={t('usersPage.localAuth')} variant='outlined' ic
    User Dialog - Création/Modification
 -------------------------------- */
 
-function UserDialog({ open, onClose, user, onSave, rbacRoles, t, showRbac = true }) {
+function UserDialog({ open, onClose, user, onSave, rbacRoles, t, showRbac = true, currentUserId }) {
+  // Self-protection: the current user cannot change their own role or disable
+  // their own account (matches the backend guards in /users/[id] and
+  // /rbac/assignments). Hide those controls in the edit dialog.
+  const isSelf = !!user?.id && user.id === currentUserId
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -264,7 +268,7 @@ return
           }}
         />
 
-        {showRbac && (
+        {showRbac && !isSelf && (
           <Autocomplete
             options={rbacRoles}
             value={selectedRole}
@@ -301,7 +305,7 @@ return
           />
         )}
 
-        {isEdit && (
+        {isEdit && !isSelf && (
           <FormControlLabel
             control={
               <Switch
@@ -547,20 +551,23 @@ return () => setPageInfo('', '', '')
                 <i className='ri-edit-line' />
               </IconButton>
             </Tooltip>
-            <Tooltip title={t('common.delete')}>
-              <IconButton
-                size='small'
-                color='error'
-                onClick={() => handleDelete(params.row)}
-              >
-                <i className='ri-delete-bin-line' />
-              </IconButton>
-            </Tooltip>
+            {/* Hide delete on your own row — self-delete is refused by the backend */}
+            {params.row.id !== session?.user?.id && (
+              <Tooltip title={t('common.delete')}>
+                <IconButton
+                  size='small'
+                  color='error'
+                  onClick={() => handleDelete(params.row)}
+                >
+                  <i className='ri-delete-bin-line' />
+                </IconButton>
+              </Tooltip>
+            )}
           </Box>
         ),
       },
     ],
-    [t, showRbac]
+    [t, showRbac, session?.user?.id]
   )
 
   return (
@@ -640,6 +647,7 @@ return () => setPageInfo('', '', '')
         rbacRoles={rbacRoles}
         t={t}
         showRbac={showRbac}
+        currentUserId={session?.user?.id}
       />
 
       <DeleteDialog

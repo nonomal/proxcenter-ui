@@ -7,12 +7,22 @@ import { getServerSession } from "next-auth"
 import { authOptions } from "@/lib/auth/config"
 import { getDb } from "@/lib/db/sqlite"
 import { audit } from "@/lib/audit"
-import { hasPermission } from "@/lib/rbac"
+import { isUserSuperAdmin, PROTECTED_ROLE_IDS } from "@/lib/rbac"
 import { getCurrentTenantId } from "@/lib/tenant"
 import { demoResponse } from "@/lib/demo/demo-api"
 
 interface RouteContext {
   params: Promise<{ id: string }>
+}
+
+/** Hide protected wildcard roles from non-super-admin callers. 404 rather than 403 to avoid leaking existence. */
+function denyIfProtectedRoleAndCallerIsNot(
+  roleId: string,
+  callerUserId: string | undefined
+): NextResponse | null {
+  if (!(PROTECTED_ROLE_IDS as readonly string[]).includes(roleId)) return null
+  if (callerUserId && isUserSuperAdmin(callerUserId)) return null
+  return NextResponse.json({ error: "Rôle non trouvé" }, { status: 404 })
 }
 
 // GET /api/v1/rbac/roles/[id] - Détails d'un rôle
@@ -28,6 +38,9 @@ export async function GET(req: NextRequest, context: RouteContext) {
     }
 
     const { id } = await context.params
+    const superAdminBlock = denyIfProtectedRoleAndCallerIsNot(id, session.user.id)
+    if (superAdminBlock) return superAdminBlock
+
     const db = getDb()
 
     const role = db.prepare(`
@@ -99,12 +112,17 @@ export async function PATCH(req: NextRequest, context: RouteContext) {
       return NextResponse.json({ error: "Non autorisé" }, { status: 401 })
     }
 
-    const tenantId = await getCurrentTenantId()
-    if (!hasPermission({ userId: session.user.id, permission: 'admin.rbac', tenantId })) {
+    // Modifying or deleting a role (including its permission set) is reserved
+    // to super admins — otherwise a tenant admin with admin.rbac could swap
+    // their role's perms for wildcard and self-escalate.
+    if (!isUserSuperAdmin(session.user.id)) {
       return NextResponse.json({ error: "Droits administrateur requis" }, { status: 403 })
     }
 
     const { id } = await context.params
+    const superAdminBlock = denyIfProtectedRoleAndCallerIsNot(id, session.user.id)
+    if (superAdminBlock) return superAdminBlock
+
     const db = getDb()
 
     const role = db.prepare("SELECT * FROM rbac_roles WHERE id = ?").get(id) as any
@@ -203,12 +221,17 @@ export async function DELETE(req: NextRequest, context: RouteContext) {
       return NextResponse.json({ error: "Non autorisé" }, { status: 401 })
     }
 
-    const tenantId = await getCurrentTenantId()
-    if (!hasPermission({ userId: session.user.id, permission: 'admin.rbac', tenantId })) {
+    // Modifying or deleting a role (including its permission set) is reserved
+    // to super admins — otherwise a tenant admin with admin.rbac could swap
+    // their role's perms for wildcard and self-escalate.
+    if (!isUserSuperAdmin(session.user.id)) {
       return NextResponse.json({ error: "Droits administrateur requis" }, { status: 403 })
     }
 
     const { id } = await context.params
+    const superAdminBlock = denyIfProtectedRoleAndCallerIsNot(id, session.user.id)
+    if (superAdminBlock) return superAdminBlock
+
     const db = getDb()
 
     const role = db.prepare("SELECT * FROM rbac_roles WHERE id = ?").get(id) as any
@@ -221,10 +244,11 @@ export async function DELETE(req: NextRequest, context: RouteContext) {
       return NextResponse.json({ error: "Impossible de supprimer un rôle système" }, { status: 400 })
     }
 
-    // Vérifier si des utilisateurs utilisent ce rôle (dans le tenant courant)
+    // Vérifier si des utilisateurs utilisent ce rôle (tous tenants confondus,
+    // car la suppression est globale).
     const userCount = db.prepare(
-      "SELECT COUNT(*) as count FROM rbac_user_roles WHERE role_id = ? AND tenant_id = ?"
-    ).get(id, tenantId) as any
+      "SELECT COUNT(*) as count FROM rbac_user_roles WHERE role_id = ?"
+    ).get(id) as any
 
     if (userCount.count > 0) {
       return NextResponse.json({ 

@@ -9,7 +9,7 @@ import { nanoid } from "nanoid"
 import { authOptions } from "@/lib/auth/config"
 import { getDb } from "@/lib/db/sqlite"
 import { audit } from "@/lib/audit"
-import { hasPermission } from "@/lib/rbac"
+import { hasPermission, isUserSuperAdmin, isUserProtected, PROTECTED_ROLE_IDS, PROTECTED_ROLE_ID_LIST_SQL } from "@/lib/rbac"
 import { getCurrentTenantId } from "@/lib/tenant"
 import { demoResponse } from "@/lib/demo/demo-api"
 
@@ -31,6 +31,19 @@ export async function GET(req: NextRequest) {
     const userId = url.searchParams.get("user_id")
     const roleId = url.searchParams.get("role_id")
 
+    // Hide every trace of protected roles (super_admin + provider_admin) —
+    // both assignments AND any user who holds them anywhere — from
+    // non-super-admin callers.
+    const callerIsSuperAdmin = isUserSuperAdmin(session.user.id)
+    const hideSuperAdminClause = callerIsSuperAdmin
+      ? ""
+      : `AND ur.role_id NOT IN ${PROTECTED_ROLE_ID_LIST_SQL}
+         AND NOT EXISTS (
+           SELECT 1 FROM rbac_user_roles sur
+           WHERE sur.user_id = ur.user_id AND sur.role_id IN ${PROTECTED_ROLE_ID_LIST_SQL}
+             AND (sur.expires_at IS NULL OR sur.expires_at > datetime('now'))
+         )`
+
     let query = `
       SELECT
         ur.id,
@@ -51,6 +64,7 @@ export async function GET(req: NextRequest) {
       JOIN rbac_roles r ON r.id = ur.role_id
       LEFT JOIN users g ON g.id = ur.granted_by
       WHERE ur.tenant_id = ?
+        ${hideSuperAdminClause}
     `
     const params: any[] = [tenantId]
 
@@ -127,6 +141,29 @@ export async function POST(req: NextRequest) {
 
     if (!user_id || !role_id) {
       return NextResponse.json({ error: "user_id et role_id requis" }, { status: 400 })
+    }
+
+    // Prevent self-escalation / self-lockout: a user cannot change their own
+    // RBAC assignments. Another admin must do it.
+    if (user_id === session.user.id) {
+      return NextResponse.json(
+        { error: "Vous ne pouvez pas modifier vos propres rôles" },
+        { status: 400 }
+      )
+    }
+
+    // Only an existing super admin can hand out provider-level wildcard
+    // roles (super_admin + provider_admin). Also refuse to touch a target that
+    // already holds one — prevents a tenant admin from shadowing / reassigning
+    // a provider-level operator.
+    const callerIsSuperAdmin = isUserSuperAdmin(session.user.id)
+    if (!callerIsSuperAdmin) {
+      if ((PROTECTED_ROLE_IDS as readonly string[]).includes(role_id)) {
+        return NextResponse.json({ error: "Rôle non trouvé" }, { status: 404 })
+      }
+      if (isUserProtected(user_id)) {
+        return NextResponse.json({ error: "Utilisateur non trouvé" }, { status: 404 })
+      }
     }
 
     const validScopes = ["global", "connection", "node", "vm", "tag", "pool"]

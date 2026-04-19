@@ -13,9 +13,9 @@ const RBACContext = createContext({
   roles: [],
   isAdmin: false,
   loading: true,
-  hasPermission: () => false,
-  hasAnyPermission: () => false,
-  hasAllPermissions: () => false,
+  hasPermission: (_permission) => false,
+  hasAnyPermission: (_permissions) => false,
+  hasAllPermissions: (_permissions) => false,
   refresh: () => {},
 })
 

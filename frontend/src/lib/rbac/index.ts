@@ -21,6 +21,50 @@ export interface PermissionCheck {
 }
 
 /**
+ * Check if a user has role_super_admin on ANY tenant.
+ * role_super_admin is a global, cross-tenant privilege: a single assignment
+ * (typically on the provider tenant) grants full access to all tenants.
+ */
+export function isUserSuperAdmin(userId: string): boolean {
+  const db = getDb()
+  const row = db.prepare(`
+    SELECT 1 FROM rbac_user_roles
+    WHERE user_id = ? AND role_id = 'role_super_admin'
+      AND (expires_at IS NULL OR expires_at > datetime('now'))
+    LIMIT 1
+  `).get(userId)
+  return !!row
+}
+
+/**
+ * Role IDs that must stay hidden from non-super-admin callers and may not be
+ * assigned by anyone other than a super admin. Both grant wildcard permissions
+ * (see rolePermMap in lib/db/sqlite.ts); exposing either to a tenant admin
+ * lets them escalate to full cluster access.
+ */
+export const PROTECTED_ROLE_IDS = ['role_super_admin', 'role_provider_admin'] as const
+
+/** SQL fragment for IN (?, ?) protected-role comparisons. */
+export const PROTECTED_ROLE_ID_LIST_SQL = `('role_super_admin', 'role_provider_admin')`
+
+/**
+ * Check if a user holds any protected role (super_admin or provider_admin).
+ * Use this (instead of isUserSuperAdmin) when deciding UI visibility of admin
+ * accounts — a provider_admin has equivalent blast radius and deserves the
+ * same hiding from tenant operators.
+ */
+export function isUserProtected(userId: string): boolean {
+  const db = getDb()
+  const row = db.prepare(`
+    SELECT 1 FROM rbac_user_roles
+    WHERE user_id = ? AND role_id IN ${PROTECTED_ROLE_ID_LIST_SQL}
+      AND (expires_at IS NULL OR expires_at > datetime('now'))
+    LIMIT 1
+  `).get(userId)
+  return !!row
+}
+
+/**
  * Check if a user has a specific permission
  * @param check - The permission check parameters
  * @returns true if the user has the permission, false otherwise
@@ -29,6 +73,9 @@ export function hasPermission(check: PermissionCheck): boolean {
   const { userId, permission, resourceType, resourceId, resourceMeta, tenantId } = check
   const tid = tenantId || DEFAULT_TENANT_ID
   const db = getDb()
+
+  // Super admins have full access across all tenants
+  if (isUserSuperAdmin(userId)) return true
 
   // Check via RBAC roles (scoped by tenant)
   // Get all user's active roles for this tenant
@@ -81,6 +128,12 @@ export function getEffectivePermissions(userId: string, resourceType?: string, r
   const db = getDb()
   const tid = tenantId || DEFAULT_TENANT_ID
   const permissions = new Set<string>()
+
+  // Super admins get all defined permissions across any tenant
+  if (isUserSuperAdmin(userId)) {
+    const allPerms = db.prepare('SELECT name FROM rbac_permissions').all() as any[]
+    return allPerms.map(p => p.name)
+  }
 
   // Get permissions from roles (scoped by tenant)
   const rolePerms = db.prepare(`
@@ -137,6 +190,11 @@ export function getAccessibleResources(userId: string, permission: string, tenan
   const db = getDb()
   const tid = tenantId || DEFAULT_TENANT_ID
   const resources: { scope_type: string; scope_target: string | null }[] = []
+
+  // Super admins implicitly have global scope for every permission
+  if (isUserSuperAdmin(userId)) {
+    return [{ scope_type: "global", scope_target: null }]
+  }
 
   // Get from roles (scoped by tenant)
   const fromRoles = db.prepare(`
@@ -323,16 +381,9 @@ export async function getRBACContext(): Promise<{ userId: string; isAdmin: boole
 
   const tenantId = (session as any)?.user?.tenantId || DEFAULT_TENANT_ID
 
-  const db = getDb()
-  const superAdmin = db.prepare(`
-    SELECT 1 FROM rbac_user_roles
-    WHERE user_id = ? AND role_id = 'role_super_admin' AND scope_type = 'global' AND tenant_id = ?
-      AND (expires_at IS NULL OR expires_at > datetime('now'))
-  `).get(session.user.id, tenantId)
-
   return {
     userId: session.user.id,
-    isAdmin: !!superAdmin,
+    isAdmin: isUserSuperAdmin(session.user.id),
     tenantId
   }
 }

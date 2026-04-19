@@ -6,8 +6,22 @@ import { getServerSession } from "next-auth"
 import { authOptions } from "@/lib/auth/config"
 import { getDb } from "@/lib/db/sqlite"
 import { hashPassword } from "@/lib/auth/password"
-import { checkPermission, PERMISSIONS } from "@/lib/rbac"
+import { checkPermission, PERMISSIONS, isUserSuperAdmin, isUserProtected } from "@/lib/rbac"
 import { getCurrentTenantId } from "@/lib/tenant"
+
+/**
+ * Hide provider-level accounts (super_admin + provider_admin) from
+ * non-super-admin callers. Returns 404 rather than 403 so existence is not
+ * leaked.
+ */
+function denyIfTargetIsProtectedAndCallerIsNot(
+  targetUserId: string,
+  callerUserId: string | undefined
+): NextResponse | null {
+  if (!isUserProtected(targetUserId)) return null
+  if (callerUserId && isUserSuperAdmin(callerUserId)) return null
+  return NextResponse.json({ error: "Utilisateur non trouvé" }, { status: 404 })
+}
 
 export const runtime = "nodejs"
 
@@ -20,6 +34,10 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     if (denied) return denied
 
     const { id } = await params
+    const session = await getServerSession(authOptions)
+    const superAdminBlock = denyIfTargetIsProtectedAndCallerIsNot(id, session?.user?.id)
+    if (superAdminBlock) return superAdminBlock
+
     const db = getDb()
     const tenantId = await getCurrentTenantId()
 
@@ -61,6 +79,18 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
       const denied = await checkPermission(PERMISSIONS.ADMIN_USERS)
       if (denied) return denied
     }
+
+    // Prevent self-lockout: a user — including admins — cannot disable their
+    // own account. Re-enabling needs another admin.
+    if (isSelf && enabled === false) {
+      return NextResponse.json(
+        { error: "Vous ne pouvez pas désactiver votre propre compte" },
+        { status: 400 }
+      )
+    }
+
+    const superAdminBlock = denyIfTargetIsProtectedAndCallerIsNot(id, session?.user?.id)
+    if (superAdminBlock) return superAdminBlock
 
     const db = getDb()
     const tenantId = await getCurrentTenantId()
@@ -159,6 +189,9 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ id: s
 
     const session = await getServerSession(authOptions)
     const { id } = await params
+    const superAdminBlock = denyIfTargetIsProtectedAndCallerIsNot(id, session?.user?.id)
+    if (superAdminBlock) return superAdminBlock
+
     const db = getDb()
     const tenantId = await getCurrentTenantId()
 

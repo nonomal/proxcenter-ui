@@ -18,6 +18,7 @@ import { getDateLocale } from '@/lib/i18n/date'
 import { usePageTitle } from "@/contexts/PageTitleContext"
 import EnterpriseGuard from '@/components/guards/EnterpriseGuard'
 import { Features } from '@/contexts/LicenseContext'
+import { useRBAC } from '@/contexts/RBACContext'
 import { CardsSkeleton, TableSkeleton } from '@/components/skeletons'
 
 // Types
@@ -651,6 +652,10 @@ function DeleteDialog({ open, onClose, title, message, onConfirm, loading, t }) 
 
 // Roles Tab
 function RolesTab({ roles, categories, onRefresh, t }) {
+  // Only super admins may author or mutate roles — the backend enforces the
+  // same rule (POST/PATCH/DELETE /api/v1/rbac/roles). Tenant admins get a
+  // read-only surface.
+  const { isAdmin: isSuperAdmin } = useRBAC()
   const [dialogOpen, setDialogOpen] = useState(false)
   const [selected, setSelected] = useState(null)
   const [deleteOpen, setDeleteOpen] = useState(false)
@@ -679,7 +684,9 @@ return }
       {error && <Alert severity='error' onClose={() => setError('')}>{error}</Alert>}
       <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <Typography variant='body2' sx={{ opacity: 0.6 }}>{t('rbacPage.rolesCount', { count: roles.length })}</Typography>
-        <Button variant='contained' size='small' startIcon={<i className='ri-add-line' />} onClick={() => { setSelected(null); setDialogOpen(true) }}>{t('rbacPage.newRole')}</Button>
+        {isSuperAdmin && (
+          <Button variant='contained' size='small' startIcon={<i className='ri-add-line' />} onClick={() => { setSelected(null); setDialogOpen(true) }}>{t('rbacPage.newRole')}</Button>
+        )}
       </Box>
       <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 2 }}>
         {roles.map(role => (
@@ -692,10 +699,12 @@ return }
                 </Box>
                 {role.description && <Typography variant='body2' sx={{ opacity: 0.6 }}>{role.is_system ? t(`rbac.roleDesc.${role.id}`, { defaultValue: role.description }) : role.description}</Typography>}
               </Box>
-              <Box>
-                <Tooltip title={role.is_system ? t('common.view') : t('common.edit')}><IconButton size='small' onClick={() => { setSelected(role); setDialogOpen(true) }}><i className={role.is_system ? 'ri-eye-line' : 'ri-edit-line'} /></IconButton></Tooltip>
-                {!role.is_system && <Tooltip title={t('common.delete')}><IconButton size='small' color='error' onClick={() => { setToDelete(role); setDeleteOpen(true) }}><i className='ri-delete-bin-line' /></IconButton></Tooltip>}
-              </Box>
+              {isSuperAdmin && (
+                <Box>
+                  <Tooltip title={role.is_system ? t('common.view') : t('common.edit')}><IconButton size='small' onClick={() => { setSelected(role); setDialogOpen(true) }}><i className={role.is_system ? 'ri-eye-line' : 'ri-edit-line'} /></IconButton></Tooltip>
+                  {!role.is_system && <Tooltip title={t('common.delete')}><IconButton size='small' color='error' onClick={() => { setToDelete(role); setDeleteOpen(true) }}><i className='ri-delete-bin-line' /></IconButton></Tooltip>}
+                </Box>
+              )}
             </Box>
             <Divider sx={{ my: 1 }} />
             <Box sx={{ display: 'flex', gap: 2 }}>
@@ -718,6 +727,8 @@ return }
 // Assignments Tab avec regroupement par utilisateur/rôle/scope_type
 function AssignmentsTab({ assignments, roles, users, onRefresh, t }) {
   const dateLocale = getDateLocale(useLocale())
+  const { data: session } = useSession()
+  const currentUserId = session?.user?.id
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editDialogOpen, setEditDialogOpen] = useState(false)
   const [toEdit, setToEdit] = useState<any>(null)
@@ -895,21 +906,26 @@ return (
         {p.row.granted_by_email && ` - ${p.row.granted_by_email.split('@')[0]}`}
       </Typography>
     )},
-    { field: 'actions', headerName: '', width: 80, sortable: false, renderCell: (p: any) => (
-      <Box sx={{ display: 'flex', gap: 0 }}>
-        <Tooltip title={t('common.edit')}>
-          <IconButton size='small' onClick={() => { setToEdit(p.row); setEditDialogOpen(true) }}>
-            <i className='ri-edit-line' style={{ fontSize: 16 }} />
-          </IconButton>
-        </Tooltip>
-        <Tooltip title={t('common.delete')}>
-          <IconButton size='small' color='error' onClick={() => { setToDelete(p.row); setDeleteOpen(true) }}>
-            <i className='ri-delete-bin-line' style={{ fontSize: 16 }} />
-          </IconButton>
-        </Tooltip>
-      </Box>
-    )}
-  ], [t, scopeLabels])
+    { field: 'actions', headerName: '', width: 80, sortable: false, renderCell: (p: any) => {
+      // Hide edit/delete for your own assignment — the backend refuses
+      // self-modification (see /rbac/assignments routes).
+      if (p.row.user.id === currentUserId) return null
+      return (
+        <Box sx={{ display: 'flex', gap: 0 }}>
+          <Tooltip title={t('common.edit')}>
+            <IconButton size='small' onClick={() => { setToEdit(p.row); setEditDialogOpen(true) }}>
+              <i className='ri-edit-line' style={{ fontSize: 16 }} />
+            </IconButton>
+          </Tooltip>
+          <Tooltip title={t('common.delete')}>
+            <IconButton size='small' color='error' onClick={() => { setToDelete(p.row); setDeleteOpen(true) }}>
+              <i className='ri-delete-bin-line' style={{ fontSize: 16 }} />
+            </IconButton>
+          </Tooltip>
+        </Box>
+      )
+    }}
+  ], [t, scopeLabels, currentUserId])
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, flex: 1 }}>

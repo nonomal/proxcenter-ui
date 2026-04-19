@@ -10,7 +10,7 @@ import { authOptions } from "@/lib/auth/config"
 import { demoResponse } from "@/lib/demo/demo-api"
 import { getDb } from "@/lib/db/sqlite"
 import { audit } from "@/lib/audit"
-import { hasPermission } from "@/lib/rbac"
+import { isUserSuperAdmin, PROTECTED_ROLE_ID_LIST_SQL } from "@/lib/rbac"
 import { getCurrentTenantId } from "@/lib/tenant"
 
 // GET /api/v1/rbac/roles - Liste tous les rôles
@@ -26,11 +26,20 @@ export async function GET(req: NextRequest) {
     }
 
     const db = getDb()
-    
+
+    // Hide protected (wildcard) roles from non-super-admin callers so a tenant
+    // admin with admin.rbac can't assign themselves or others full cluster
+    // access.
+    const callerIsSuperAdmin = isUserSuperAdmin(session.user.id)
+    const hideProtectedRoles = callerIsSuperAdmin
+      ? ""
+      : `WHERE id NOT IN ${PROTECTED_ROLE_ID_LIST_SQL}`
+
     // Récupérer tous les rôles
     const roles = db.prepare(`
       SELECT id, name, description, is_system, color, created_at, updated_at
       FROM rbac_roles
+      ${hideProtectedRoles}
       ORDER BY is_system DESC, name ASC
     `).all() as any[]
 
@@ -85,9 +94,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Non autorisé" }, { status: 401 })
     }
 
-    // Vérifier les droits admin
-    const tenantId = await getCurrentTenantId()
-    if (!hasPermission({ userId: session.user.id, permission: 'admin.rbac', tenantId })) {
+    // Creating a role lets the caller bundle any permission — including
+    // provider-only ones — and then assign it. Reserve the ability to a
+    // super admin to prevent tenant admins from shadowing role_super_admin
+    // via a custom wildcard role.
+    if (!isUserSuperAdmin(session.user.id)) {
       return NextResponse.json({ error: "Droits administrateur requis" }, { status: 403 })
     }
 

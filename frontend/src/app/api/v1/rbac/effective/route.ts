@@ -6,7 +6,7 @@ import { getServerSession } from "next-auth"
 
 import { authOptions } from "@/lib/auth/config"
 import { getDb } from "@/lib/db/sqlite"
-import { hasPermission } from "@/lib/rbac"
+import { hasPermission, isUserSuperAdmin } from "@/lib/rbac"
 import { getCurrentTenantId } from "@/lib/tenant"
 import { demoResponse } from "@/lib/demo/demo-api"
 
@@ -42,6 +42,29 @@ export async function GET(req: NextRequest) {
 
     if (!user) {
       return NextResponse.json({ error: "Utilisateur non trouvé" }, { status: 404 })
+    }
+
+    // Super admin shortcut: cross-tenant access, returns every defined permission
+    if (isUserSuperAdmin(targetUserId)) {
+      const allPerms = db.prepare('SELECT id, name, category FROM rbac_permissions').all() as any[]
+      const superAdminRoleRow = db.prepare(`
+        SELECT r.id as role_id, r.name as role_name, r.color
+        FROM rbac_user_roles ur
+        JOIN rbac_roles r ON r.id = ur.role_id
+        WHERE ur.user_id = ? AND ur.role_id = 'role_super_admin'
+        LIMIT 1
+      `).get(targetUserId) as any
+      return NextResponse.json({
+        data: {
+          user_id: targetUserId,
+          is_super_admin: true,
+          roles: superAdminRoleRow
+            ? [{ id: superAdminRoleRow.role_id, name: superAdminRoleRow.role_name, color: superAdminRoleRow.color, scope_type: 'global', scope_target: null }]
+            : [],
+          permissions: allPerms.map(p => p.name),
+          permission_details: allPerms.map(p => ({ ...p, source: 'role', source_name: 'Super Admin', scope_type: 'global', scope_target: null })),
+        }
+      })
     }
 
     // Récupérer les rôles de l'utilisateur (scoped by tenant)
