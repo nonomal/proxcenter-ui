@@ -90,8 +90,9 @@ In `frontend/src/lib/db/sqlite.ts`, inside the schema bootstrap block that creat
       pbs_connection_id  TEXT NOT NULL,
       datastore          TEXT NOT NULL,
       namespace          TEXT NOT NULL,
-      pbs_token_id       TEXT NOT NULL,
-      pbs_token_secret   TEXT NOT NULL,
+      mode               TEXT NOT NULL DEFAULT 'auto',
+      pbs_token_id       TEXT,
+      pbs_token_secret   TEXT,
       created_at         TEXT DEFAULT (datetime('now')),
       UNIQUE (pbs_connection_id, datastore, namespace)
     );
@@ -102,6 +103,7 @@ In `frontend/src/lib/db/sqlite.ts`, inside the schema bootstrap block that creat
       vdc_pbs_namespace_id  TEXT NOT NULL REFERENCES vdc_pbs_namespaces(id) ON DELETE CASCADE,
       pve_connection_id     TEXT NOT NULL,
       pve_storage_name      TEXT NOT NULL,
+      managed               INTEGER NOT NULL DEFAULT 1,
       created_at            TEXT DEFAULT (datetime('now')),
       UNIQUE (pve_connection_id, pve_storage_name)
     );
@@ -156,13 +158,16 @@ function freshDb() {
     CREATE TABLE vdcs (id TEXT PRIMARY KEY, tenant_id TEXT, connection_id TEXT, name TEXT, slug TEXT, pve_pool_name TEXT, enabled INTEGER);
     CREATE TABLE vdc_pbs_namespaces (
       id TEXT PRIMARY KEY, vdc_id TEXT, pbs_connection_id TEXT,
-      datastore TEXT, namespace TEXT, pbs_token_id TEXT, pbs_token_secret TEXT,
+      datastore TEXT, namespace TEXT,
+      mode TEXT NOT NULL DEFAULT 'auto',
+      pbs_token_id TEXT, pbs_token_secret TEXT,
       created_at TEXT DEFAULT (datetime('now')),
       UNIQUE (pbs_connection_id, datastore, namespace)
     );
     CREATE TABLE vdc_pbs_pve_storages (
       id TEXT PRIMARY KEY, vdc_pbs_namespace_id TEXT,
       pve_connection_id TEXT, pve_storage_name TEXT,
+      managed INTEGER NOT NULL DEFAULT 1,
       created_at TEXT DEFAULT (datetime('now'))
     );
   `)
@@ -180,6 +185,7 @@ describe('vdcPbsBindings', () => {
       pbsConnectionId: 'pbs1',
       datastore: 'store1',
       namespace: 'tenant-x/vdc-y',
+      mode: 'auto',
       pbsTokenId: 'root@pam!vdc-abc',
       pbsTokenSecret: 'sekret',
     })
@@ -189,21 +195,21 @@ describe('vdcPbsBindings', () => {
   })
 
   it('enforces uniqueness on (pbs, ds, ns)', () => {
-    insertBinding({ vdcId: 'v1', pbsConnectionId: 'p', datastore: 'd', namespace: 'n', pbsTokenId: 't', pbsTokenSecret: 's' })
+    insertBinding({ vdcId: 'v1', pbsConnectionId: 'p', datastore: 'd', namespace: 'n', mode: 'auto', pbsTokenId: 't', pbsTokenSecret: 's' })
     expect(() =>
-      insertBinding({ vdcId: 'v1', pbsConnectionId: 'p', datastore: 'd', namespace: 'n', pbsTokenId: 't', pbsTokenSecret: 's' }),
+      insertBinding({ vdcId: 'v1', pbsConnectionId: 'p', datastore: 'd', namespace: 'n', mode: 'auto', pbsTokenId: 't', pbsTokenSecret: 's' }),
     ).toThrow()
   })
 
   it('lists bindings for a vdc', () => {
-    insertBinding({ vdcId: 'v1', pbsConnectionId: 'p', datastore: 'd', namespace: 'n1', pbsTokenId: 't', pbsTokenSecret: 's' })
-    insertBinding({ vdcId: 'v1', pbsConnectionId: 'p', datastore: 'd', namespace: 'n2', pbsTokenId: 't', pbsTokenSecret: 's' })
+    insertBinding({ vdcId: 'v1', pbsConnectionId: 'p', datastore: 'd', namespace: 'n1', mode: 'auto', pbsTokenId: 't', pbsTokenSecret: 's' })
+    insertBinding({ vdcId: 'v1', pbsConnectionId: 'p', datastore: 'd', namespace: 'n2', mode: 'auto', pbsTokenId: 't', pbsTokenSecret: 's' })
     expect(listBindingsForVdc('v1')).toHaveLength(2)
   })
 
   it('cascades PVE storages when binding is deleted', () => {
-    const b = insertBinding({ vdcId: 'v1', pbsConnectionId: 'p', datastore: 'd', namespace: 'n', pbsTokenId: 't', pbsTokenSecret: 's' })
-    insertPveStorage({ bindingId: b.id, pveConnectionId: 'c1', pveStorageName: 'pbs-acme-prod' })
+    const b = insertBinding({ vdcId: 'v1', pbsConnectionId: 'p', datastore: 'd', namespace: 'n', mode: 'auto', pbsTokenId: 't', pbsTokenSecret: 's' })
+    insertPveStorage({ bindingId: b.id, pveConnectionId: 'c1', pveStorageName: 'pbs-acme-prod', managed: true })
     expect(listPveStoragesForBinding(b.id)).toHaveLength(1)
     deleteBinding(b.id)
     expect(listBindingsForVdc('v1')).toHaveLength(0)
@@ -231,14 +237,17 @@ let overrideDb: Database.Database | null = null
 export function __setDbForTests(db: Database.Database | null) { overrideDb = db }
 function db(): Database.Database { return overrideDb ?? realGetDb() }
 
+export type PbsBindingMode = 'auto' | 'manual'
+
 export interface PbsBindingRow {
   id: string
   vdcId: string
   pbsConnectionId: string
   datastore: string
   namespace: string
-  pbsTokenId: string
-  pbsTokenSecret: string
+  mode: PbsBindingMode
+  pbsTokenId: string | null
+  pbsTokenSecret: string | null
   createdAt: string
 }
 
@@ -247,6 +256,7 @@ export interface PvePbsStorageRow {
   bindingId: string
   pveConnectionId: string
   pveStorageName: string
+  managed: boolean
   createdAt: string
 }
 
@@ -257,8 +267,9 @@ function rowToBinding(r: any): PbsBindingRow {
     pbsConnectionId: r.pbs_connection_id,
     datastore: r.datastore,
     namespace: r.namespace,
-    pbsTokenId: r.pbs_token_id,
-    pbsTokenSecret: r.pbs_token_secret,
+    mode: (r.mode ?? 'auto') as PbsBindingMode,
+    pbsTokenId: r.pbs_token_id ?? null,
+    pbsTokenSecret: r.pbs_token_secret ?? null,
     createdAt: r.created_at,
   }
 }
@@ -269,19 +280,26 @@ function rowToStorage(r: any): PvePbsStorageRow {
     bindingId: r.vdc_pbs_namespace_id,
     pveConnectionId: r.pve_connection_id,
     pveStorageName: r.pve_storage_name,
+    managed: !!r.managed,
     createdAt: r.created_at,
   }
 }
 
 export function insertBinding(args: {
   vdcId: string; pbsConnectionId: string; datastore: string; namespace: string;
-  pbsTokenId: string; pbsTokenSecret: string;
+  mode: PbsBindingMode;
+  pbsTokenId?: string | null; pbsTokenSecret?: string | null;
 }): PbsBindingRow {
   const id = randomUUID()
   db().prepare(
-    `INSERT INTO vdc_pbs_namespaces (id, vdc_id, pbs_connection_id, datastore, namespace, pbs_token_id, pbs_token_secret)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`
-  ).run(id, args.vdcId, args.pbsConnectionId, args.datastore, args.namespace, args.pbsTokenId, args.pbsTokenSecret)
+    `INSERT INTO vdc_pbs_namespaces (id, vdc_id, pbs_connection_id, datastore, namespace, mode, pbs_token_id, pbs_token_secret)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    id,
+    args.vdcId, args.pbsConnectionId, args.datastore, args.namespace,
+    args.mode,
+    args.pbsTokenId ?? null, args.pbsTokenSecret ?? null,
+  )
   return rowToBinding(db().prepare(`SELECT * FROM vdc_pbs_namespaces WHERE id = ?`).get(id))
 }
 
@@ -312,12 +330,16 @@ export function deleteBinding(id: string): void {
 
 export function insertPveStorage(args: {
   bindingId: string; pveConnectionId: string; pveStorageName: string;
+  managed?: boolean;
 }): PvePbsStorageRow {
   const id = randomUUID()
   db().prepare(
-    `INSERT INTO vdc_pbs_pve_storages (id, vdc_pbs_namespace_id, pve_connection_id, pve_storage_name)
-     VALUES (?, ?, ?, ?)`
-  ).run(id, args.bindingId, args.pveConnectionId, args.pveStorageName)
+    `INSERT INTO vdc_pbs_pve_storages (id, vdc_pbs_namespace_id, pve_connection_id, pve_storage_name, managed)
+     VALUES (?, ?, ?, ?, ?)`
+  ).run(
+    id, args.bindingId, args.pveConnectionId, args.pveStorageName,
+    (args.managed ?? true) ? 1 : 0,
+  )
   return rowToStorage(db().prepare(`SELECT * FROM vdc_pbs_pve_storages WHERE id = ?`).get(id))
 }
 
@@ -960,7 +982,7 @@ vi.mock('@/lib/db/sqlite', () => {
 
 vi.mock('./scope', () => ({ clearVdcScopeCache: vi.fn() }))
 
-import { bindPbsToVdc, unbindFromVdc } from './pbsOrchestrator'
+import { bindPbsToVdc, bindPbsToVdcManual, unbindFromVdc } from './pbsOrchestrator'
 import * as bindings from '@/lib/db/vdcPbsBindings'
 import * as pbsNs from '@/lib/proxmox/pbsNamespace'
 import * as pveStorage from '@/lib/proxmox/pvePbsStorage'
@@ -1002,6 +1024,48 @@ describe('bindPbsToVdc', () => {
     })
     await expect(bindPbsToVdc({ vdcId: 'v1', pbsConnectionId: 'pbs1', datastore: 'store1' }))
       .rejects.toThrow(/fingerprint/i)
+  })
+})
+
+describe('bindPbsToVdcManual', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  it('writes a manual-mode row without touching PBS or PVE', async () => {
+    (bindings.insertBinding as any).mockReturnValue({
+      id: 'b1', vdcId: 'v1', pbsConnectionId: 'pbs1',
+      datastore: 'store1', namespace: 'tenant-acme/vdc-prod',
+      mode: 'manual', pbsTokenId: null, pbsTokenSecret: null, createdAt: 't',
+    })
+
+    const result = await bindPbsToVdcManual({
+      vdcId: 'v1',
+      pbsConnectionId: 'pbs1',
+      datastore: 'store1',
+      namespace: 'tenant-acme/vdc-prod',
+    })
+
+    expect(pbsNs.ensureNamespacePath).not.toHaveBeenCalled()
+    expect(pbsNs.ensureSubToken).not.toHaveBeenCalled()
+    expect(pveStorage.createPbsStorage).not.toHaveBeenCalled()
+    expect(bindings.insertBinding).toHaveBeenCalledWith(expect.objectContaining({ mode: 'manual', pbsTokenId: null }))
+    expect(result.steps).toEqual({ mode: 'manual', pveStorage: 'skipped' })
+  })
+
+  it('records a pre-existing PVE storage with managed=false when provided', async () => {
+    (bindings.insertBinding as any).mockReturnValue({ id: 'b2', vdcId: 'v1', pbsConnectionId: 'pbs1', datastore: 'd', namespace: 'n', mode: 'manual', pbsTokenId: null, pbsTokenSecret: null, createdAt: 't' })
+    await bindPbsToVdcManual({
+      vdcId: 'v1',
+      pbsConnectionId: 'pbs1',
+      datastore: 'store1',
+      namespace: 'tenant-acme/vdc-prod',
+      pveStorageName: 'pbs-preexisting',
+    })
+    expect(bindings.insertPveStorage).toHaveBeenCalledWith(expect.objectContaining({ pveStorageName: 'pbs-preexisting', managed: false }))
+  })
+
+  it('requires a namespace', async () => {
+    await expect(bindPbsToVdcManual({ vdcId: 'v1', pbsConnectionId: 'pbs1', datastore: 'store1', namespace: '' }))
+      .rejects.toThrow(/namespace/i)
   })
 })
 
@@ -1069,7 +1133,7 @@ import {
 } from '@/lib/db/vdcPbsBindings'
 import { clearVdcScopeCache } from './scope'
 
-interface BindArgs {
+interface BindAutoArgs {
   vdcId: string
   pbsConnectionId: string
   datastore: string
@@ -1077,11 +1141,28 @@ interface BindArgs {
   namespace?: string
 }
 
+interface BindManualArgs {
+  vdcId: string
+  pbsConnectionId: string
+  datastore: string
+  /** Required — admin must name the namespace they already created on PBS. */
+  namespace: string
+  /** Optional — admin may declare an existing PVE storage to add to the tenant's allowlist. */
+  pveStorageName?: string
+  /** Optional — PVE connection the pveStorageName lives on. Defaults to vdc.connection_id. */
+  pveConnectionId?: string
+}
+
 interface StepStatus {
   namespace: 'ok' | 'skipped' | 'failed'
   token: 'ok' | 'skipped' | 'failed'
   acl: 'ok' | 'skipped' | 'failed'
   pveStorages: Array<{ pveConnectionId: string; name: string; status: 'ok' | 'skipped' | 'failed'; error?: string }>
+}
+
+interface ManualStepStatus {
+  mode: 'manual'
+  pveStorage: 'ok' | 'skipped'
 }
 
 // Process-local locks to serialize concurrent admin clicks on the same binding.
@@ -1149,7 +1230,7 @@ function removeVdcStorage(vdcId: string, storageId: string) {
   getDb().prepare('DELETE FROM vdc_storages WHERE vdc_id = ? AND storage_id = ?').run(vdcId, storageId)
 }
 
-export async function bindPbsToVdc(args: BindArgs): Promise<{ binding: PbsBindingRow; steps: StepStatus }> {
+export async function bindPbsToVdc(args: BindAutoArgs): Promise<{ binding: PbsBindingRow; steps: StepStatus }> {
   const lockKey = `${args.vdcId}|${args.pbsConnectionId}|${args.datastore}|${args.namespace ?? ''}`
   return withLock(lockKey, async () => {
     const { vdc, tenant } = readVdcAndTenant(args.vdcId)
@@ -1184,6 +1265,7 @@ export async function bindPbsToVdc(args: BindArgs): Promise<{ binding: PbsBindin
       pbsConnectionId: args.pbsConnectionId,
       datastore: args.datastore,
       namespace,
+      mode: 'auto',
       pbsTokenId: effectiveTokenId,
       pbsTokenSecret: effectiveSecret,
     })
@@ -1204,11 +1286,52 @@ export async function bindPbsToVdc(args: BindArgs): Promise<{ binding: PbsBindin
         fingerprint: pbs.fingerprint,
         nodes,
       })
-      insertPveStorage({ bindingId: binding.id, pveConnectionId: pveConnId, pveStorageName: storageName })
+      insertPveStorage({ bindingId: binding.id, pveConnectionId: pveConnId, pveStorageName: storageName, managed: true })
       appendVdcStorage(args.vdcId, storageName)
       steps.pveStorages.push({ pveConnectionId: pveConnId, name: storageName, status: 'ok' })
     } catch (e: any) {
       steps.pveStorages.push({ pveConnectionId: pveConnId, name: storageName, status: 'failed', error: String(e?.message ?? e) })
+    }
+
+    clearVdcScopeCache(tenant.id)
+    return { binding, steps }
+  })
+}
+
+export async function bindPbsToVdcManual(args: BindManualArgs): Promise<{ binding: PbsBindingRow; steps: ManualStepStatus }> {
+  if (!args.namespace) throw new Error('namespace is required in manual mode')
+  const lockKey = `${args.vdcId}|${args.pbsConnectionId}|${args.datastore}|${args.namespace}`
+  return withLock(lockKey, async () => {
+    const { vdc, tenant } = readVdcAndTenant(args.vdcId)
+
+    // Only verify the PBS connection exists (no PBS API calls in manual mode).
+    const row = await prisma.connection.findUnique({
+      where: { id: args.pbsConnectionId },
+      select: { type: true },
+    })
+    if (!row || row.type !== 'pbs') throw new Error(`PBS connection not found: ${args.pbsConnectionId}`)
+
+    const binding = insertBinding({
+      vdcId: args.vdcId,
+      pbsConnectionId: args.pbsConnectionId,
+      datastore: args.datastore,
+      namespace: args.namespace,
+      mode: 'manual',
+      pbsTokenId: null,
+      pbsTokenSecret: null,
+    })
+
+    const steps: ManualStepStatus = { mode: 'manual', pveStorage: 'skipped' }
+    if (args.pveStorageName) {
+      const pveConnId = args.pveConnectionId ?? vdc.connection_id
+      insertPveStorage({
+        bindingId: binding.id,
+        pveConnectionId: pveConnId,
+        pveStorageName: args.pveStorageName,
+        managed: false,
+      })
+      appendVdcStorage(args.vdcId, args.pveStorageName)
+      steps.pveStorage = 'ok'
     }
 
     clearVdcScopeCache(tenant.id)
@@ -1221,23 +1344,33 @@ export async function unbindFromVdc(bindingId: string): Promise<void> {
   if (!row) return
 
   const { tenant } = readVdcAndTenant(row.vdc_id)
-  const pbs = await resolvePbsMeta(row.pbs_connection_id)
+  const mode: 'auto' | 'manual' = row.mode ?? 'auto'
 
-  // 1. Remove PVE storages
+  // 1. PVE storages: delete only the ones ProxCenter created (managed=1).
+  //    Manual-mode rows with managed=0 are left alone on the PVE side.
   for (const s of listPveStoragesForBinding(bindingId)) {
-    try {
-      const pveConn = await getConnectionById(s.pveConnectionId, tenant.id)
-      await deletePbsStorage(pveConn, s.pveStorageName)
-    } catch { /* already gone */ }
+    if (s.managed) {
+      try {
+        const pveConn = await getConnectionById(s.pveConnectionId, tenant.id)
+        await deletePbsStorage(pveConn, s.pveStorageName)
+      } catch { /* already gone */ }
+    }
     removeVdcStorage(row.vdc_id, s.pveStorageName)
     deletePveStorage(s.id)
   }
 
-  // 2. Revoke sub-token
-  const tokenShortId = row.pbs_token_id.split('!')[1] ?? `vdc-${row.vdc_id.slice(0, 8)}`
-  await deleteSubToken(pbs.conn, pbs.rootUser, tokenShortId)
+  // 2. Sub-token revocation only in auto mode.
+  if (mode === 'auto' && row.pbs_token_id) {
+    try {
+      const pbs = await resolvePbsMeta(row.pbs_connection_id)
+      const tokenShortId = String(row.pbs_token_id).split('!')[1] ?? `vdc-${row.vdc_id.slice(0, 8)}`
+      await deleteSubToken(pbs.conn, pbs.rootUser, tokenShortId)
+    } catch (e) {
+      console.error(`[pbs-unbind] token revoke failed for ${bindingId}:`, e)
+    }
+  }
 
-  // 3. Delete DB row (leave PBS namespace + its backups alone)
+  // 3. Delete DB row (leave PBS namespace + its backups alone in both modes).
   deleteBinding(bindingId)
   clearVdcScopeCache(tenant.id)
 }
@@ -1507,7 +1640,7 @@ import { getServerSession } from 'next-auth'
 import { isUserSuperAdmin } from '@/lib/rbac'
 import { authOptions } from '@/lib/auth/config'
 import { listBindingsForVdc } from '@/lib/db/vdcPbsBindings'
-import { bindPbsToVdc } from '@/lib/vdc/pbsOrchestrator'
+import { bindPbsToVdc, bindPbsToVdcManual } from '@/lib/vdc/pbsOrchestrator'
 
 export const runtime = 'nodejs'
 
@@ -1532,20 +1665,38 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
   if (denied) return denied
   const { id } = await ctx.params
   const body = await req.json().catch(() => ({})) as {
+    mode?: 'auto' | 'manual'
     pbsConnectionId?: string; datastore?: string; namespace?: string
+    pveStorageName?: string; pveConnectionId?: string
   }
+  const mode = body.mode ?? 'auto'
   if (!body.pbsConnectionId || !body.datastore) {
     return NextResponse.json({ error: 'Missing pbsConnectionId or datastore' }, { status: 400 })
   }
   try {
-    const { binding, steps } = await bindPbsToVdc({
-      vdcId: id,
-      pbsConnectionId: body.pbsConnectionId,
-      datastore: body.datastore,
-      namespace: body.namespace,
-    })
-    const { pbsTokenSecret, ...safe } = binding
-    return NextResponse.json({ data: safe, steps })
+    let result: any
+    if (mode === 'manual') {
+      if (!body.namespace) {
+        return NextResponse.json({ error: 'Missing namespace (required in manual mode)' }, { status: 400 })
+      }
+      result = await bindPbsToVdcManual({
+        vdcId: id,
+        pbsConnectionId: body.pbsConnectionId,
+        datastore: body.datastore,
+        namespace: body.namespace,
+        pveStorageName: body.pveStorageName,
+        pveConnectionId: body.pveConnectionId,
+      })
+    } else {
+      result = await bindPbsToVdc({
+        vdcId: id,
+        pbsConnectionId: body.pbsConnectionId,
+        datastore: body.datastore,
+        namespace: body.namespace,
+      })
+    }
+    const { pbsTokenSecret, ...safe } = result.binding
+    return NextResponse.json({ data: safe, steps: result.steps })
   } catch (e: any) {
     return NextResponse.json({ error: e?.message || String(e) }, { status: 500 })
   }
@@ -1707,7 +1858,8 @@ interface Binding {
   pbsConnectionId: string
   datastore: string
   namespace: string
-  pbsTokenId: string
+  mode: 'auto' | 'manual'
+  pbsTokenId: string | null
   createdAt: string
 }
 
@@ -1725,7 +1877,11 @@ export default function VdcPbsBindingsDialog({ vdcId, vdcName, pbsConnections, o
   const [bindings, setBindings] = useState<Binding[]>([])
   const [loading, setLoading] = useState(true)
   const [addOpen, setAddOpen] = useState(false)
-  const [form, setForm] = useState({ pbsConnectionId: '', datastore: '', namespace: '', overrideNs: false })
+  const [form, setForm] = useState({
+    mode: 'auto' as 'auto' | 'manual',
+    pbsConnectionId: '', datastore: '', namespace: '', overrideNs: false,
+    pveStorageName: '',
+  })
   const [datastores, setDatastores] = useState<string[]>([])
   const [submitting, setSubmitting] = useState(false)
   const [stepReport, setStepReport] = useState<any | null>(null)
@@ -1756,8 +1912,14 @@ export default function VdcPbsBindingsDialog({ vdcId, vdcName, pbsConnections, o
   const handleSubmit = async () => {
     setSubmitting(true); setError(null); setStepReport(null)
     try {
-      const body: any = { pbsConnectionId: form.pbsConnectionId, datastore: form.datastore }
-      if (form.overrideNs && form.namespace) body.namespace = form.namespace
+      const body: any = { mode: form.mode, pbsConnectionId: form.pbsConnectionId, datastore: form.datastore }
+      if (form.mode === 'manual') {
+        if (!form.namespace) { setError('Namespace is required in manual mode'); setSubmitting(false); return }
+        body.namespace = form.namespace
+        if (form.pveStorageName) body.pveStorageName = form.pveStorageName
+      } else if (form.overrideNs && form.namespace) {
+        body.namespace = form.namespace
+      }
       const r = await fetch(`/api/v1/admin/vdcs/${encodeURIComponent(vdcId)}/pbs-bindings`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
       })
@@ -1774,8 +1936,9 @@ export default function VdcPbsBindingsDialog({ vdcId, vdcName, pbsConnections, o
     if (r.ok) void reload()
   }
 
-  const eligible = pbsConnections.filter(c => c.fingerprint)
-  const noFingerprint = pbsConnections.length > 0 && eligible.length === 0
+  const eligibleAuto = pbsConnections.filter(c => c.fingerprint)
+  const noFingerprint = form.mode === 'auto' && pbsConnections.length > 0 && eligibleAuto.length === 0
+  const eligible = form.mode === 'auto' ? eligibleAuto : pbsConnections
 
   return (
     <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth>
@@ -1792,9 +1955,13 @@ export default function VdcPbsBindingsDialog({ vdcId, vdcName, pbsConnections, o
             {bindings.map(b => (
               <Stack key={b.id} direction="row" alignItems="center" spacing={1} sx={{ border: '1px solid', borderColor: 'divider', p: 1, borderRadius: 1 }}>
                 <Box sx={{ flex: 1 }}>
-                  <Typography variant="body2"><b>{b.datastore}</b> / {b.namespace}</Typography>
+                  <Typography variant="body2">
+                    <b>{b.datastore}</b> / {b.namespace}
+                    {' '}<Box component="span" sx={{ fontSize: 10, fontWeight: 600, px: 0.5, borderRadius: 0.5, bgcolor: b.mode === 'manual' ? 'warning.light' : 'success.light', color: 'text.primary' }}>{b.mode}</Box>
+                  </Typography>
                   <Typography variant="caption" color="text.secondary">
-                    PBS: {pbsConnections.find(c => c.id === b.pbsConnectionId)?.name ?? b.pbsConnectionId} — token {b.pbsTokenId}
+                    PBS: {pbsConnections.find(c => c.id === b.pbsConnectionId)?.name ?? b.pbsConnectionId}
+                    {b.pbsTokenId ? ` — token ${b.pbsTokenId}` : ''}
                   </Typography>
                 </Box>
                 <IconButton size="small" color="error" onClick={() => handleDelete(b.id)}><i className="ri-delete-bin-line" /></IconButton>
@@ -1802,27 +1969,45 @@ export default function VdcPbsBindingsDialog({ vdcId, vdcName, pbsConnections, o
             ))}
           </Stack>
         )}
-        <Button sx={{ mt: 2 }} size="small" startIcon={<i className="ri-add-line" />} onClick={() => setAddOpen(v => !v)} disabled={eligible.length === 0}>
+        <Button sx={{ mt: 2 }} size="small" startIcon={<i className="ri-add-line" />} onClick={() => setAddOpen(v => !v)} disabled={pbsConnections.length === 0}>
           Add binding
         </Button>
         {addOpen && (
           <Box sx={{ mt: 2, p: 2, border: '1px dashed', borderColor: 'divider', borderRadius: 1 }}>
             <Stack spacing={2}>
+              <FormControlLabel
+                control={<Switch size="small" checked={form.mode === 'manual'} onChange={e => setForm(f => ({ ...f, mode: e.target.checked ? 'manual' : 'auto', pbsConnectionId: '', datastore: '' }))} />}
+                label={form.mode === 'manual' ? 'Manual mode (admin already created namespace + PVE storage)' : 'Auto provision'}
+              />
               <TextField select size="small" label="PBS connection" value={form.pbsConnectionId} onChange={e => setForm(f => ({ ...f, pbsConnectionId: e.target.value, datastore: '' }))}>
-                {eligible.map(c => <MenuItem key={c.id} value={c.id}>{c.name}</MenuItem>)}
+                {eligible.map(c => <MenuItem key={c.id} value={c.id}>{c.name}{!c.fingerprint ? ' (no fingerprint)' : ''}</MenuItem>)}
               </TextField>
               <TextField select size="small" label="Datastore" value={form.datastore} onChange={e => setForm(f => ({ ...f, datastore: e.target.value }))} disabled={!form.pbsConnectionId}>
                 {datastores.map(d => <MenuItem key={d} value={d}>{d}</MenuItem>)}
               </TextField>
-              <FormControlLabel
-                control={<Switch size="small" checked={form.overrideNs} onChange={e => setForm(f => ({ ...f, overrideNs: e.target.checked }))} />}
-                label="Override auto namespace"
-              />
-              {form.overrideNs && (
-                <TextField size="small" label="Namespace" helperText="e.g. tenant-acme/vdc-prod" value={form.namespace} onChange={e => setForm(f => ({ ...f, namespace: e.target.value }))} />
+              {form.mode === 'auto' ? (
+                <>
+                  <FormControlLabel
+                    control={<Switch size="small" checked={form.overrideNs} onChange={e => setForm(f => ({ ...f, overrideNs: e.target.checked }))} />}
+                    label="Override auto namespace"
+                  />
+                  {form.overrideNs && (
+                    <TextField size="small" label="Namespace" helperText="e.g. tenant-acme/vdc-prod" value={form.namespace} onChange={e => setForm(f => ({ ...f, namespace: e.target.value }))} />
+                  )}
+                </>
+              ) : (
+                <>
+                  <TextField size="small" required label="Namespace" helperText="Must match the namespace you already created on PBS" value={form.namespace} onChange={e => setForm(f => ({ ...f, namespace: e.target.value }))} />
+                  <TextField size="small" label="Existing PVE storage name (optional)" helperText="If you already configured a pbs: storage in PVE, name it here so the tenant sees it" value={form.pveStorageName} onChange={e => setForm(f => ({ ...f, pveStorageName: e.target.value }))} />
+                </>
               )}
               {error && <Alert severity="error">{error}</Alert>}
-              {stepReport && (
+              {stepReport && stepReport.mode === 'manual' && (
+                <Alert severity="success">
+                  Manual binding recorded. PVE storage: {stepReport.pveStorage}
+                </Alert>
+              )}
+              {stepReport && stepReport.mode !== 'manual' && (
                 <Alert severity="info">
                   namespace {stepReport.namespace} · token {stepReport.token} · acl {stepReport.acl}
                   {stepReport.pveStorages?.map((s: any) => (
@@ -2031,7 +2216,14 @@ Manual acceptance test. No code — run a checklist.
 
 - Re-create the binding, then delete the vDC → same outcome as Step 4.
 
-- [ ] **Step 6: Mark the plan complete**
+- [ ] **Step 6: Manual-mode binding**
+
+- Manually create a namespace `tenant-acme2/vdc-extra` on PBS, mint a sub-token by hand, create a `pbs:` storage in PVE called `pbs-manual-test` pointing at that namespace.
+- Create a vDC, open the Backup (PBS) dialog, toggle Manual mode, select the PBS connection, pick the datastore, enter the namespace exactly, and set PVE storage = `pbs-manual-test`.
+- Verify: response shows `{ mode: 'manual', pveStorage: 'ok' }`, no new namespace/token/storage was created by ProxCenter, tenant inventory filter applies correctly (only that namespace's snapshots visible), `vdc.storages[]` includes `pbs-manual-test`.
+- Delete the binding → verify the PBS namespace, PVE storage, and sub-token are **still** present on their respective servers (managed=0 means no cleanup).
+
+- [ ] **Step 7: Mark the plan complete**
 
 No commit — this task is a sign-off checklist.
 
@@ -2040,13 +2232,15 @@ No commit — this task is a sign-off checklist.
 ## Self-review
 
 1. **Spec coverage:**
-   - §2 In-scope → Task 1 (schema), 2 (CRUD), 3 (fingerprint), 4-5 (helpers), 6 (orchestrator), 7-9 (filtering), 10-11 (admin API), 12 (UI), 13 (cascade), 14 (i18n), 15 (test). ✓
-   - §5 Cleanup → Task 6 `unbindFromVdc` + Task 13 cascade ✓
+   - §2 In-scope → Task 1 (schema with `mode` + `managed`), 2 (CRUD with both modes), 3 (fingerprint), 4-5 (helpers), 6 (orchestrator with `bindPbsToVdc` + `bindPbsToVdcManual`), 7-9 (filtering — same path for both modes), 10 (admin API dispatches by mode), 11 (fingerprint/datastores), 12 (UI mode toggle), 13 (cascade), 14 (i18n), 15 (test incl. manual mode). ✓
+   - §4.1 Auto flow → Task 6 `bindPbsToVdc` ✓
+   - §4.2 Manual flow → Task 6 `bindPbsToVdcManual` ✓
+   - §5 Cleanup (auto + manual branches) → Task 6 `unbindFromVdc` reads `row.mode` + `s.managed` ✓
    - §6.1 `VdcScope` extension → Task 7 ✓
    - §6.2 Inventory stream → Task 8 ✓
    - §6.3 Snapshot endpoint → Task 9 ✓
-   - §8 Fingerprint capture → Task 3 + Task 11 ✓
-   - §9 Per-key mutex → Task 6 `withLock` ✓
+   - §8 Fingerprint capture → Task 3 + Task 11 (required only in auto mode) ✓
+   - §9 Per-key mutex → Task 6 `withLock` (reused by both modes) ✓
    - §11 Migration → Task 1 ✓
 
 2. **Placeholder scan:**

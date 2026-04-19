@@ -14,13 +14,21 @@ Phase 1 ("assignment-only, manual PBS provisioning") is skipped — we go straig
 
 ### In
 
-- New super admin UI on the vDC edit dialog: tab "Backup (PBS)" to list / add / remove `(PBS connection, datastore, namespace)` bindings.
-- Server-side orchestration on save:
+- New super admin UI on the vDC edit dialog: tab "Backup (PBS)" to list / add / remove `(PBS connection, datastore, namespace)` bindings. **PBS is optional — a vDC with zero bindings is legal; tenants simply see no PBS section in their UI.**
+- **n+1 PBS per vDC** — multiple bindings on different PBS connections and/or different datastores on the same PBS are allowed.
+- Two modes per binding:
+  - **Auto provision (default).** ProxCenter creates the PBS namespace, mints a sub-token, sets the ACL, and injects the PVE `pbs:` storage.
+  - **Manual.** Admin has already created the namespace / token / PVE storage by hand. ProxCenter only records the mapping for UI filtering — no PBS/PVE API calls on create, no cleanup on delete beyond the DB row.
+- Server-side orchestration on save **in auto mode**:
   - Create the PBS namespace (idempotent).
   - Mint a PBS sub-token with `DatastoreBackup` role scoped to that namespace.
   - Persist the secret in DB.
   - Create a `pbs:` storage entry on every PVE cluster referenced by the vDC, with `namespace` + `nodes=<vdc.nodes>` and the sub-token credentials.
   - Append the auto-created storage names to `vdc.storages[]` so the existing vDC scope filter (`lib/vdc/scope.ts`) exposes them to the tenant.
+- Server-side orchestration **in manual mode**:
+  - Validate mandatory fields (PBS conn, datastore, namespace).
+  - Optional: admin may provide an existing PVE storage name — if so, add it to `vdc.storages[]` and record it in `vdc_pbs_pve_storages` with a `managed=0` flag (so we don't delete it on cleanup).
+  - Write the binding row with `mode='manual'`, nullable `pbs_token_id`/`pbs_token_secret`.
 - Tenant-side filtering of PBS snapshots by namespace everywhere (inventory stream, cluster Backup tab, host Backup tab, VM Backup tab).
 - Cleanup on binding removal / vDC delete: remove the PVE `pbs:` storage entries, revoke the PBS sub-token, **keep the namespace + its backups** (data retention by default).
 - PBS fingerprint autocapture: `pbs_connections.fingerprint` column populated from TLS handshake at connection save time.
@@ -53,8 +61,9 @@ CREATE TABLE vdc_pbs_namespaces (
   pbs_connection_id  TEXT NOT NULL,
   datastore          TEXT NOT NULL,
   namespace          TEXT NOT NULL,              -- e.g. "tenant-acmecorp/vdc-prod-web"
-  pbs_token_id       TEXT NOT NULL,              -- e.g. "root@pam!vdc-abc123"
-  pbs_token_secret   TEXT NOT NULL,              -- stored as-is (matches existing Connection secret pattern)
+  mode               TEXT NOT NULL DEFAULT 'auto',  -- 'auto' | 'manual'
+  pbs_token_id       TEXT,                       -- NULL in manual mode
+  pbs_token_secret   TEXT,                       -- NULL in manual mode
   created_at         TEXT NOT NULL DEFAULT (datetime('now')),
   UNIQUE (pbs_connection_id, datastore, namespace)
 );
@@ -64,6 +73,7 @@ CREATE TABLE vdc_pbs_pve_storages (
   vdc_pbs_namespace_id   TEXT NOT NULL REFERENCES vdc_pbs_namespaces(id) ON DELETE CASCADE,
   pve_connection_id      TEXT NOT NULL,
   pve_storage_name       TEXT NOT NULL,          -- e.g. "pbs-acmecorp-prod-web"
+  managed                INTEGER NOT NULL DEFAULT 1,  -- 1 = ProxCenter created it and will delete on cleanup; 0 = pre-existing, don't touch
   created_at             TEXT NOT NULL DEFAULT (datetime('now')),
   UNIQUE (pve_connection_id, pve_storage_name)
 );
@@ -85,7 +95,9 @@ ALTER TABLE pbs_connections ADD COLUMN fingerprint TEXT;
 
 ## 4. Provisioning flow
 
-On `POST /api/v1/admin/vdcs/:id/pbs-bindings` with body `{ pbsConnectionId, datastore, namespace? }`:
+### 4.1 Auto mode
+
+On `POST /api/v1/admin/vdcs/:id/pbs-bindings` with body `{ mode: 'auto', pbsConnectionId, datastore, namespace? }` (or `mode` omitted — defaults to auto):
 
 1. Resolve the root PBS connection (`pbs_connections.fingerprint` must be set; reject with `412 fingerprint_missing` otherwise).
 2. Compute the namespace path: if `namespace` in body is empty, default to `tenant-<slug>/vdc-<slug>` (hierarchical); otherwise use as-is (admin override — for migration/legacy cases).
@@ -103,17 +115,41 @@ On `POST /api/v1/admin/vdcs/:id/pbs-bindings` with body `{ pbsConnectionId, data
 
 **Failure handling:** we do NOT rollback on partial failure. Return HTTP 207-style payload with per-step status. Admin can re-trigger — the idempotent steps skip themselves. Hard failure (e.g. PBS unreachable before step 3) returns 502 with no DB write.
 
+### 4.2 Manual mode
+
+On `POST /api/v1/admin/vdcs/:id/pbs-bindings` with body `{ mode: 'manual', pbsConnectionId, datastore, namespace, pveStorageName? }`:
+
+1. Validate `pbsConnectionId` points at a PBS connection that exists (the fingerprint column is NOT required — ProxCenter doesn't need to talk to PBS in manual mode).
+2. `namespace` is **required** (no auto default).
+3. Insert `vdc_pbs_namespaces` row with `mode='manual'`, `pbs_token_id=NULL`, `pbs_token_secret=NULL`.
+4. If `pveStorageName` is provided:
+   - Insert `vdc_pbs_pve_storages` row with `managed=0`.
+   - Append the name to `vdc.storages[]` so the tenant sees it in the storages allowlist.
+5. Return the binding row with `steps = { mode: 'manual' }`.
+
+Zero calls to PBS or PVE. Admin is fully responsible for ensuring the namespace, token/ACL, and PVE storage are correctly set up on their end.
+
 ## 5. Cleanup flow
 
 On `DELETE /api/v1/admin/vdcs/:id/pbs-bindings/:bindingId`:
 
-1. For each `vdc_pbs_pve_storages` row tied to the binding: `DELETE /storage/{name}` on the target PVE cluster (idempotent — ignore 404).
+### 5.1 Auto-mode binding
+
+1. For each `vdc_pbs_pve_storages` row tied to the binding where `managed=1`: `DELETE /storage/{name}` on the target PVE cluster (idempotent — ignore 404).
 2. Remove the storage names from `vdc.storages[]`.
 3. Revoke the PBS sub-token: `DELETE /access/users/{user}/token/{tokenId}`.
 4. Delete the `vdc_pbs_namespaces` row (cascades to `vdc_pbs_pve_storages`).
 5. **Leave the PBS namespace and its backups untouched.**
 
-On `DELETE /api/v1/admin/vdcs/:id` (vDC delete): iterate all bindings, invoke the same cleanup per binding, then delete the vDC.
+### 5.2 Manual-mode binding
+
+1. For each `vdc_pbs_pve_storages` row tied to the binding where `managed=0`: **do not** delete the PVE storage — only remove it from `vdc.storages[]` and drop the DB row.
+2. **Do not** call PBS (we don't own the token).
+3. Delete the `vdc_pbs_namespaces` row.
+
+### 5.3 vDC delete
+
+On `DELETE /api/v1/admin/vdcs/:id`: iterate all bindings, invoke the appropriate cleanup per binding based on `mode`, then delete the vDC.
 
 ## 6. Tenant filtering
 
@@ -164,12 +200,18 @@ Inside the vDC edit dialog at `/settings` → Virtual Datacenters. Add a new tab
 
 ### 7.2 Components
 
-- `VdcPbsBindingsTab` (React) — table of current bindings with `{PBS name, datastore, namespace, created}` + Remove button per row + "Add binding" button.
+- `VdcPbsBindingsTab` (React) — table of current bindings with `{PBS name, datastore, namespace, mode, created}` + Remove button per row + "Add binding" button.
 - `VdcPbsBindingDialog` — form:
-  - Select PBS connection (only shows connections with a populated `fingerprint`; if none, CTA "Configure fingerprint" linking to the connection edit).
+  - **Mode toggle**: `Auto provision | Manual`. Default `Auto`.
+  - Select PBS connection:
+    - In Auto mode, only lists connections with a populated `fingerprint` (CTA "Configure fingerprint" if none).
+    - In Manual mode, lists all PBS connections.
   - Select datastore (populated from `GET /api/v1/admin/pbs/[id]/datastores`).
-  - Namespace: read-only default `tenant-<slug>/vdc-<slug>` with an "Override" toggle revealing a text input.
-  - Submit → POST; after response render per-step status inline (ok / skipped / failed) before closing.
+  - Namespace:
+    - Auto mode: read-only default `tenant-<slug>/vdc-<slug>` with an "Override" toggle revealing a text input.
+    - Manual mode: required text input, no default.
+  - PVE storage name (Manual mode only): optional text input for an existing storage to add to the tenant's allowlist.
+  - Submit → POST. Auto mode renders per-step status (ok / skipped / failed); Manual mode shows a simple success chip.
 
 ### 7.3 Error surface
 
