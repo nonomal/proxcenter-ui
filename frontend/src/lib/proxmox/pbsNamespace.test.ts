@@ -63,7 +63,7 @@ describe('setNamespaceAcl', () => {
       path: '/datastore/store1/tenant-x/vdc-y',
       'auth-id': 'root@pam!vdc-abc',
       role: 'DatastoreBackup',
-      propagate: 1,
+      propagate: true,
     })
   })
 })

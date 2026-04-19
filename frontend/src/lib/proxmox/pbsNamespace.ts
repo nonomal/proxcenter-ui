@@ -84,7 +84,7 @@ export async function setNamespaceAcl(
       path: `/datastore/${datastore}/${namespace}`,
       'auth-id': authId,
       role,
-      propagate: 1,
+      propagate: true,
     } as any,
   })
 }
