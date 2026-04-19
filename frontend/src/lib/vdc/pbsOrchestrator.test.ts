@@ -12,6 +12,7 @@ vi.mock('@/lib/proxmox/pbsNamespace', () => ({
   ensureNamespacePath: vi.fn(),
   ensureSubToken: vi.fn(async () => ({ tokenId: 'root@pam!vdc-abc', secret: 'S3CR3T' })),
   setNamespaceAcl: vi.fn(),
+  setDatastoreAuditAcl: vi.fn(),
   deleteSubToken: vi.fn(),
 }))
 vi.mock('@/lib/proxmox/pvePbsStorage', () => ({

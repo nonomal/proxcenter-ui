@@ -89,6 +89,27 @@ export async function setNamespaceAcl(
   })
 }
 
+/**
+ * Grant DatastoreAudit on the datastore root with propagate=false. Required
+ * so PVE's `pbs:` storage probe can confirm the datastore exists; isolation
+ * is preserved because siblings namespaces are not covered (propagate=false).
+ */
+export async function setDatastoreAuditAcl(
+  conn: PbsClientOptions,
+  datastore: string,
+  authId: string,
+): Promise<void> {
+  await pbsFetch(conn, '/access/acl', {
+    method: 'PUT',
+    body: {
+      path: `/datastore/${datastore}`,
+      'auth-id': authId,
+      role: 'DatastoreAudit',
+      propagate: false,
+    } as any,
+  })
+}
+
 export async function deleteSubToken(
   conn: PbsClientOptions,
   user: string,

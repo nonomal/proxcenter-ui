@@ -4,7 +4,7 @@ import { getDb } from '@/lib/db/sqlite'
 import { prisma } from '@/lib/db/prisma'
 import { decryptSecret } from '@/lib/crypto/secret'
 import {
-  ensureNamespacePath, ensureSubToken, setNamespaceAcl, deleteSubToken,
+  ensureNamespacePath, ensureSubToken, setNamespaceAcl, setDatastoreAuditAcl, deleteSubToken,
 } from '@/lib/proxmox/pbsNamespace'
 import {
   createPbsStorage, deletePbsStorage, sanitizeStorageName,
@@ -131,6 +131,10 @@ export async function bindPbsToVdc(args: BindAutoArgs): Promise<{ binding: PbsBi
     const effectiveSecret = tokenResult.secret
 
     await setNamespaceAcl(pbs.conn, args.datastore, namespace, effectiveTokenId)
+    // Grant DatastoreAudit on the datastore root (propagate=false) so PVE's
+    // pbs: storage probe can confirm the datastore exists. Isolation remains
+    // intact because siblings namespaces are not covered.
+    await setDatastoreAuditAcl(pbs.conn, args.datastore, effectiveTokenId)
     steps.acl = 'ok'
 
     const binding = insertBinding({
