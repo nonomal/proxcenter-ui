@@ -840,7 +840,12 @@ export default function VdcTab() {
                   {/* PBS bindings (only when editing an existing vDC) */}
                   {editingVdc && (
                     <>
-                      <VdcPbsBindingsSection vdcId={editingVdc.id} pbsConnections={pbsConnections} />
+                      <VdcPbsBindingsSection
+                        vdcId={editingVdc.id}
+                        tenantSlug={getTenantSlug(editingVdc.tenantId) || 'tenant'}
+                        vdcSlug={editingVdc.slug || form.slug}
+                        pbsConnections={pbsConnections}
+                      />
                       <Divider />
                     </>
                   )}

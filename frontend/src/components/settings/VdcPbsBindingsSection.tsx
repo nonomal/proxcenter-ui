@@ -20,19 +20,28 @@ interface PbsConnOption { id: string; name: string; fingerprint: string | null }
 
 interface Props {
   vdcId: string
+  tenantSlug: string
+  vdcSlug: string
   pbsConnections: PbsConnOption[]
 }
 
-export default function VdcPbsBindingsSection({ vdcId, pbsConnections }: Props) {
+export default function VdcPbsBindingsSection({ vdcId, tenantSlug, vdcSlug, pbsConnections }: Props) {
   const t = useTranslations()
+  const defaultNamespace = `tenant-${tenantSlug}/vdc-${vdcSlug}`
   const [bindings, setBindings] = useState<Binding[]>([])
   const [loading, setLoading] = useState(true)
   const [addOpen, setAddOpen] = useState(false)
   const [form, setForm] = useState({
     mode: 'auto' as 'auto' | 'manual',
-    pbsConnectionId: '', datastore: '', namespace: '', overrideNs: false,
+    pbsConnectionId: '', datastore: '', namespace: defaultNamespace,
     pveStorageName: '',
   })
+
+  useEffect(() => {
+    if (addOpen) {
+      setForm(f => ({ ...f, namespace: defaultNamespace }))
+    }
+  }, [addOpen, defaultNamespace])
   const [datastores, setDatastores] = useState<string[]>([])
   const [submitting, setSubmitting] = useState(false)
   const [stepReport, setStepReport] = useState<any | null>(null)
@@ -64,13 +73,9 @@ export default function VdcPbsBindingsSection({ vdcId, pbsConnections }: Props) 
     setSubmitting(true); setError(null); setStepReport(null)
     try {
       const body: any = { mode: form.mode, pbsConnectionId: form.pbsConnectionId, datastore: form.datastore }
-      if (form.mode === 'manual') {
-        if (!form.namespace) { setError(t('vdc.pbsNamespaceRequired')); setSubmitting(false); return }
-        body.namespace = form.namespace
-        if (form.pveStorageName) body.pveStorageName = form.pveStorageName
-      } else if (form.overrideNs && form.namespace) {
-        body.namespace = form.namespace
-      }
+      if (!form.namespace) { setError(t('vdc.pbsNamespaceRequired')); setSubmitting(false); return }
+      body.namespace = form.namespace
+      if (form.mode === 'manual' && form.pveStorageName) body.pveStorageName = form.pveStorageName
       const r = await fetch(`/api/v1/admin/vdcs/${encodeURIComponent(vdcId)}/pbs-bindings`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
       })
@@ -139,21 +144,16 @@ export default function VdcPbsBindingsSection({ vdcId, pbsConnections }: Props) 
             <TextField select size="small" label={t('vdc.pbsDatastore')} value={form.datastore} onChange={e => setForm(f => ({ ...f, datastore: e.target.value }))} disabled={!form.pbsConnectionId}>
               {datastores.map(d => <MenuItem key={d} value={d}>{d}</MenuItem>)}
             </TextField>
-            {form.mode === 'auto' ? (
-              <>
-                <FormControlLabel
-                  control={<Switch size="small" checked={form.overrideNs} onChange={e => setForm(f => ({ ...f, overrideNs: e.target.checked }))} />}
-                  label={t('vdc.pbsOverrideAutoNs')}
-                />
-                {form.overrideNs && (
-                  <TextField size="small" label={t('vdc.pbsNamespace')} helperText={t('vdc.pbsNamespaceHelper')} value={form.namespace} onChange={e => setForm(f => ({ ...f, namespace: e.target.value }))} />
-                )}
-              </>
-            ) : (
-              <>
-                <TextField size="small" required label={t('vdc.pbsNamespace')} helperText={t('vdc.pbsNamespaceManualHelper')} value={form.namespace} onChange={e => setForm(f => ({ ...f, namespace: e.target.value }))} />
-                <TextField size="small" label={t('vdc.pbsPveStorageNameLabel')} helperText={t('vdc.pbsPveStorageNameHelper')} value={form.pveStorageName} onChange={e => setForm(f => ({ ...f, pveStorageName: e.target.value }))} />
-              </>
+            <TextField
+              size="small"
+              required
+              label={t('vdc.pbsNamespace')}
+              helperText={form.mode === 'manual' ? t('vdc.pbsNamespaceManualHelper') : t('vdc.pbsNamespaceHelper')}
+              value={form.namespace}
+              onChange={e => setForm(f => ({ ...f, namespace: e.target.value }))}
+            />
+            {form.mode === 'manual' && (
+              <TextField size="small" label={t('vdc.pbsPveStorageNameLabel')} helperText={t('vdc.pbsPveStorageNameHelper')} value={form.pveStorageName} onChange={e => setForm(f => ({ ...f, pveStorageName: e.target.value }))} />
             )}
             {error && <Alert severity="error">{error}</Alert>}
             {stepReport && stepReport.mode === 'manual' && (
