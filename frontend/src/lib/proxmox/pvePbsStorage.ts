@@ -12,7 +12,9 @@ export async function pbsStorageExists(conn: PveConn, storage: string): Promise<
     const r = await pveFetch<any>(conn, `/storage/${encodeURIComponent(storage)}`)
     return !!r
   } catch (e: any) {
-    if (/\b404\b/.test(String(e?.message))) return false
+    const msg = String(e?.message ?? '')
+    // PVE returns 500 "storage 'X' does not exist" for missing storages (non-standard).
+    if (/\b404\b/.test(msg) || /does not exist/i.test(msg)) return false
     throw e
   }
 }
@@ -51,6 +53,7 @@ export async function deletePbsStorage(conn: PveConn, storage: string): Promise<
   try {
     await pveFetch(conn, `/storage/${encodeURIComponent(storage)}`, { method: 'DELETE' })
   } catch (e: any) {
-    if (!/\b404\b/.test(String(e?.message))) throw e
+    const msg = String(e?.message ?? '')
+    if (!/\b404\b/.test(msg) && !/does not exist/i.test(msg)) throw e
   }
 }
