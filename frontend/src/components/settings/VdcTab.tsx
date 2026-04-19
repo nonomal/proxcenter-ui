@@ -30,7 +30,7 @@ import { DataGrid, type GridColDef } from '@mui/x-data-grid'
 
 import { useTranslations } from 'next-intl'
 
-import VdcPbsBindingsDialog from './VdcPbsBindingsDialog'
+import VdcPbsBindingsSection from './VdcPbsBindingsSection'
 
 interface VdcFormState {
   name: string
@@ -120,8 +120,7 @@ export default function VdcTab() {
   const [providerBridges, setProviderBridges] = useState<Array<{ iface: string; nodes: string[]; type: string }>>([])
   const [selectedSharedBridges, setSelectedSharedBridges] = useState<Map<string, string>>(new Map())
 
-  // PBS bindings dialog
-  const [pbsDialogVdc, setPbsDialogVdc] = useState<{ id: string; name: string } | null>(null)
+  // PBS bindings (inline in the edit dialog, below Nodes)
   const [pbsConnections, setPbsConnections] = useState<Array<{ id: string; name: string; fingerprint: string | null }>>([])
 
   // Auto-clear success after 5s
@@ -520,11 +519,6 @@ export default function VdcTab() {
               <i className="ri-pencil-line" />
             </IconButton>
           </Tooltip>
-          <Tooltip title={t('vdc.pbsBindings')}>
-            <IconButton size="small" onClick={() => setPbsDialogVdc({ id: params.row.id, name: params.row.name })}>
-              <i className="ri-save-3-line" />
-            </IconButton>
-          </Tooltip>
           <Tooltip title={t('common.delete')}>
             <IconButton
               size="small"
@@ -843,6 +837,14 @@ export default function VdcTab() {
 
                   <Divider />
 
+                  {/* PBS bindings (only when editing an existing vDC) */}
+                  {editingVdc && (
+                    <>
+                      <VdcPbsBindingsSection vdcId={editingVdc.id} pbsConnections={pbsConnections} />
+                      <Divider />
+                    </>
+                  )}
+
                   {/* Storages */}
                   <Typography variant="subtitle2" sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                     <i className="ri-hard-drive-3-line" />
@@ -1084,17 +1086,6 @@ export default function VdcTab() {
           </Button>
         </DialogActions>
       </Dialog>
-
-      {/* PBS Bindings Dialog */}
-      {pbsDialogVdc && (
-        <VdcPbsBindingsDialog
-          vdcId={pbsDialogVdc.id}
-          vdcName={pbsDialogVdc.name}
-          pbsConnections={pbsConnections}
-          open={!!pbsDialogVdc}
-          onClose={() => setPbsDialogVdc(null)}
-        />
-      )}
 
       {/* Delete Confirmation Dialog */}
       <Dialog open={!!deleteVdc} onClose={() => setDeleteVdc(null)}>

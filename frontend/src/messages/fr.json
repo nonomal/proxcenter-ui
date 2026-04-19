@@ -1202,7 +1202,6 @@
     "tabDirectory": "Répertoire",
     "tabGeneral": "Général",
     "tabRetention": "Retention",
-    "tabNotifications": "Notifications",
     "tabNoteTemplate": "Modele de note",
     "tabAdvanced": "Avance",
     "statusLabel": "Statut",
@@ -3326,6 +3325,14 @@
     "httpError": "Erreur {status}"
   },
   "errorPages": {
+    "401": {
+      "title": "Non authentifié",
+      "description": "Vous devez être connecté pour accéder à cette page."
+    },
+    "403": {
+      "title": "Accès refusé",
+      "description": "Vous n'avez pas les permissions nécessaires pour accéder à cette page."
+    },
     "404": {
       "title": "Page introuvable",
       "description": "La page que vous recherchez n'existe pas ou a été déplacée."
@@ -3333,14 +3340,6 @@
     "500": {
       "title": "Erreur serveur",
       "description": "Une erreur inattendue s'est produite. Veuillez réessayer plus tard."
-    },
-    "403": {
-      "title": "Accès refusé",
-      "description": "Vous n'avez pas les permissions nécessaires pour accéder à cette page."
-    },
-    "401": {
-      "title": "Non authentifié",
-      "description": "Vous devez être connecté pour accéder à cette page."
     },
     "503": {
       "title": "Service indisponible",
@@ -5650,7 +5649,28 @@
     "sharedBridgesNoDetected": "Aucun bridge détecté sur ce cluster.",
     "sharedBridgeLabelPlaceholder": "Libellé optionnel (ex: WAN /29 - 203.0.113.24/29)",
     "maxVnets": "Max VNets",
-    "maxVnetsHint": "Nombre maximal de VNets que le tenant peut créer dans ce vDC. Vide = illimité."
+    "maxVnetsHint": "Nombre maximal de VNets que le tenant peut créer dans ce vDC. Vide = illimité.",
+    "pbsBindings": "Sauvegarde (PBS)",
+    "pbsBindingsDialogTitle": "Bindings sauvegarde — {name}",
+    "pbsAddBinding": "Ajouter un binding",
+    "pbsPbsConnection": "Connexion PBS",
+    "pbsDatastore": "Datastore",
+    "pbsNamespace": "Namespace",
+    "pbsNamespaceHelper": "ex. tenant-acme/vdc-prod",
+    "pbsNamespaceManualHelper": "Doit correspondre au namespace déjà créé sur PBS",
+    "pbsPveStorageNameLabel": "Nom du storage PVE existant (optionnel)",
+    "pbsPveStorageNameHelper": "Si vous avez déjà configuré un storage pbs: dans PVE, nommez-le ici pour que le tenant le voie",
+    "pbsOverrideAutoNs": "Remplacer le namespace automatique",
+    "pbsModeManual": "Mode manuel (l'admin a déjà créé le namespace + storage PVE)",
+    "pbsModeAuto": "Auto-provisionnement",
+    "pbsNoBinding": "Aucun binding pour le moment.",
+    "pbsFingerprintMissing": "Aucune connexion PBS n'a d'empreinte capturée. Ouvrez les paramètres de la connexion PBS et cliquez sur \"Mettre à jour l'empreinte\" d'abord.",
+    "pbsRemoveConfirm": "Supprimer ce binding PBS ? Le namespace et les sauvegardes sont conservés ; seul le storage PVE et le sous-token sont supprimés.",
+    "pbsManualSuccess": "Binding manuel enregistré. Storage PVE : {status}",
+    "pbsNamespaceRequired": "Le namespace est obligatoire en mode manuel",
+    "pbsCancel": "Annuler",
+    "pbsCreate": "Créer",
+    "pbsClose": "Fermer"
   },
   "myVdc": {
     "title": "Mon datacenter",
@@ -5693,27 +5713,6 @@
       "hostsTitle": "Hôtes",
       "noHosts": "Aucun hôte assigné à ce vDC.",
       "loadError": "Échec du chargement"
-    },
-    "pbsBindings": "Sauvegarde (PBS)",
-    "pbsBindingsDialogTitle": "Bindings sauvegarde — {name}",
-    "pbsAddBinding": "Ajouter un binding",
-    "pbsPbsConnection": "Connexion PBS",
-    "pbsDatastore": "Datastore",
-    "pbsNamespace": "Namespace",
-    "pbsNamespaceHelper": "ex. tenant-acme/vdc-prod",
-    "pbsNamespaceManualHelper": "Doit correspondre au namespace déjà créé sur PBS",
-    "pbsPveStorageNameLabel": "Nom du storage PVE existant (optionnel)",
-    "pbsPveStorageNameHelper": "Si vous avez déjà configuré un storage pbs: dans PVE, nommez-le ici pour que le tenant le voie",
-    "pbsOverrideAutoNs": "Remplacer le namespace automatique",
-    "pbsModeManual": "Mode manuel (l'admin a déjà créé le namespace + storage PVE)",
-    "pbsModeAuto": "Auto-provisionnement",
-    "pbsNoBinding": "Aucun binding pour le moment.",
-    "pbsFingerprintMissing": "Aucune connexion PBS n'a d'empreinte capturée. Ouvrez les paramètres de la connexion PBS et cliquez sur \"Mettre à jour l'empreinte\" d'abord.",
-    "pbsRemoveConfirm": "Supprimer ce binding PBS ? Le namespace et les sauvegardes sont conservés ; seul le storage PVE et le sous-token sont supprimés.",
-    "pbsManualSuccess": "Binding manuel enregistré. Storage PVE : {status}",
-    "pbsNamespaceRequired": "Le namespace est obligatoire en mode manuel",
-    "pbsCancel": "Annuler",
-    "pbsCreate": "Créer",
-    "pbsClose": "Fermer"
+    }
   }
 }

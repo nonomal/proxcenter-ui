@@ -1173,7 +1173,6 @@
     "tabDirectory": "Directory",
     "tabGeneral": "General",
     "tabRetention": "Retention",
-    "tabNotifications": "Notifications",
     "tabNoteTemplate": "Note Template",
     "tabAdvanced": "Advanced",
     "statusLabel": "Status",
@@ -3326,6 +3325,14 @@
     "httpError": "Error {status}"
   },
   "errorPages": {
+    "401": {
+      "title": "Not authenticated",
+      "description": "You must be logged in to access this page."
+    },
+    "403": {
+      "title": "Access denied",
+      "description": "You do not have the necessary permissions to access this page."
+    },
     "404": {
       "title": "Page not found",
       "description": "The page you are looking for does not exist or has been moved."
@@ -3333,14 +3340,6 @@
     "500": {
       "title": "Server error",
       "description": "An unexpected error occurred. Please try again later."
-    },
-    "403": {
-      "title": "Access denied",
-      "description": "You do not have the necessary permissions to access this page."
-    },
-    "401": {
-      "title": "Not authenticated",
-      "description": "You must be logged in to access this page."
     },
     "503": {
       "title": "Service unavailable",
@@ -5649,7 +5648,28 @@
     "sharedBridgesNoDetected": "No bridges detected on this cluster.",
     "sharedBridgeLabelPlaceholder": "Optional label (e.g. WAN /29 - 203.0.113.24/29)",
     "maxVnets": "Max VNets",
-    "maxVnetsHint": "Maximum number of VNets the tenant can create in this vDC. Empty = unlimited."
+    "maxVnetsHint": "Maximum number of VNets the tenant can create in this vDC. Empty = unlimited.",
+    "pbsBindings": "Backup (PBS)",
+    "pbsBindingsDialogTitle": "Backup bindings — {name}",
+    "pbsAddBinding": "Add binding",
+    "pbsPbsConnection": "PBS connection",
+    "pbsDatastore": "Datastore",
+    "pbsNamespace": "Namespace",
+    "pbsNamespaceHelper": "e.g. tenant-acme/vdc-prod",
+    "pbsNamespaceManualHelper": "Must match the namespace you already created on PBS",
+    "pbsPveStorageNameLabel": "Existing PVE storage name (optional)",
+    "pbsPveStorageNameHelper": "If you already configured a pbs: storage in PVE, name it here so the tenant sees it",
+    "pbsOverrideAutoNs": "Override auto namespace",
+    "pbsModeManual": "Manual mode (admin already created namespace + PVE storage)",
+    "pbsModeAuto": "Auto provision",
+    "pbsNoBinding": "No binding yet.",
+    "pbsFingerprintMissing": "None of the PBS connections have a captured fingerprint. Open the PBS connection settings and click \"Update fingerprint\" first.",
+    "pbsRemoveConfirm": "Remove this PBS binding? The namespace and backups remain; only the PVE storage and sub-token are deleted.",
+    "pbsManualSuccess": "Manual binding recorded. PVE storage: {status}",
+    "pbsNamespaceRequired": "Namespace is required in manual mode",
+    "pbsCancel": "Cancel",
+    "pbsCreate": "Create",
+    "pbsClose": "Close"
   },
   "myVdc": {
     "title": "My Datacenter",
@@ -5692,27 +5712,6 @@
       "hostsTitle": "Hosts",
       "noHosts": "No host assigned to this vDC.",
       "loadError": "Load failed"
-    },
-    "pbsBindings": "Backup (PBS)",
-    "pbsBindingsDialogTitle": "Backup bindings — {name}",
-    "pbsAddBinding": "Add binding",
-    "pbsPbsConnection": "PBS connection",
-    "pbsDatastore": "Datastore",
-    "pbsNamespace": "Namespace",
-    "pbsNamespaceHelper": "e.g. tenant-acme/vdc-prod",
-    "pbsNamespaceManualHelper": "Must match the namespace you already created on PBS",
-    "pbsPveStorageNameLabel": "Existing PVE storage name (optional)",
-    "pbsPveStorageNameHelper": "If you already configured a pbs: storage in PVE, name it here so the tenant sees it",
-    "pbsOverrideAutoNs": "Override auto namespace",
-    "pbsModeManual": "Manual mode (admin already created namespace + PVE storage)",
-    "pbsModeAuto": "Auto provision",
-    "pbsNoBinding": "No binding yet.",
-    "pbsFingerprintMissing": "None of the PBS connections have a captured fingerprint. Open the PBS connection settings and click \"Update fingerprint\" first.",
-    "pbsRemoveConfirm": "Remove this PBS binding? The namespace and backups remain; only the PVE storage and sub-token are deleted.",
-    "pbsManualSuccess": "Manual binding recorded. PVE storage: {status}",
-    "pbsNamespaceRequired": "Namespace is required in manual mode",
-    "pbsCancel": "Cancel",
-    "pbsCreate": "Create",
-    "pbsClose": "Close"
+    }
   }
 }

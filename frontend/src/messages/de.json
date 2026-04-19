@@ -1140,7 +1140,6 @@
     "tabDirectory": "Verzeichnis",
     "tabGeneral": "Allgemein",
     "tabRetention": "Aufbewahrung",
-    "tabNotifications": "Benachrichtigungen",
     "tabNoteTemplate": "Notizvorlage",
     "tabAdvanced": "Erweitert",
     "statusLabel": "Status",
@@ -3285,6 +3284,14 @@
     "httpError": "Fehler {status}"
   },
   "errorPages": {
+    "401": {
+      "title": "Nicht authentifiziert",
+      "description": "Sie müssen angemeldet sein, um auf diese Seite zuzugreifen."
+    },
+    "403": {
+      "title": "Zugriff verweigert",
+      "description": "Sie haben nicht die erforderlichen Berechtigungen, um auf diese Seite zuzugreifen."
+    },
     "404": {
       "title": "Page nicht gefunden",
       "description": "Die Seite, die Sie suchen, existiert nicht oder wurde verschoben."
@@ -3292,14 +3299,6 @@
     "500": {
       "title": "Server Fehler",
       "description": "Ein unerwarteter Fehler ist aufgetreten. Bitte versuchen Sie es später erneut."
-    },
-    "403": {
-      "title": "Zugriff verweigert",
-      "description": "Sie haben nicht die erforderlichen Berechtigungen, um auf diese Seite zuzugreifen."
-    },
-    "401": {
-      "title": "Nicht authentifiziert",
-      "description": "Sie müssen angemeldet sein, um auf diese Seite zuzugreifen."
     },
     "503": {
       "title": "Dienst nicht verfügbar",
@@ -5572,7 +5571,9 @@
       "hostsTitle": "Hosts",
       "noHosts": "Diesem vDC ist kein Host zugewiesen.",
       "loadError": "Laden fehlgeschlagen"
-    },
+    }
+  },
+  "vdc": {
     "pbsBindings": "Backup (PBS)",
     "pbsBindingsDialogTitle": "Backup-Bindings — {name}",
     "pbsAddBinding": "Binding hinzufügen",

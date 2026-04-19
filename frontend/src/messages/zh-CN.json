@@ -1143,7 +1143,6 @@
     "tabDirectory": "目录",
     "tabGeneral": "常规",
     "tabRetention": "保留策略",
-    "tabNotifications": "通知",
     "tabNoteTemplate": "备注模板",
     "tabAdvanced": "高级",
     "statusLabel": "状态",
@@ -5570,7 +5569,9 @@
       "hostsTitle": "主机",
       "noHosts": "此 vDC 未分配主机。",
       "loadError": "加载失败"
-    },
+    }
+  },
+  "vdc": {
     "pbsBindings": "备份 (PBS)",
     "pbsBindingsDialogTitle": "备份绑定 — {name}",
     "pbsAddBinding": "添加绑定",
