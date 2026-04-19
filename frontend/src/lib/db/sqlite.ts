@@ -442,6 +442,31 @@ export function getDb() {
       UNIQUE(vdc_id, vxlan_tag)
     );
     CREATE INDEX IF NOT EXISTS idx_vdc_vnets_vdc ON vdc_vnets(vdc_id);
+
+    CREATE TABLE IF NOT EXISTS vdc_pbs_namespaces (
+      id                 TEXT PRIMARY KEY,
+      vdc_id             TEXT NOT NULL REFERENCES vdcs(id) ON DELETE CASCADE,
+      pbs_connection_id  TEXT NOT NULL,
+      datastore          TEXT NOT NULL,
+      namespace          TEXT NOT NULL,
+      mode               TEXT NOT NULL DEFAULT 'auto',
+      pbs_token_id       TEXT,
+      pbs_token_secret   TEXT,
+      created_at         TEXT DEFAULT (datetime('now')),
+      UNIQUE (pbs_connection_id, datastore, namespace)
+    );
+    CREATE INDEX IF NOT EXISTS idx_vdc_pbs_namespaces_vdc ON vdc_pbs_namespaces(vdc_id);
+
+    CREATE TABLE IF NOT EXISTS vdc_pbs_pve_storages (
+      id                    TEXT PRIMARY KEY,
+      vdc_pbs_namespace_id  TEXT NOT NULL REFERENCES vdc_pbs_namespaces(id) ON DELETE CASCADE,
+      pve_connection_id     TEXT NOT NULL,
+      pve_storage_name      TEXT NOT NULL,
+      managed               INTEGER NOT NULL DEFAULT 1,
+      created_at            TEXT DEFAULT (datetime('now')),
+      UNIQUE (pve_connection_id, pve_storage_name)
+    );
+    CREATE INDEX IF NOT EXISTS idx_vdc_pbs_pve_storages_binding ON vdc_pbs_pve_storages(vdc_pbs_namespace_id);
   `)
 
   // Phase 4a migration: vdc_quotas.max_vnets (nullable = unlimited)

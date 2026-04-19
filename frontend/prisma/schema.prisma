@@ -28,6 +28,7 @@ model Connection {
   longitude     Float?
   locationLabel String?
   apiTokenEnc String
+  fingerprint String?   // SHA256 cert fingerprint; populated for PBS connections
 
   // Custom ProxCenter tags (semicolon-separated)
   tags          String?
