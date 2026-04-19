@@ -1,0 +1,56 @@
+import { pveFetch } from './client'
+import type { PveConn } from '@/lib/connections/getConnection'
+
+export function sanitizeStorageName(tenantSlug: string, vdcSlug: string, prefix = 'pbs-'): string {
+  const clean = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '')
+  const core = `${clean(tenantSlug)}-${clean(vdcSlug)}`.slice(0, 40 - prefix.length)
+  return `${prefix}${core}`
+}
+
+export async function pbsStorageExists(conn: PveConn, storage: string): Promise<boolean> {
+  try {
+    const r = await pveFetch<any>(conn, `/storage/${encodeURIComponent(storage)}`)
+    return !!r
+  } catch (e: any) {
+    if (/\b404\b/.test(String(e?.message))) return false
+    throw e
+  }
+}
+
+export interface CreatePbsStorageArgs {
+  storage: string
+  server: string
+  datastore: string
+  namespace: string
+  username: string
+  password: string
+  fingerprint: string
+  nodes: string[]
+  port?: number
+}
+
+export async function createPbsStorage(conn: PveConn, args: CreatePbsStorageArgs): Promise<void> {
+  if (await pbsStorageExists(conn, args.storage)) return
+  const body: Record<string, any> = {
+    storage: args.storage,
+    type: 'pbs',
+    server: args.server,
+    datastore: args.datastore,
+    namespace: args.namespace,
+    username: args.username,
+    password: args.password,
+    fingerprint: args.fingerprint,
+    content: 'backup',
+  }
+  if (args.nodes.length) body.nodes = args.nodes.join(',')
+  if (args.port) body.port = args.port
+  await pveFetch(conn, '/storage', { method: 'POST', body })
+}
+
+export async function deletePbsStorage(conn: PveConn, storage: string): Promise<void> {
+  try {
+    await pveFetch(conn, `/storage/${encodeURIComponent(storage)}`, { method: 'DELETE' })
+  } catch (e: any) {
+    if (!/\b404\b/.test(String(e?.message))) throw e
+  }
+}
