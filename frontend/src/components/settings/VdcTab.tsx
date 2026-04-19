@@ -520,7 +520,7 @@ export default function VdcTab() {
               <i className="ri-pencil-line" />
             </IconButton>
           </Tooltip>
-          <Tooltip title="Backup (PBS)">
+          <Tooltip title={t('vdc.pbsBindings')}>
             <IconButton size="small" onClick={() => setPbsDialogVdc({ id: params.row.id, name: params.row.name })}>
               <i className="ri-save-3-line" />
             </IconButton>
