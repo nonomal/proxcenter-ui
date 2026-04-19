@@ -90,9 +90,10 @@ export async function setNamespaceAcl(
 }
 
 /**
- * Grant DatastoreAudit on the datastore root with propagate=false. Required
- * so PVE's `pbs:` storage probe can confirm the datastore exists; isolation
- * is preserved because siblings namespaces are not covered (propagate=false).
+ * Grant DatastoreAudit on the datastore root (propagate=true). Required so
+ * PVE's `pbs:` storage probe can confirm the datastore exists. Datastore.Audit
+ * only allows seeing the datastore + namespace *names* — no data access — so
+ * propagating it does not leak backup content between tenants.
  */
 export async function setDatastoreAuditAcl(
   conn: PbsClientOptions,
@@ -105,7 +106,7 @@ export async function setDatastoreAuditAcl(
       path: `/datastore/${datastore}`,
       'auth-id': authId,
       role: 'DatastoreAudit',
-      propagate: false,
+      propagate: true,
     } as any,
   })
 }
