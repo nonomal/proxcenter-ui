@@ -5,6 +5,8 @@ import { checkPermission, PERMISSIONS } from "@/lib/rbac"
 import { getVdcById, updateVdc, deleteVdc } from "@/lib/vdc"
 import { audit } from "@/lib/audit"
 import { requireProviderTenant } from "@/lib/tenant"
+import { listBindingsForVdc } from "@/lib/db/vdcPbsBindings"
+import { unbindFromVdc } from "@/lib/vdc/pbsOrchestrator"
 
 export const runtime = "nodejs"
 
@@ -102,6 +104,13 @@ export async function DELETE(_req: Request, ctx: RouteContext) {
     const existing = getVdcById(id)
     if (!existing) {
       return NextResponse.json({ error: "vDC not found" }, { status: 404 })
+    }
+
+    // Cascade: unbind each PBS binding first (cleanup PVE pbs: storage + sub-token;
+    // PBS namespace + its backups are preserved on purpose, see spec §5).
+    for (const b of listBindingsForVdc(id)) {
+      try { await unbindFromVdc(b.id) }
+      catch (e) { console.error(`[vdc-delete] pbs unbind ${b.id} failed:`, e) }
     }
 
     await deleteVdc(id)
