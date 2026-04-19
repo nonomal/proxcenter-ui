@@ -3,7 +3,9 @@
 import { useEffect, useState } from 'react'
 import { useTranslations } from 'next-intl'
 
-import { Box, Typography, Stack, Chip, LinearProgress, Paper } from '@mui/material'
+import { Box, Typography, Stack, Chip, Paper } from '@mui/material'
+
+import QuotaDonut from './QuotaDonut'
 
 interface Props {
   vdc: any
@@ -25,25 +27,8 @@ export default function MyVdcOverview({ vdc }: Props) {
 
   const usage = vdc.usage || {}
   const quota = vdc.quota || {}
-
-  const qRow = (label: string, used: number, max: number | null | undefined) => {
-    const pct = max ? Math.round((used / max) * 100) : 0
-    return (
-      <Stack direction="row" alignItems="center" spacing={2} key={label}>
-        <Typography variant="body2" sx={{ minWidth: 120 }}>{label}</Typography>
-        <Box sx={{ flex: 1 }}>
-          {max ? (
-            <LinearProgress variant="determinate" value={Math.min(pct, 100)} color={pct >= 90 ? 'error' : pct >= 70 ? 'warning' : 'primary'} />
-          ) : (
-            <Typography variant="caption">{t('vdc.quotaUnlimited')}</Typography>
-          )}
-        </Box>
-        <Typography variant="body2" sx={{ minWidth: 100 }}>
-          {used}{max ? ` / ${max}` : ''}
-        </Typography>
-      </Stack>
-    )
-  }
+  const unlimitedLabel = t('vdc.quotaUnlimited')
+  const formatMbAsGb = (mb: number) => `${(mb / 1024).toFixed(1)} GB`
 
   return (
     <Paper sx={{ p: 2 }}>
@@ -55,12 +40,30 @@ export default function MyVdcOverview({ vdc }: Props) {
       </Stack>
 
       <Typography variant="subtitle2" sx={{ mt: 2 }}>{t('myVdc.quotas')}</Typography>
-      <Stack spacing={1} mt={1}>
-        {qRow(t('vdc.maxVcpus'), usage.usedVcpus || 0, quota.maxVcpus)}
-        {qRow(t('vdc.maxRam'), Math.round((usage.usedRamMb || 0) / 1024), quota.maxRamMb ? Math.round(quota.maxRamMb / 1024) : null)}
-        {qRow(t('vdc.maxVms'), usage.usedVms || 0, quota.maxVms)}
-        {qRow(t('vdc.maxVnets'), (vdc.vnets || []).length, quota.maxVnets)}
-      </Stack>
+      <Box
+        sx={{
+          mt: 2,
+          display: 'grid',
+          gap: 2,
+          gridTemplateColumns: {
+            xs: 'repeat(2, 1fr)',
+            sm: 'repeat(4, 1fr)',
+          },
+          justifyItems: 'center',
+        }}
+      >
+        <QuotaDonut icon="ri-cpu-line" label={t('vdc.maxVcpus')} used={usage.usedVcpus || 0} max={quota.maxVcpus} unlimitedLabel={unlimitedLabel} />
+        <QuotaDonut
+          icon="ri-ram-2-line"
+          label={t('vdc.maxRam')}
+          used={usage.usedRamMb || 0}
+          max={quota.maxRamMb ?? null}
+          formatValue={formatMbAsGb}
+          unlimitedLabel={unlimitedLabel}
+        />
+        <QuotaDonut icon="ri-computer-line" label={t('vdc.maxVms')} used={usage.usedVms || 0} max={quota.maxVms} unlimitedLabel={unlimitedLabel} />
+        <QuotaDonut icon="ri-git-branch-line" label={t('vdc.maxVnets')} used={(vdc.vnets || []).length} max={quota.maxVnets} unlimitedLabel={unlimitedLabel} />
+      </Box>
 
       <Typography variant="subtitle2" sx={{ mt: 2 }}>{t('myVdc.uplinks')}</Typography>
       <Stack direction="row" spacing={1} flexWrap="wrap" mt={1}>

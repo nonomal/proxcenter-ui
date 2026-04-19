@@ -9,6 +9,31 @@ import { getAllowedBridgesForTenant, parseBridgeFromNet } from "@/lib/vdc/vnets"
 
 export const runtime = "nodejs"
 
+/**
+ * Sum the total size (in MB) of NEW disk allocations in a PVE create payload.
+ * Matches qemu disk keys (scsi0, virtio0, ide0, sata0, efidisk0, tpmstate0)
+ * and lxc mount points (rootfs, mp0..mp9). Size format `storage:<number>` is
+ * GB for new allocations; entries whose value is a volid (e.g.
+ * `storage:vm-100-disk-0`) are existing attaches and are skipped. CDROM/media
+ * entries are ignored.
+ */
+function sumNewDiskStorageMb(body: Record<string, any>): number {
+  const diskKeyRe = /^(scsi|virtio|ide|sata|efidisk|tpmstate)\d+$|^rootfs$|^mp\d+$/
+  const sizeRe = /^[^:]+:(\d+(?:\.\d+)?)$/
+  let totalMb = 0
+  for (const [key, raw] of Object.entries(body || {})) {
+    if (!diskKeyRe.test(key)) continue
+    if (typeof raw !== 'string') continue
+    if (/\bmedia=cdrom\b/.test(raw)) continue
+    const [head] = raw.split(',')
+    const m = head.match(sizeRe)
+    if (!m) continue
+    const gb = parseFloat(m[1])
+    if (Number.isFinite(gb) && gb > 0) totalMb += Math.round(gb * 1024)
+  }
+  return totalMb
+}
+
 // POST /api/v1/connections/{id}/guests/{type}/{node}
 // Create a new VM (qemu) or LXC container
 export async function POST(
@@ -47,11 +72,13 @@ export async function POST(
         // Estimate resources from body
         const vcpus = parseInt(body.cores || '1') * parseInt(body.sockets || '1')
         const ramMb = parseInt(body.memory || '512')
+        const storageMb = sumNewDiskStorageMb(body)
 
         const quotaCheck = await checkVdcQuota(id, vdcInfo.poolName, vdcInfo.quota, {
           type: 'create',
           addVcpus: vcpus,
           addRamMb: ramMb,
+          addStorageMb: storageMb,
           addVms: 1,
         })
 

@@ -39,13 +39,20 @@ export default function VnetList({ vdcId, quota }: Props) {
   const quotaReached = quota?.maxVnets != null && rows.length >= quota.maxVnets
 
   const columns: GridColDef[] = [
-    { field: 'pveName', headerName: t('myVdc.vnetName'), flex: 1, renderCell: (p) => <Typography fontFamily="monospace">{p.value}</Typography> },
+    {
+      field: 'pveName',
+      headerName: t('myVdc.vnetName'),
+      flex: 1,
+      renderCell: (p) => <Typography variant="body2" fontFamily="monospace">{p.value}</Typography>,
+    },
     { field: 'description', headerName: t('myVdc.vnetDescription'), flex: 2 },
-    { field: 'vxlanTag', headerName: 'VNI', width: 100 },
+    { field: 'vxlanTag', headerName: 'VNI', width: 100, align: 'center', headerAlign: 'center' },
     {
       field: 'firewall',
       headerName: t('myVdc.vnetFirewall'),
       width: 120,
+      align: 'center',
+      headerAlign: 'center',
       renderCell: (p) => <Chip size="small" label={p.value ? t('myVdc.fwOn') : t('myVdc.fwOff')} color={p.value ? 'success' : 'default'} />,
     },
     {
@@ -53,8 +60,10 @@ export default function VnetList({ vdcId, quota }: Props) {
       headerName: '',
       width: 120,
       sortable: false,
+      align: 'center',
+      headerAlign: 'center',
       renderCell: (p) => (
-        <Stack direction="row" spacing={1}>
+        <Stack direction="row" spacing={0.5} justifyContent="center">
           <IconButton size="small" onClick={() => setEditVnet(p.row)}><i className="ri-pencil-line" /></IconButton>
           <IconButton size="small" color="error" onClick={() => setDeleteVnet(p.row)}><i className="ri-delete-bin-line" /></IconButton>
         </Stack>
@@ -83,7 +92,21 @@ export default function VnetList({ vdcId, quota }: Props) {
         loading={loading}
         disableRowSelectionOnClick
         autoHeight
+        density="compact"
+        rowHeight={38}
+        columnHeaderHeight={40}
         pageSizeOptions={[10, 25, 50]}
+        sx={{
+          '& .MuiDataGrid-cell': {
+            display: 'flex',
+            alignItems: 'center',
+            fontSize: '0.8125rem',
+          },
+          '& .MuiDataGrid-columnHeaderTitle': {
+            fontSize: '0.75rem',
+            fontWeight: 600,
+          },
+        }}
       />
 
       <VnetCreateDialog open={createOpen} vdcId={vdcId} onClose={() => setCreateOpen(false)} onCreated={() => { setCreateOpen(false); void reload() }} />

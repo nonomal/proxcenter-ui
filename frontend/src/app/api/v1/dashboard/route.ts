@@ -81,8 +81,10 @@ async function syncAlertsToDatabase(alerts: any[]) {
           }
         })
       }
-    } catch (e) {
-      // Ignorer les erreurs individuelles pour ne pas bloquer
+    } catch (e: any) {
+      // P2002: concurrent request created this row between our findUnique and create.
+      // The row exists — nothing to do on this tick; next poll will update normally.
+      if (e?.code === 'P2002') continue
       console.error('[dashboard] Alert upsert error:', e)
     }
   }
