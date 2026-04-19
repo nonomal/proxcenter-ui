@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto"
 
 import { getConnectionById } from "@/lib/connections/getConnection"
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
+import { guardTenantStorageWrite } from "@/lib/vdc/scope"
 import { setProgress, clearProgress } from "@/lib/upload-progress"
 
 export const runtime = "nodejs"
@@ -64,8 +65,11 @@ async function handleChunk(
   try {
     const { id, node, storage } = await ctx.params
 
-    const denied = await checkPermission(PERMISSIONS.STORAGE_UPLOAD, "connection", id)
+    const denied = await checkPermission(PERMISSIONS.CONNECTION_VIEW, "connection", id)
     if (denied) return denied
+
+    const storageBlock = await guardTenantStorageWrite(id, storage)
+    if (storageBlock) return storageBlock
 
     const chunkIndex = Number.parseInt(req.headers.get("x-chunk-index") || "0", 10)
     const totalSize = Number.parseInt(req.headers.get("x-total-size") || "0", 10)
@@ -196,8 +200,11 @@ async function handleFinalize(
   try {
     const { id, node, storage } = await ctx.params
 
-    const denied = await checkPermission(PERMISSIONS.STORAGE_UPLOAD, "connection", id)
+    const denied = await checkPermission(PERMISSIONS.CONNECTION_VIEW, "connection", id)
     if (denied) return denied
+
+    const storageBlock = await guardTenantStorageWrite(id, storage)
+    if (storageBlock) return storageBlock
 
     const session = streamingSessions.get(uploadId)
     if (!session) {

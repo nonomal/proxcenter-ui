@@ -384,7 +384,7 @@ export async function GET(
   try {
     const { connectionId, node, upid } = await params
 
-    const denied = await checkPermission(PERMISSIONS.TASKS_VIEW)
+    const denied = await checkPermission(PERMISSIONS.CONNECTION_VIEW)
     if (denied) return denied
 
     const { searchParams } = new URL(req.url)

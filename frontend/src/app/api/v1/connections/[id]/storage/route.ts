@@ -16,7 +16,10 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
 
     if (!id) return NextResponse.json({ error: "Missing params.id" }, { status: 400 })
 
-    const denied = await checkPermission(PERMISSIONS.STORAGE_VIEW, "connection", id)
+    // connection.view (not storage.view) so tenant admins can see the list.
+    // The endpoint already filters results by vDC scope below, so a tenant
+    // only sees the storages actually assigned to their vDC.
+    const denied = await checkPermission(PERMISSIONS.CONNECTION_VIEW, "connection", id)
     if (denied) return denied
 
     const conn = await getConnectionById(id)
@@ -149,13 +152,17 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
 
     let result = Array.from(aggregatedMap.values())
 
-    // vDC filtering: restrict to storages assigned to the tenant's vDC
+    // vDC filtering: restrict to storages assigned to the tenant's vDC.
+    // Also drop SHARED storages (ceph, nfs, cifs, …) from tenant views — on
+    // a shared pool, browsing content would leak filenames from every other
+    // tenant sitting on the same backend. Super admin (scope=null) keeps the
+    // full list, since they need to see shared storages to manage them.
     const tenantId = await getCurrentTenantId()
     const vdcScope = getVdcScope(tenantId)
     if (vdcScope) {
       const allowedStorages = vdcScope.storagesByConnection.get(id)
       if (allowedStorages) {
-        result = result.filter((s: any) => allowedStorages.has(s.storage))
+        result = result.filter((s: any) => allowedStorages.has(s.storage) && !s.shared)
       } else {
         result = []
       }

@@ -114,6 +114,31 @@ type StorageData = {
   sharedStorages: StorageItem[]
 }
 
+/**
+ * Restrict a StorageData payload to what the tenant's vDC allows:
+ * only the assigned nodes, only the non-shared storages, and the vDC's
+ * allowlist of storage IDs. Returns null if nothing remains for this
+ * connection (caller should skip the send).
+ */
+function scopeStorageDataForTenant(
+  data: StorageData,
+  scope: ReturnType<typeof getVdcScope>
+): StorageData | null {
+  if (!scope) return data
+  const allowedNodes = scope.nodesByConnection.get(data.connId)
+  const allowedStorages = scope.storagesByConnection.get(data.connId)
+  if (!allowedNodes || !allowedStorages || allowedNodes.size === 0 || allowedStorages.size === 0) {
+    return null
+  }
+  const nodes = data.nodes
+    .filter(n => allowedNodes.has(n.node))
+    .map(n => ({
+      ...n,
+      storages: n.storages.filter(s => !s.shared && allowedStorages.has(s.storage)),
+    }))
+  return { ...data, nodes, sharedStorages: [] }
+}
+
 type PbsDatastoreData = {
   name: string
   path?: string
@@ -575,7 +600,8 @@ export async function GET(request: NextRequest) {
             ? cached.storages.filter((s: any) => vdcScope.connectionIds.has(s.connId))
             : cached.storages
           for (const storage of visibleStorages) {
-            send('storage', storage)
+            const scoped = scopeStorageDataForTenant(storage, vdcScope)
+            if (scoped) send('storage', scoped)
           }
         }
         if (cached.externalHypervisors.length > 0) {
@@ -683,7 +709,8 @@ export async function GET(request: NextRequest) {
           const storageData = await fetchStoragesForCluster(conn, cluster)
           allStorages.push(storageData)
           if (isVisible) {
-            send('storage', storageData)
+            const scoped = scopeStorageDataForTenant(storageData, vdcScope)
+            if (scoped) send('storage', scoped)
           }
         })
 

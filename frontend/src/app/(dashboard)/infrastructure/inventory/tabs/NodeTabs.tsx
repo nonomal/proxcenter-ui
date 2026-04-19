@@ -518,8 +518,8 @@ export default function NodeTabs(props: any) {
                     </Box>
                   }
                 />}
-                {/* Onglets datacenter pour les hosts standalone (pas de ClusterTabs) */}
-                {!data.clusterName && (
+                {/* Datacenter-level tabs (standalone hosts) — provider scope, hidden from tenants */}
+                {isAdmin && !data.clusterName && (
                   <Tab
                     label={
                       <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
@@ -529,7 +529,7 @@ export default function NodeTabs(props: any) {
                     }
                   />
                 )}
-                {!data.clusterName && (
+                {isAdmin && !data.clusterName && (
                   <Tab
                     label={
                       <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
@@ -539,7 +539,7 @@ export default function NodeTabs(props: any) {
                     }
                   />
                 )}
-                {!data.clusterName && (
+                {isAdmin && !data.clusterName && (
                   <Tab
                     label={
                       <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
@@ -4155,18 +4155,16 @@ export default function NodeTabs(props: any) {
                   />
                 )}
 
-                {/* Onglet Settings - Index 16 pour standalone uniquement */}
-                {nodeTab === 16 && !data.clusterName && (
+                {/* Settings / Metric Server / Notifications — super admin only, standalone hosts */}
+                {isAdmin && nodeTab === 16 && !data.clusterName && (
                   <DatacenterSettingsTab connectionId={parseNodeId(selection?.id || '').connId} />
                 )}
 
-                {/* Onglet Metric Server - Index 17 pour standalone uniquement */}
-                {nodeTab === 17 && !data.clusterName && (
+                {isAdmin && nodeTab === 17 && !data.clusterName && (
                   <MetricServerTab connectionId={parseNodeId(selection?.id || '').connId} />
                 )}
 
-                {/* Onglet Notifications - Index 18 pour standalone uniquement */}
-                {nodeTab === 18 && !data.clusterName && (
+                {isAdmin && nodeTab === 18 && !data.clusterName && (
                   <NotificationsTab connectionId={parseNodeId(selection?.id || '').connId} />
                 )}
               </CardContent>

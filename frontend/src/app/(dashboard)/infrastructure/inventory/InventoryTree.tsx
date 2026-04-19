@@ -3114,8 +3114,10 @@ return (
           }}
         >
         {filteredClusters.map(clu => {
-          // Pour un standalone (1 seul node), on affiche directement le node sans niveau cluster
-          if (!clu.isCluster && clu.nodes.length === 1) {
+          // Flatten when only 1 node is visible (standalone host, or tenant
+          // scoped to a single node of a cluster) — no intermediate cluster
+          // root in either case.
+          if (clu.nodes.length === 1) {
             const n = clu.nodes[0]
 
             
@@ -3380,7 +3382,7 @@ return (
       </>
       )}
 
-      {/* ── Proxmox Storage Section ── */}
+      {/* ── Proxmox Storage Section ── (back on for review — still cluster-wide, rely on vDC filtering for tenants) */}
       {viewMode === 'tree' && clusterStorages.length > 0 && (
         <>
           <Box
@@ -3462,85 +3464,46 @@ return (
               </Box>
             )
 
-            // Standalone (1 node) : flatten — no intermediate node level
-            if (!cs.isCluster && cs.nodes.length <= 1) {
-              const allStorages = [...cs.sharedStorages, ...(cs.nodes[0]?.storages || [])]
-              const nodeStatus = cs.nodes[0]?.status
-              return (
-                <TreeItem
-                  key={`storage-cluster:${cs.connId}`}
-                  itemId={`storage-cluster:${cs.connId}`}
-                  label={
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
-                      <NodeIcon status={nodeStatus} size={16} />
-                      <span style={{ fontSize: 13 }}>{cs.connName}</span>
-                      <span style={{ opacity: 0.4, fontSize: 11 }}>({allStorages.length})</span>
-                    </Box>
-                  }
-                >
-                  {allStorages.map(s => (
-                    <TreeItem
-                      key={`storage:${cs.connId}:${s.storage}:${s.node}`}
-                      itemId={`storage:${cs.connId}:${s.storage}:${s.node}`}
-                      label={storageLabel(s)}
-                    />
-                  ))}
-                </TreeItem>
-              )
-            }
-
-            // Cluster (multi-nodes) : cluster > shared + per-node local storages
-            return (
+            // STORAGE section is flat: one root entry per node (no cluster
+            // wrapper), matching native Proxmox VE storage tree. Shared
+            // cluster storages are shown once, before the per-node list.
+            const sharedItems = cs.sharedStorages.map(s => (
               <TreeItem
-                key={`storage-cluster:${cs.connId}`}
-                itemId={`storage-cluster:${cs.connId}`}
+                key={`storage:${cs.connId}:${s.storage}`}
+                itemId={`storage:${cs.connId}:${s.storage}`}
+                label={storageLabel(s)}
+              />
+            ))
+            const nodeItems = cs.nodes.filter(n => n.storages.length > 0).map(n => (
+              <TreeItem
+                key={`storage-node:${cs.connId}:${n.node}`}
+                itemId={`storage-node:${cs.connId}:${n.node}`}
                 label={
                   <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
-                    <ClusterIcon nodes={cs.nodes} />
-                    <span style={{ fontSize: 13 }}>{cs.connName}</span>
+                    <NodeIcon status={n.status} size={16} />
+                    <span style={{ fontSize: 13, opacity: n.status === 'online' ? 1 : 0.5 }}>{n.node}</span>
+                    <span style={{ opacity: 0.4, fontSize: 11 }}>({n.storages.length})</span>
                   </Box>
                 }
               >
-                {/* Shared storages at cluster level */}
-                {cs.sharedStorages.map(s => (
+                {n.storages.map(s => (
                   <TreeItem
-                    key={`storage:${cs.connId}:${s.storage}`}
-                    itemId={`storage:${cs.connId}:${s.storage}`}
+                    key={`storage:${cs.connId}:${s.storage}:${n.node}`}
+                    itemId={`storage:${cs.connId}:${s.storage}:${n.node}`}
                     label={storageLabel(s)}
                   />
                 ))}
-                {/* Per-node local storages */}
-                {cs.nodes.filter(n => n.storages.length > 0).map(n => (
-                  <TreeItem
-                    key={`storage-node:${cs.connId}:${n.node}`}
-                    itemId={`storage-node:${cs.connId}:${n.node}`}
-                    label={
-                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
-                        <NodeIcon status={n.status} size={16} />
-                        <span style={{ fontSize: 13, opacity: n.status === 'online' ? 1 : 0.5 }}>{n.node}</span>
-                        <span style={{ opacity: 0.4, fontSize: 11 }}>({n.storages.length})</span>
-                      </Box>
-                    }
-                  >
-                    {n.storages.map(s => (
-                      <TreeItem
-                        key={`storage:${cs.connId}:${s.storage}:${n.node}`}
-                        itemId={`storage:${cs.connId}:${s.storage}:${n.node}`}
-                        label={storageLabel(s)}
-                      />
-                    ))}
-                  </TreeItem>
-                ))}
               </TreeItem>
-            )
+            ))
+            return [...sharedItems, ...nodeItems]
           })}
           </SimpleTreeView>
           </Collapse>
         </>
       )}
 
-      {/* ── Network Section ── */}
-      {viewMode === 'tree' && clusters.length > 0 && (
+      {/* ── Network Section ── (super admin only — cluster-wide network topology) */}
+      {viewMode === 'tree' && clusters.length > 0 && isAdmin && (
         <>
           <Box
             onClick={() => {

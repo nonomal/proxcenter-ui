@@ -62,6 +62,7 @@ import { formatDateTime } from '@/lib/i18n/date'
 import VmFirewallTab from '@/components/VmFirewallTab'
 import ChangeTrackingTab from './ChangeTrackingTab'
 import { useLicense, Features } from '@/contexts/LicenseContext'
+import { useRBAC } from '@/contexts/RBACContext'
 const AddDiskDialog = dynamic(() => import('@/components/HardwareModals').then(mod => ({ default: mod.AddDiskDialog })), { ssr: false })
 const AddNetworkDialog = dynamic(() => import('@/components/HardwareModals').then(mod => ({ default: mod.AddNetworkDialog })), { ssr: false })
 const EditDiskDialog = dynamic(() => import('@/components/HardwareModals').then(mod => ({ default: mod.EditDiskDialog })), { ssr: false })
@@ -79,6 +80,9 @@ export default function VmDetailTabs(props: any) {
   const t = useTranslations()
   const locale = useLocale()
   const theme = useTheme()
+  // Replication and HA are provider-scope operations (cluster-wide resource
+  // planning, node failover policies) — hide their tabs from tenants.
+  const { isAdmin } = useRBAC()
   const vmConnId = props.selection?.id ? parseVmId(props.selection.id).connId : undefined
   const { getColor: getTagColor } = useTagColors(vmConnId)
   const chartTooltipStyle = { backgroundColor: theme.palette.background.paper, border: `1px solid ${theme.palette.divider}`, borderRadius: 4, color: theme.palette.text.primary }
@@ -354,6 +358,7 @@ export default function VmDetailTabs(props: any) {
                   }
                 />
                 <Tab
+                  sx={!isAdmin ? { display: 'none' } : undefined}
                   label={
                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
                       <i className="ri-repeat-line" style={{ fontSize: 16 }} />
@@ -374,7 +379,7 @@ export default function VmDetailTabs(props: any) {
                 />
                 {selectedVmIsCluster && (
                   <Tab
-                    sx={data?.isTemplate ? { display: 'none' } : undefined}
+                    sx={(!isAdmin || data?.isTemplate) ? { display: 'none' } : undefined}
                     label={
                       <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
                         <i className="ri-shield-check-line" style={{ fontSize: 16 }} />

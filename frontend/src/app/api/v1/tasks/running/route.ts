@@ -87,8 +87,15 @@ return 'ri-loader-4-line'
 // GET /api/v1/tasks/running - Récupère toutes les tâches en cours
 export async function GET() {
   try {
-    const denied = await checkPermission(PERMISSIONS.TASKS_VIEW)
+    // connection.view baseline — tenants without tasks.view still get a
+    // scoped view of their own nodes' running tasks via the vDC filter
+    // below. Super admins see everything.
+    const denied = await checkPermission(PERMISSIONS.CONNECTION_VIEW)
     if (denied) return denied
+
+    const { getCurrentTenantId } = await import('@/lib/tenant')
+    const { getVdcScope } = await import('@/lib/vdc/scope')
+    const vdcScope = getVdcScope(await getCurrentTenantId())
 
     const prisma = await getSessionPrisma()
     // Récupérer uniquement les connexions PVE
@@ -143,13 +150,13 @@ export async function GET() {
 
           // Filtrer uniquement les tâches en cours
           // Une tâche est "en cours" si elle n'a pas de endtime ET pas de status (ou status vide)
+          const allowedNodes = vdcScope?.nodesByConnection.get(conn.id)
           const running = tasks.filter(t => {
-            // Si endtime existe, la tâche est terminée
             if (t.endtime) return false
-
-            // Si status existe et n'est pas vide, la tâche est terminée
             if (t.status && t.status !== '') return false
-            
+            // Tenant scope: drop tasks whose node is outside the vDC's nodes.
+            if (allowedNodes && t.node && !allowedNodes.has(t.node)) return false
+
 return true
           })
           

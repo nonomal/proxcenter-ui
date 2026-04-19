@@ -7,7 +7,7 @@ export const runtime = 'nodejs'
 
 export async function GET() {
   try {
-    const permError = await checkPermission(PERMISSIONS.EVENTS_VIEW)
+    const permError = await checkPermission(PERMISSIONS.CONNECTION_VIEW)
     if (permError) return permError
 
     const data = await orchestratorFetch<any>('/changes/settings')

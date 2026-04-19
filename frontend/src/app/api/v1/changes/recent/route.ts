@@ -8,7 +8,9 @@ export const runtime = 'nodejs'
 
 export async function GET(req: Request) {
   try {
-    const permError = await checkPermission(PERMISSIONS.EVENTS_VIEW)
+    // connection.view baseline; results are filtered below by the tenant's
+    // connection allowlist so cross-tenant change events never leak.
+    const permError = await checkPermission(PERMISSIONS.CONNECTION_VIEW)
     if (permError) return permError
 
     const { searchParams } = new URL(req.url)

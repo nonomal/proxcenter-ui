@@ -58,8 +58,14 @@ return 'info'
 export async function GET(req: Request) {
   try {
     const prisma = await getSessionPrisma()
-    const permError = await checkPermission(PERMISSIONS.EVENTS_VIEW)
+    // connection.view baseline — tenants get a scoped feed filtered by their
+    // vDC's nodes below. Super admins (no scope) see everything.
+    const permError = await checkPermission(PERMISSIONS.CONNECTION_VIEW)
     if (permError) return permError
+
+    const { getCurrentTenantId } = await import('@/lib/tenant')
+    const { getVdcScope } = await import('@/lib/vdc/scope')
+    const vdcScope = getVdcScope(await getCurrentTenantId())
 
     const { searchParams } = new URL(req.url)
     const limit = Math.min(Number.parseInt(searchParams.get('limit') || '100'), 500)
@@ -133,6 +139,13 @@ export async function GET(req: Request) {
               }
             } catch {}
 
+            // Tenant vDC scope: drop tasks that ran on a node outside the
+            // tenant's authorised set. Super admin keeps the full list.
+            const allowedNodes = vdcScope?.nodesByConnection.get(conn.id)
+            if (allowedNodes) {
+              tasks = tasks.filter(t => !t.node || allowedNodes.has(t.node))
+            }
+
             // Traiter les tâches - trier par date décroissante d'abord
             tasks.sort((a, b) => (b.starttime || 0) - (a.starttime || 0))
             const limitedTasks = tasks.slice(0, limit)
@@ -184,6 +197,12 @@ export async function GET(req: Request) {
             } catch {
               // Pour les standalone, pas de logs cluster disponibles
               // On pourrait ajouter /nodes/{node}/syslog mais c'est très verbeux
+            }
+
+            // Same tenant scope filter for cluster logs.
+            const allowedNodesLogs = vdcScope?.nodesByConnection.get(conn.id)
+            if (allowedNodesLogs) {
+              logs = logs.filter(l => !l.node || allowedNodesLogs.has(l.node))
             }
 
             for (const log of logs) {

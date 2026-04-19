@@ -23,8 +23,12 @@ export async function GET(req: Request, ctx: RouteContext) {
     const node = url.searchParams.get("node")
     if (!node) return NextResponse.json({ error: "Missing node query param" }, { status: 400 })
 
+    // connection.view is enough to populate the VM-create network picker:
+    // the endpoint only returns names a tenant is already authorised to
+    // attach to (their vDC VNets + shared bridges). node.network would gate
+    // real network-management operations, not this read-only helper.
     const resourceId = buildNodeResourceId(connId, node)
-    const denied = await checkPermission(PERMISSIONS.NODE_NETWORK, "node", resourceId)
+    const denied = await checkPermission(PERMISSIONS.CONNECTION_VIEW, "node", resourceId)
     if (denied) return denied
 
     const tenantId = await getCurrentTenantId()
