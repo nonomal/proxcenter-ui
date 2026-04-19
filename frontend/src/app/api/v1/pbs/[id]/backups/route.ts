@@ -5,6 +5,8 @@ import { pbsFetch } from "@/lib/proxmox/pbs-client"
 import { getPbsConnectionById } from "@/lib/connections/getConnection"
 import { formatBytes } from "@/utils/format"
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
+import { getVdcScope } from "@/lib/vdc/scope"
+import { getCurrentTenantId } from "@/lib/tenant"
 import {
   type CachedBackup,
   getPbsBackupsFromCache,
@@ -217,6 +219,19 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> |
       allBackups = result.data
       warnings = result.warnings
       fromCache = result.fromCache
+    }
+
+    // Tenant scoping: restrict to the caller's authorised (datastore, namespace) pairs.
+    // Super admins (no vDC scope) see everything. Tenants with scope see only their bindings.
+    const scope = getVdcScope(await getCurrentTenantId())
+    if (scope) {
+      const allowed = scope.pbsNamespacesByConnection.get(id) ?? []
+      if (allowed.length === 0) {
+        allBackups = []
+      } else {
+        const allowedSet = new Set(allowed.map(p => `${p.datastore}|${p.namespace}`))
+        allBackups = allBackups.filter(b => allowedSet.has(`${b.datastore}|${b.namespace}`))
+      }
     }
 
     // Extract available namespaces from all backups (before filtering)
