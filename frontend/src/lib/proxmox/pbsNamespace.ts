@@ -24,7 +24,7 @@ export async function ensureNamespace(
   if (already) return
 
   const { head } = splitHeadTail(namespace)
-  const body: Record<string, any> = { ns: head }
+  const body: Record<string, any> = { name: head }
   if (opts.parent) body.parent = opts.parent
 
   await pbsFetch(conn, `/admin/datastore/${encodeURIComponent(datastore)}/namespace`, {

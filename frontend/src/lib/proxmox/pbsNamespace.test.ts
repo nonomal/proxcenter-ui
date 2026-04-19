@@ -18,14 +18,14 @@ describe('ensureNamespace', () => {
     await ensureNamespace(conn, 'store1', 'tenant-acme')
     expect(mock).toHaveBeenCalledTimes(2)
     expect(mock.mock.calls[1][1]).toBe('/admin/datastore/store1/namespace')
-    expect(mock.mock.calls[1][2]).toMatchObject({ method: 'POST', body: expect.objectContaining({ ns: 'tenant-acme' }) })
+    expect(mock.mock.calls[1][2]).toMatchObject({ method: 'POST', body: expect.objectContaining({ name: 'tenant-acme' }) })
   })
 
   it('creates a child namespace with parent param', async () => {
     mock.mockResolvedValueOnce([])
     mock.mockResolvedValueOnce({})
     await ensureNamespace(conn, 'store1', 'tenant-acme/vdc-prod', { parent: 'tenant-acme' })
-    expect(mock.mock.calls[1][2].body).toMatchObject({ ns: 'vdc-prod', parent: 'tenant-acme' })
+    expect(mock.mock.calls[1][2].body).toMatchObject({ name: 'vdc-prod', parent: 'tenant-acme' })
   })
 
   it('skips creation when namespace already exists', async () => {
