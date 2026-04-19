@@ -16,9 +16,11 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
   const { id } = await ctx.params
   try {
     const conn = await getPbsConnectionById(id)
-    const datastores = await pbsFetch<Array<{ store: string }>>(conn, '/admin/datastore')
-    return NextResponse.json({ data: (datastores || []).map(d => d.store) })
+    const datastores = await pbsFetch<Array<{ store?: string; name?: string }>>(conn, '/admin/datastore')
+    const names = (datastores || []).map(d => d.store || d.name).filter((n): n is string => !!n)
+    return NextResponse.json({ data: names })
   } catch (e: any) {
+    console.error(`[pbs-datastores] failed for ${id}:`, e?.message || e)
     return NextResponse.json({ error: e?.message || String(e) }, { status: 502 })
   }
 }
