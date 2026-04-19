@@ -5,6 +5,8 @@ import { useEffect, useMemo, useState } from 'react'
 import dynamic from 'next/dynamic'
 import { useSearchParams, useRouter } from 'next/navigation'
 
+import { useSession } from 'next-auth/react'
+
 import { useTranslations } from 'next-intl'
 
 import {
@@ -2566,6 +2568,9 @@ export default function SettingsPage() {
   const searchParams = useSearchParams()
   const { hasFeature, loading: licenseLoading } = useLicense()
   const { isAdmin: isSuperAdmin } = useRBAC()
+  const { data: session } = useSession()
+  const currentTenantId = session?.user?.tenantId || 'default'
+  const isProviderTenant = currentTenantId === 'default'
 
   const { setPageInfo } = usePageTitle()
 
@@ -2585,7 +2590,7 @@ export default function SettingsPage() {
 
   // Check if a tab's required feature is available
   const isTabAvailable = (tab) => {
-    if (tab.superAdminOnly && !isSuperAdmin) return false
+    if (tab.providerOnly && !(isSuperAdmin && isProviderTenant)) return false
     if (licenseLoading) return true
     if (!tab.requiredFeature) return true
     return hasFeature(tab.requiredFeature)
@@ -2594,22 +2599,22 @@ export default function SettingsPage() {
   const allTabNames = ['connections', 'appearance', 'notifications', 'ldap', 'oidc', 'license', 'ai', 'green', 'white-label', 'vdc', 'tenants']
 
   const allTabs = [
-    { label: t('settings.connections'), icon: 'ri-link', component: ConnectionsTab },
+    { label: t('settings.connections'), icon: 'ri-link', component: ConnectionsTab, providerOnly: true },
     { label: t('settings.appearance'), icon: 'ri-palette-line', component: AppearanceTab },
     { label: t('settings.notifications'), icon: 'ri-notification-3-line', component: NotificationsTab, requiredFeature: Features.NOTIFICATIONS },
     { label: 'LDAP / Active Directory', icon: 'ri-server-line', component: LdapConfigTab, requiredFeature: Features.LDAP },
     { label: 'OIDC / SSO', icon: 'ri-shield-keyhole-line', component: OidcConfigTab, requiredFeature: Features.OIDC },
-    { label: t('settings.license'), icon: 'ri-key-2-line', component: LicenseTab },
-    { label: t('settings.ai'), icon: 'ri-robot-line', component: AITab, requiredFeature: Features.AI_INSIGHTS },
-    { label: 'RSE / Green IT', icon: 'ri-leaf-line', component: GreenTab, requiredFeature: Features.GREEN_METRICS },
-    { label: 'White Label', icon: 'ri-pantone-line', component: WhiteLabelTab, requiredFeature: Features.WHITE_LABEL },
-    { label: t('vdc.title'), icon: 'ri-cloud-line', component: VdcTab, requiredFeature: Features.MULTI_TENANCY, superAdminOnly: true },
-    { label: 'Tenants', icon: 'ri-building-line', component: TenantsTab, requiredFeature: Features.MULTI_TENANCY, superAdminOnly: true },
+    { label: t('settings.license'), icon: 'ri-key-2-line', component: LicenseTab, providerOnly: true },
+    { label: t('settings.ai'), icon: 'ri-robot-line', component: AITab, requiredFeature: Features.AI_INSIGHTS, providerOnly: true },
+    { label: 'RSE / Green IT', icon: 'ri-leaf-line', component: GreenTab, requiredFeature: Features.GREEN_METRICS, providerOnly: true },
+    { label: 'White Label', icon: 'ri-pantone-line', component: WhiteLabelTab, requiredFeature: Features.WHITE_LABEL, providerOnly: true },
+    { label: t('vdc.title'), icon: 'ri-cloud-line', component: VdcTab, requiredFeature: Features.MULTI_TENANCY, providerOnly: true },
+    { label: 'Tenants', icon: 'ri-building-line', component: TenantsTab, requiredFeature: Features.MULTI_TENANCY, providerOnly: true },
   ]
 
-  // Hide tabs that require superAdmin when user is not superAdmin (e.g. Tenants tab)
+  // Hide provider-only tabs (Tenants, vDC) unless super admin AND currently in provider tenant
   const visibleIndices = allTabs.reduce((acc, tab, idx) => {
-    if (!tab.superAdminOnly || isSuperAdmin) acc.push(idx)
+    if (!tab.providerOnly || (isSuperAdmin && isProviderTenant)) acc.push(idx)
     return acc
   }, [])
 

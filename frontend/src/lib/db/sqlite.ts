@@ -473,13 +473,18 @@ export function getDb() {
     ).run('default', 'default', 'Default', 'Default tenant for all existing data', 1, now, now)
   }
 
-  // Migrate existing users to DEFAULT tenant
+  // Safety net: ensure every user belongs to at least one tenant.
+  // Only attaches orphan users (no membership anywhere) to 'default' — users
+  // already scoped to another tenant stay put, so we don't fight the
+  // provider-admin who moved them out of 'default' on purpose.
   try {
     const now = new Date().toISOString()
-    db.exec(`
-      INSERT OR IGNORE INTO user_tenants (user_id, tenant_id, is_default, joined_at)
-      SELECT id, 'default', 1, '${now}' FROM users
-    `)
+    db.prepare(
+      `INSERT OR IGNORE INTO user_tenants (user_id, tenant_id, is_default, joined_at)
+       SELECT u.id, 'default', 1, ?
+       FROM users u
+       WHERE NOT EXISTS (SELECT 1 FROM user_tenants ut WHERE ut.user_id = u.id)`
+    ).run(now)
   } catch {}
 
   // Add tenant_id column to tenant-scoped tables
@@ -776,14 +781,10 @@ export function getDb() {
         permissions: [
           'vm.view', 'vm.console', 'vm.start', 'vm.stop', 'vm.restart', 'vm.suspend',
           'vm.snapshot', 'vm.backup', 'vm.clone', 'vm.migrate', 'vm.config', 'vm.delete', 'vm.create',
-          'storage.view', 'storage.content', 'storage.upload', 'storage.delete',
           'node.view', 'connection.view',
           'backup.view', 'backup.restore', 'backup.delete',
           'backup.job.view', 'backup.job.create', 'backup.job.edit', 'backup.job.delete', 'backup.job.run',
-          'events.view', 'tasks.view',
-          'alerts.view', 'alerts.manage',
-          'automation.view', 'automation.manage',
-          'reports.view',
+          'admin.users', 'admin.rbac', 'admin.settings',
           'sdn.vnet.view', 'sdn.vnet.create', 'sdn.vnet.edit', 'sdn.vnet.delete', 'sdn.vnet.firewall',
         ]
       },
@@ -912,14 +913,10 @@ export function getDb() {
       role_tenant_admin: [
         'vm.view', 'vm.console', 'vm.start', 'vm.stop', 'vm.restart', 'vm.suspend',
         'vm.snapshot', 'vm.backup', 'vm.clone', 'vm.migrate', 'vm.config', 'vm.delete', 'vm.create',
-        'storage.view', 'storage.content', 'storage.upload', 'storage.delete',
         'node.view', 'connection.view',
         'backup.view', 'backup.restore', 'backup.delete',
         'backup.job.view', 'backup.job.create', 'backup.job.edit', 'backup.job.delete', 'backup.job.run',
-        'events.view', 'tasks.view',
-        'alerts.view', 'alerts.manage',
-        'automation.view', 'automation.manage',
-        'reports.view',
+        'admin.users', 'admin.rbac', 'admin.settings',
         'sdn.vnet.view', 'sdn.vnet.create', 'sdn.vnet.edit', 'sdn.vnet.delete', 'sdn.vnet.firewall',
       ],
       role_tenant_operator: [

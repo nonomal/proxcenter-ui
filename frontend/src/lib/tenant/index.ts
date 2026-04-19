@@ -48,9 +48,19 @@ export async function getCurrentTenantId(): Promise<string> {
 
 /**
  * Get tenants accessible by a user.
+ * Super admins see all enabled tenants; regular users see only those they are members of.
  */
 export function getUserTenants(userId: string): Tenant[] {
   const db = getDb()
+  if (isSuperAdminLocal(userId)) {
+    return db.prepare(`
+      SELECT t.id, t.slug, t.name, t.description, t.enabled, t.settings,
+             t.created_by as createdBy, t.created_at as createdAt, t.updated_at as updatedAt
+      FROM tenants t
+      WHERE t.enabled = 1
+      ORDER BY (t.id = 'default') DESC, t.name ASC
+    `).all() as Tenant[]
+  }
   return db.prepare(`
     SELECT t.id, t.slug, t.name, t.description, t.enabled, t.settings,
            t.created_by as createdBy, t.created_at as createdAt, t.updated_at as updatedAt
@@ -76,9 +86,27 @@ export function getUserDefaultTenantId(userId: string): string {
 }
 
 /**
+ * Check if a user holds role_super_admin on any tenant.
+ * Super admins have cross-tenant access by design.
+ * Inlined here (instead of importing from lib/rbac) to avoid a circular import.
+ */
+function isSuperAdminLocal(userId: string): boolean {
+  const db = getDb()
+  const row = db.prepare(`
+    SELECT 1 FROM rbac_user_roles
+    WHERE user_id = ? AND role_id = 'role_super_admin'
+      AND (expires_at IS NULL OR expires_at > datetime('now'))
+    LIMIT 1
+  `).get(userId)
+  return !!row
+}
+
+/**
  * Check if a user has access to a specific tenant.
+ * Super admins always have access to every tenant.
  */
 export function userHasAccessToTenant(userId: string, tenantId: string): boolean {
+  if (isSuperAdminLocal(userId)) return true
   const db = getDb()
   const row = db.prepare(
     "SELECT 1 FROM user_tenants WHERE user_id = ? AND tenant_id = ?"
@@ -234,6 +262,23 @@ export async function verifyConnectionOwnership(connectionId: string): Promise<R
 }
 
 /**
+ * Enforce that the current session is operating in the provider tenant.
+ * Used to scope provider-level operations (tenant CRUD, vDC admin, provider-bridges).
+ * Returns a 403 NextResponse if not in the provider tenant, or null if OK.
+ */
+export async function requireProviderTenant(): Promise<Response | null> {
+  const tenantId = await getCurrentTenantId()
+  if (tenantId !== DEFAULT_TENANT_ID) {
+    const { NextResponse } = await import('next/server')
+    return NextResponse.json(
+      { error: 'This operation is only available from the provider tenant' },
+      { status: 403 }
+    )
+  }
+  return null
+}
+
+/**
  * List all tenants (admin only).
  */
 export function listTenants(): Tenant[] {
@@ -293,22 +338,77 @@ export function deleteTenant(id: string): boolean {
 
 /**
  * Add a user to a tenant.
+ * If isDefault is true, clears any existing is_default flag for the user.
+ * If isDefault is false and the user has no existing default tenant yet, this
+ * membership becomes the user's default automatically (so login lands here
+ * instead of falling back to the provider tenant).
  */
 export function addUserToTenant(userId: string, tenantId: string, isDefault = false): void {
   const db = getDb()
   const now = new Date().toISOString()
-  db.prepare(
-    "INSERT OR IGNORE INTO user_tenants (user_id, tenant_id, is_default, joined_at) VALUES (?, ?, ?, ?)"
-  ).run(userId, tenantId, isDefault ? 1 : 0, now)
+
+  const tx = db.transaction(() => {
+    let markDefault = isDefault
+    if (!markDefault) {
+      const existingDefault = db.prepare(
+        "SELECT 1 FROM user_tenants WHERE user_id = ? AND is_default = 1 LIMIT 1"
+      ).get(userId)
+      if (!existingDefault) markDefault = true
+    }
+
+    if (markDefault) {
+      db.prepare("UPDATE user_tenants SET is_default = 0 WHERE user_id = ?").run(userId)
+    }
+
+    db.prepare(
+      "INSERT OR IGNORE INTO user_tenants (user_id, tenant_id, is_default, joined_at) VALUES (?, ?, ?, ?)"
+    ).run(userId, tenantId, markDefault ? 1 : 0, now)
+  })
+  tx()
+}
+
+export class TenantMembershipError extends Error {
+  constructor(message: string, public readonly code: "LAST_TENANT" | "NOT_A_MEMBER") {
+    super(message)
+    this.name = "TenantMembershipError"
+  }
 }
 
 /**
  * Remove a user from a tenant.
+ * Refuses to strip the user's last membership (would orphan them).
+ * Cleans up role and direct-permission assignments scoped to the removed tenant.
+ * If the removed membership was the user's default, transfers the default flag
+ * to another of their memberships (oldest join first).
  */
 export function removeUserFromTenant(userId: string, tenantId: string): void {
-  if (tenantId === DEFAULT_TENANT_ID) return
   const db = getDb()
-  db.prepare("DELETE FROM user_tenants WHERE user_id = ? AND tenant_id = ?").run(userId, tenantId)
+
+  const existing = db.prepare(
+    "SELECT is_default FROM user_tenants WHERE user_id = ? AND tenant_id = ?"
+  ).get(userId, tenantId) as { is_default: number } | undefined
+  if (!existing) throw new TenantMembershipError("User is not a member of this tenant", "NOT_A_MEMBER")
+
+  const replacement = db.prepare(
+    "SELECT tenant_id FROM user_tenants WHERE user_id = ? AND tenant_id != ? ORDER BY joined_at ASC LIMIT 1"
+  ).get(userId, tenantId) as { tenant_id: string } | undefined
+  if (!replacement) {
+    throw new TenantMembershipError(
+      "Cannot remove the user's last tenant membership",
+      "LAST_TENANT"
+    )
+  }
+
+  const tx = db.transaction(() => {
+    db.prepare("DELETE FROM user_tenants WHERE user_id = ? AND tenant_id = ?").run(userId, tenantId)
+    db.prepare("DELETE FROM rbac_user_roles WHERE user_id = ? AND tenant_id = ?").run(userId, tenantId)
+    db.prepare("DELETE FROM rbac_user_permissions WHERE user_id = ? AND tenant_id = ?").run(userId, tenantId)
+    if (existing.is_default) {
+      db.prepare("UPDATE user_tenants SET is_default = 1 WHERE user_id = ? AND tenant_id = ?")
+        .run(userId, replacement.tenant_id)
+    }
+  })
+  tx()
 }
 
 /**

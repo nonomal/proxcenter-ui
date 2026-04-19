@@ -8,6 +8,7 @@ import { AreaChart, Area, ResponsiveContainer, Tooltip as RTooltip } from 'recha
 
 import { widgetColors } from './themeColors'
 import { useLicense } from '@/contexts/LicenseContext'
+import { useRBAC } from '@/contexts/RBACContext'
 import { useDRSStatus, useDRSMetrics, useDRSRecommendations, useDRSAllMigrations } from '@/hooks/useDRS'
 import { computeDrsHealthScore } from '@/lib/utils/drs-health'
 import { mapTimeRange, formatTime } from './timeRangeUtils'
@@ -301,10 +302,13 @@ function DrsStatusWidget({ data, loading, config, timeRange }) {
   const t = useTranslations()
   const theme = useTheme()
   const { isEnterprise } = useLicense()
-  const { data: status, isLoading: statusLoading } = useDRSStatus(isEnterprise)
-  const { data: metricsData, isLoading: metricsLoading } = useDRSMetrics(isEnterprise)
-  const { data: recommendations } = useDRSRecommendations(isEnterprise)
-  const { data: allMigrations } = useDRSAllMigrations(isEnterprise)
+  const { hasPermission } = useRBAC()
+  const canViewDrs = hasPermission('automation.view')
+  const drsEnabled = isEnterprise && canViewDrs
+  const { data: status, isLoading: statusLoading } = useDRSStatus(drsEnabled)
+  const { data: metricsData, isLoading: metricsLoading } = useDRSMetrics(drsEnabled)
+  const { data: recommendations } = useDRSRecommendations(drsEnabled)
+  const { data: allMigrations } = useDRSAllMigrations(drsEnabled)
   const [trendsByCluster, setTrendsByCluster] = useState({})
 
   const clusterMap = useMemo(() => {

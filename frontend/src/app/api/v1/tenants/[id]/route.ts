@@ -1,7 +1,7 @@
 export const dynamic = "force-dynamic"
 import { NextRequest, NextResponse } from "next/server"
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
-import { updateTenant, deleteTenant, DEFAULT_TENANT_ID } from "@/lib/tenant"
+import { updateTenant, deleteTenant, DEFAULT_TENANT_ID, requireProviderTenant } from "@/lib/tenant"
 import { getDb } from "@/lib/db/sqlite"
 import { audit } from "@/lib/audit"
 import { getServerSession } from "next-auth"
@@ -11,6 +11,8 @@ type Ctx = { params: Promise<{ id: string }> }
 
 // GET /api/v1/tenants/:id
 export async function GET(_req: NextRequest, ctx: Ctx) {
+  const providerGate = await requireProviderTenant()
+  if (providerGate) return providerGate
   const denied = await checkPermission(PERMISSIONS.ADMIN_TENANTS)
   if (denied) return denied
 
@@ -26,6 +28,8 @@ export async function GET(_req: NextRequest, ctx: Ctx) {
 
 // PUT /api/v1/tenants/:id
 export async function PUT(req: NextRequest, ctx: Ctx) {
+  const providerGate = await requireProviderTenant()
+  if (providerGate) return providerGate
   const denied = await checkPermission(PERMISSIONS.ADMIN_TENANTS)
   if (denied) return denied
 
@@ -66,6 +70,8 @@ export async function PUT(req: NextRequest, ctx: Ctx) {
 
 // DELETE /api/v1/tenants/:id
 export async function DELETE(_req: NextRequest, ctx: Ctx) {
+  const providerGate = await requireProviderTenant()
+  if (providerGate) return providerGate
   const denied = await checkPermission(PERMISSIONS.ADMIN_TENANTS)
   if (denied) return denied
 

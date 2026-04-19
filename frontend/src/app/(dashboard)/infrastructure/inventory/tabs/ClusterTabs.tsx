@@ -73,6 +73,7 @@ import { useLicense, Features } from '@/contexts/LicenseContext'
 import { useToast } from '@/contexts/ToastContext'
 import { useRollingUpdates } from '@/contexts/RollingUpdateContext'
 import { useDRSStatus, useDRSMetrics, useDRSSettings, useDRSRecommendations } from '@/hooks/useDRS'
+import { useRBAC } from '@/contexts/RBACContext'
 import { computeDrsHealthScore } from '@/lib/utils/drs-health'
 
 function HaResourceChips({ resources, allVms }: { resources: string; allVms: any[] }) {
@@ -197,11 +198,13 @@ export default function ClusterTabs(props: any) {
   const t = useTranslations()
   const router = useRouter()
   const { hasFeature, loading: licenseLoading } = useLicense()
+  const { hasPermission } = useRBAC()
   const isEnterprise = !licenseLoading && hasFeature(Features.DRS)
-  const { data: drsStatus } = useDRSStatus(isEnterprise)
-  const { data: metricsData } = useDRSMetrics(isEnterprise)
-  const { data: drsSettings } = useDRSSettings(isEnterprise)
-  const { data: drsRecommendations, mutate: mutateRecs } = useDRSRecommendations(isEnterprise)
+  const drsEnabled = isEnterprise && hasPermission('automation.view')
+  const { data: drsStatus } = useDRSStatus(drsEnabled)
+  const { data: metricsData } = useDRSMetrics(drsEnabled)
+  const { data: drsSettings } = useDRSSettings(drsEnabled)
+  const { data: drsRecommendations, mutate: mutateRecs } = useDRSRecommendations(drsEnabled)
   const [evaluating, setEvaluating] = useState(false)
   const [recsExpanded, setRecsExpanded] = useState(false)
   const [executingRecId, setExecutingRecId] = useState<string | null>(null)

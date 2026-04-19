@@ -4,12 +4,15 @@ import { authOptions } from "@/lib/auth/config"
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
 import { listVdcs, createVdc } from "@/lib/vdc"
 import { audit } from "@/lib/audit"
+import { requireProviderTenant } from "@/lib/tenant"
 
 export const runtime = "nodejs"
 
 // GET /api/v1/admin/vdcs — list all vDCs (optionally filtered by ?tenantId=xxx)
 export async function GET(req: NextRequest) {
   try {
+    const providerGate = await requireProviderTenant()
+    if (providerGate) return providerGate
     const denied = await checkPermission(PERMISSIONS.ADMIN_SETTINGS)
     if (denied) return denied
 
@@ -25,6 +28,8 @@ export async function GET(req: NextRequest) {
 // POST /api/v1/admin/vdcs — create a vDC
 export async function POST(req: NextRequest) {
   try {
+    const providerGate = await requireProviderTenant()
+    if (providerGate) return providerGate
     const denied = await checkPermission(PERMISSIONS.ADMIN_SETTINGS)
     if (denied) return denied
 

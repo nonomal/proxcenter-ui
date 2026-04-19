@@ -1,7 +1,7 @@
 export const dynamic = "force-dynamic"
 import { NextRequest, NextResponse } from "next/server"
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
-import { getTenantUsers, addUserToTenant, removeUserFromTenant, DEFAULT_TENANT_ID } from "@/lib/tenant"
+import { getTenantUsers, addUserToTenant, removeUserFromTenant, TenantMembershipError, requireProviderTenant } from "@/lib/tenant"
 import { getDb } from "@/lib/db/sqlite"
 import { audit } from "@/lib/audit"
 import { getServerSession } from "next-auth"
@@ -11,6 +11,8 @@ type Ctx = { params: Promise<{ id: string }> }
 
 // GET /api/v1/tenants/:id/users
 export async function GET(_req: NextRequest, ctx: Ctx) {
+  const providerGate = await requireProviderTenant()
+  if (providerGate) return providerGate
   const denied = await checkPermission(PERMISSIONS.ADMIN_TENANTS)
   if (denied) return denied
 
@@ -21,6 +23,8 @@ export async function GET(_req: NextRequest, ctx: Ctx) {
 
 // POST /api/v1/tenants/:id/users — add user to tenant
 export async function POST(req: NextRequest, ctx: Ctx) {
+  const providerGate = await requireProviderTenant()
+  if (providerGate) return providerGate
   const denied = await checkPermission(PERMISSIONS.ADMIN_TENANTS)
   if (denied) return denied
 
@@ -68,15 +72,12 @@ export async function POST(req: NextRequest, ctx: Ctx) {
 
 // DELETE /api/v1/tenants/:id/users — remove user from tenant
 export async function DELETE(req: NextRequest, ctx: Ctx) {
+  const providerGate = await requireProviderTenant()
+  if (providerGate) return providerGate
   const denied = await checkPermission(PERMISSIONS.ADMIN_TENANTS)
   if (denied) return denied
 
   const { id } = await ctx.params
-
-  if (id === DEFAULT_TENANT_ID) {
-    return NextResponse.json({ error: "Cannot remove users from the default tenant" }, { status: 400 })
-  }
-
   const body = await req.json()
   const session = await getServerSession(authOptions)
 
@@ -84,7 +85,15 @@ export async function DELETE(req: NextRequest, ctx: Ctx) {
     return NextResponse.json({ error: "userId is required" }, { status: 400 })
   }
 
-  removeUserFromTenant(body.userId, id)
+  try {
+    removeUserFromTenant(body.userId, id)
+  } catch (e) {
+    if (e instanceof TenantMembershipError) {
+      const status = e.code === "LAST_TENANT" ? 409 : 404
+      return NextResponse.json({ error: e.message, code: e.code }, { status })
+    }
+    throw e
+  }
 
   await audit({
     action: "tenant.remove_user",

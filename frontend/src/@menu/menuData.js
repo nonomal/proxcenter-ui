@@ -55,7 +55,7 @@ export const menuData = (t = (key) => key) => [
         label: t('navigation.templates'),
         icon: 'ri-cloud-line',
         href: '/automation/templates',
-        permissions: ['vm.create', 'vm.clone']
+        permissions: ['automation.view'] // Provider-scope: template catalogue management
       }
     ]
   },
@@ -64,42 +64,42 @@ export const menuData = (t = (key) => key) => [
     isSection: true,
     label: t('navigation.orchestration'),
     icon: 'ri-robot-line',
-    permissions: ['vm.migrate', 'vm.config'], // Section nécessite au moins une de ces permissions
+    permissions: ['automation.view'], // Provider-scope orchestration: DRS, SR, flows, resources
     requiredFeature: 'drs', // Whole section requires DRS feature
     children: [
       {
         label: t('navigation.drs'),
         icon: 'ri-loop-left-fill',
         href: '/automation/drs',
-        permissions: ['vm.migrate'],
+        permissions: ['automation.view'],
         requiredFeature: 'drs'
       },
       {
         label: t('navigation.siteRecovery'),
         icon: 'ri-shield-star-line',
         href: '/automation/site-recovery',
-        permissions: ['vm.config'],
+        permissions: ['automation.view'],
         requiredFeature: 'ceph_replication'
       },
       {
         label: t('navigation.networkSecurity'),
         icon: 'ri-shield-flash-fill',
         href: '/automation/network',
-        permissions: ['admin.settings'],
+        permissions: ['automation.view'],
         requiredFeature: 'microsegmentation'
       },
       {
         label: t('navigation.networkFlows'),
         icon: 'ri-flow-chart',
         href: '/operations/network-flows',
-        permissions: ['vm.view'],
+        permissions: ['automation.view'],
         requiredFeature: 'sflow_monitoring'
       },
       {
         label: t('navigation.resources'),
         icon: 'ri-pie-chart-fill',
         href: '/infrastructure/resources',
-        permissions: ['vm.view', 'node.view'],
+        permissions: ['automation.view'],
         requiredFeature: 'green_metrics' // Requires Enterprise license
       }
     ]

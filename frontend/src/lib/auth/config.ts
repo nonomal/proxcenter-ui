@@ -139,12 +139,15 @@ export const authOptions: NextAuthOptions = {
         const loginNow = new Date().toISOString()
         db.prepare("UPDATE users SET last_login_at = ? WHERE id = ?").run(loginNow, user.id)
 
-        // Ensure user has a user_tenants entry
-        const hasUserTenant = db.prepare(
-          "SELECT 1 FROM user_tenants WHERE user_id = ? AND tenant_id = 'default'"
+        // Safety net: ensure user has at least one tenant membership.
+        // Only fall back to 'default' if the user has been stripped of every
+        // membership — otherwise tenant-scoped users would be re-added to
+        // 'default' on every login.
+        const anyMembership = db.prepare(
+          "SELECT 1 FROM user_tenants WHERE user_id = ? LIMIT 1"
         ).get(user.id)
 
-        if (!hasUserTenant) {
+        if (!anyMembership) {
           db.prepare(
             `INSERT OR IGNORE INTO user_tenants (user_id, tenant_id, is_default, joined_at)
              VALUES (?, 'default', 1, ?)`
@@ -225,12 +228,12 @@ export const authOptions: NextAuthOptions = {
             "UPDATE users SET name = ?, avatar = ?, ldap_dn = ?, last_login_at = ?, updated_at = ? WHERE id = ?"
           ).run(ldapUser.name, ldapUser.avatar, ldapUser.dn, now, now, user.id)
 
-          // Ensure existing LDAP user has a user_tenants entry
-          const hasLdapTenant = db.prepare(
-            "SELECT 1 FROM user_tenants WHERE user_id = ? AND tenant_id = 'default'"
+          // Safety net only — see credentials provider above for rationale.
+          const hasAnyLdapTenant = db.prepare(
+            "SELECT 1 FROM user_tenants WHERE user_id = ? LIMIT 1"
           ).get(user.id)
 
-          if (!hasLdapTenant) {
+          if (!hasAnyLdapTenant) {
             db.prepare(
               `INSERT OR IGNORE INTO user_tenants (user_id, tenant_id, is_default, joined_at)
                VALUES (?, 'default', 1, ?)`
@@ -315,12 +318,12 @@ export const authOptions: NextAuthOptions = {
             "UPDATE users SET name = ?, oidc_sub = ?, last_login_at = ?, updated_at = ?, auth_provider = 'oidc' WHERE id = ?"
           ).run(name, sub, now, now, existing.id)
 
-          // Ensure existing user has a user_tenants entry
-          const hasTenant = db.prepare(
-            "SELECT 1 FROM user_tenants WHERE user_id = ? AND tenant_id = 'default'"
+          // Safety net only — see credentials provider above for rationale.
+          const hasAnyTenant = db.prepare(
+            "SELECT 1 FROM user_tenants WHERE user_id = ? LIMIT 1"
           ).get(existing.id)
 
-          if (!hasTenant) {
+          if (!hasAnyTenant) {
             db.prepare(
               `INSERT OR IGNORE INTO user_tenants (user_id, tenant_id, is_default, joined_at)
                VALUES (?, 'default', 1, ?)`

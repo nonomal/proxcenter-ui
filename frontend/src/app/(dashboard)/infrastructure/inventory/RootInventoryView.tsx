@@ -38,6 +38,7 @@ const MoveUpIcon = (props: any) => <i className="ri-upload-2-line" style={{ font
 
 import { useLicense } from '@/contexts/LicenseContext'
 import { useDRSStatus, useDRSMetrics } from '@/hooks/useDRS'
+import { useRBAC } from '@/contexts/RBACContext'
 import { computeDrsHealthScore } from '@/lib/utils/drs-health'
 import { PieChart, Pie, Cell, ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip as RechartsTooltip, CartesianGrid } from 'recharts'
 import { BulkAction } from '@/components/NodesTable'
@@ -96,10 +97,12 @@ function RootInventoryView({
   const t = useTranslations()
   const theme = useTheme()
 
-  // DRS data (Enterprise only)
+  // DRS data (Enterprise only, and provider-level perm)
   const { isEnterprise } = useLicense()
-  const { data: drsStatus, isLoading: drsStatusLoading } = useDRSStatus(isEnterprise)
-  const { data: drsMetrics, isLoading: drsMetricsLoading } = useDRSMetrics(isEnterprise)
+  const { hasPermission } = useRBAC()
+  const drsEnabled = isEnterprise && hasPermission('automation.view')
+  const { data: drsStatus, isLoading: drsStatusLoading } = useDRSStatus(drsEnabled)
+  const { data: drsMetrics, isLoading: drsMetricsLoading } = useDRSMetrics(drsEnabled)
 
   // Resource data for health banner
   const { kpis, trends, loading: resourceLoading } = useResourceData()

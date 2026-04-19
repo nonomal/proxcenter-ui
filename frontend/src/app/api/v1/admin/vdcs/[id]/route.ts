@@ -4,6 +4,7 @@ import { authOptions } from "@/lib/auth/config"
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
 import { getVdcById, updateVdc, deleteVdc } from "@/lib/vdc"
 import { audit } from "@/lib/audit"
+import { requireProviderTenant } from "@/lib/tenant"
 
 export const runtime = "nodejs"
 
@@ -17,6 +18,8 @@ export async function GET(_req: Request, ctx: RouteContext) {
 
     if (!id) return NextResponse.json({ error: "Missing vDC ID" }, { status: 400 })
 
+    const providerGate = await requireProviderTenant()
+    if (providerGate) return providerGate
     const denied = await checkPermission(PERMISSIONS.ADMIN_SETTINGS)
     if (denied) return denied
 
@@ -39,6 +42,8 @@ export async function PUT(req: Request, ctx: RouteContext) {
 
     if (!id) return NextResponse.json({ error: "Missing vDC ID" }, { status: 400 })
 
+    const providerGate = await requireProviderTenant()
+    if (providerGate) return providerGate
     const denied = await checkPermission(PERMISSIONS.ADMIN_SETTINGS)
     if (denied) return denied
 
@@ -86,6 +91,8 @@ export async function DELETE(_req: Request, ctx: RouteContext) {
 
     if (!id) return NextResponse.json({ error: "Missing vDC ID" }, { status: 400 })
 
+    const providerGate = await requireProviderTenant()
+    if (providerGate) return providerGate
     const denied = await checkPermission(PERMISSIONS.ADMIN_SETTINGS)
     if (denied) return denied
 

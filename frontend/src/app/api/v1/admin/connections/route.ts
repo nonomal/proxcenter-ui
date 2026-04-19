@@ -3,11 +3,14 @@ import { NextResponse } from "next/server"
 
 import { prisma } from "@/lib/db/prisma"
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
+import { requireProviderTenant } from "@/lib/tenant"
 
 export const runtime = "nodejs"
 
 export async function GET(req: Request) {
   try {
+    const providerGate = await requireProviderTenant()
+    if (providerGate) return providerGate
     const denied = await checkPermission(PERMISSIONS.ADMIN_SETTINGS)
     if (denied) return denied
 

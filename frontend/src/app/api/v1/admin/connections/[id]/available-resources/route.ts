@@ -4,6 +4,7 @@ import { pveFetch } from "@/lib/proxmox/client"
 import { getConnectionById } from "@/lib/connections/getConnection"
 import { prisma } from "@/lib/db/prisma"
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
+import { requireProviderTenant } from "@/lib/tenant"
 
 export const runtime = "nodejs"
 
@@ -16,6 +17,8 @@ export async function GET(_req: Request, ctx: RouteContext) {
 
     if (!id) return NextResponse.json({ error: "Missing connection ID" }, { status: 400 })
 
+    const providerGate = await requireProviderTenant()
+    if (providerGate) return providerGate
     const denied = await checkPermission(PERMISSIONS.ADMIN_SETTINGS)
     if (denied) return denied
 

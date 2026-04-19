@@ -1,14 +1,15 @@
 export const dynamic = "force-dynamic"
 import { NextRequest, NextResponse } from "next/server"
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
-import { listTenants, createTenant, addUserToTenant } from "@/lib/tenant"
-import { getDb } from "@/lib/db/sqlite"
+import { listTenants, createTenant, requireProviderTenant } from "@/lib/tenant"
 import { audit } from "@/lib/audit"
 import { getServerSession } from "next-auth"
 import { authOptions } from "@/lib/auth/config"
 
 // GET /api/v1/tenants — list all tenants (admin only)
 export async function GET() {
+  const providerGate = await requireProviderTenant()
+  if (providerGate) return providerGate
   const denied = await checkPermission(PERMISSIONS.ADMIN_TENANTS)
   if (denied) return denied
 
@@ -18,6 +19,8 @@ export async function GET() {
 
 // POST /api/v1/tenants — create a new tenant
 export async function POST(req: NextRequest) {
+  const providerGate = await requireProviderTenant()
+  if (providerGate) return providerGate
   const denied = await checkPermission(PERMISSIONS.ADMIN_TENANTS)
   if (denied) return denied
 
@@ -40,20 +43,6 @@ export async function POST(req: NextRequest) {
       description: body.description,
       createdBy: session?.user?.id,
     })
-
-    // Auto-assign the creator to the new tenant with super_admin role
-    if (session?.user?.id) {
-      addUserToTenant(session.user.id, tenant.id)
-
-      // Grant super_admin role in the new tenant
-      const db = getDb()
-      const now = new Date().toISOString()
-      const roleAssignId = `tenant_create_${tenant.id}_${Date.now()}`
-      db.prepare(
-        `INSERT OR IGNORE INTO rbac_user_roles (id, user_id, role_id, scope_type, tenant_id, granted_at)
-         VALUES (?, ?, 'role_super_admin', 'global', ?, ?)`
-      ).run(roleAssignId, session.user.id, tenant.id, now)
-    }
 
     await audit({
       action: "tenant.create",
