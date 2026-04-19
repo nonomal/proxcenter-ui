@@ -161,8 +161,16 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
     const vdcScope = getVdcScope(tenantId)
     if (vdcScope) {
       const allowedStorages = vdcScope.storagesByConnection.get(id)
-      if (allowedStorages) {
-        result = result.filter((s: any) => allowedStorages.has(s.storage) && !s.shared)
+      const allowedNodes = vdcScope.nodesByConnection.get(id)
+      if (allowedStorages && allowedNodes) {
+        result = result.filter((s: any) => {
+          if (!allowedStorages.has(s.storage)) return false
+          if (s.shared) return false
+          // Non-shared storages are per-node — only return rows whose node is
+          // actually authorised in the tenant's vDC. Avoids surfacing `local`
+          // from sibling nodes the tenant can't reach anyway.
+          return s.node && allowedNodes.has(s.node)
+        })
       } else {
         result = []
       }
