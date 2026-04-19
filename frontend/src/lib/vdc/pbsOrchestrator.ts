@@ -12,7 +12,7 @@ import {
 import { getConnectionById } from '@/lib/connections/getConnection'
 import {
   insertBinding, insertPveStorage, deleteBinding, deletePveStorage,
-  listPveStoragesForBinding, type PbsBindingRow,
+  listPveStoragesForBinding, findBindingByTuple, type PbsBindingRow,
 } from '@/lib/db/vdcPbsBindings'
 import { clearVdcScopeCache } from './scope'
 
@@ -117,6 +117,14 @@ export async function bindPbsToVdc(args: BindAutoArgs): Promise<{ binding: PbsBi
     const steps: StepStatus = { namespace: 'skipped', token: 'skipped', acl: 'skipped', pveStorages: [] }
 
     console.log(`[pbs-orchestrator] bind vdc=${args.vdcId} pbs=${args.pbsConnectionId} store=${args.datastore} ns=${namespace} base=${pbs.conn.baseUrl} rootUser=${pbs.rootUser}`)
+
+    // Pre-check: if a binding on this tuple already exists, fail BEFORE touching
+    // PBS. Otherwise ensureSubToken would rotate the PBS secret and leave the DB
+    // with the stale one, breaking future auth.
+    const existing = findBindingByTuple(args.pbsConnectionId, args.datastore, namespace)
+    if (existing) {
+      throw new Error(`Binding already exists (${existing.datastore}/${existing.namespace}). Delete it first if you want to recreate.`)
+    }
 
     await ensureNamespacePath(pbs.conn, args.datastore, namespace)
     console.log(`[pbs-orchestrator] namespace ensured: ${namespace}`)
