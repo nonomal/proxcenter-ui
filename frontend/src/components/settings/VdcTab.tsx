@@ -30,6 +30,8 @@ import { DataGrid, type GridColDef } from '@mui/x-data-grid'
 
 import { useTranslations } from 'next-intl'
 
+import VdcPbsBindingsDialog from './VdcPbsBindingsDialog'
+
 interface VdcFormState {
   name: string
   slug: string
@@ -118,6 +120,10 @@ export default function VdcTab() {
   const [providerBridges, setProviderBridges] = useState<Array<{ iface: string; nodes: string[]; type: string }>>([])
   const [selectedSharedBridges, setSelectedSharedBridges] = useState<Map<string, string>>(new Map())
 
+  // PBS bindings dialog
+  const [pbsDialogVdc, setPbsDialogVdc] = useState<{ id: string; name: string } | null>(null)
+  const [pbsConnections, setPbsConnections] = useState<Array<{ id: string; name: string; fingerprint: string | null }>>([])
+
   // Auto-clear success after 5s
   useEffect(() => {
     if (!success) return
@@ -166,6 +172,16 @@ export default function VdcTab() {
     fetchVdcs()
     fetchDropdowns()
   }, [fetchVdcs, fetchDropdowns])
+
+  useEffect(() => {
+    ;(async () => {
+      const r = await fetch('/api/v1/admin/connections?type=pbs')
+      if (r.ok) {
+        const j = await r.json()
+        setPbsConnections((j.data ?? []).map((c: any) => ({ id: c.id, name: c.name, fingerprint: c.fingerprint ?? null })))
+      }
+    })()
+  }, [])
 
   // Fetch available resources when connectionId changes
   useEffect(() => {
@@ -502,6 +518,11 @@ export default function VdcTab() {
           <Tooltip title={t('common.edit')}>
             <IconButton size="small" onClick={() => handleEdit(params.row)}>
               <i className="ri-pencil-line" />
+            </IconButton>
+          </Tooltip>
+          <Tooltip title="Backup (PBS)">
+            <IconButton size="small" onClick={() => setPbsDialogVdc({ id: params.row.id, name: params.row.name })}>
+              <i className="ri-save-3-line" />
             </IconButton>
           </Tooltip>
           <Tooltip title={t('common.delete')}>
@@ -1063,6 +1084,17 @@ export default function VdcTab() {
           </Button>
         </DialogActions>
       </Dialog>
+
+      {/* PBS Bindings Dialog */}
+      {pbsDialogVdc && (
+        <VdcPbsBindingsDialog
+          vdcId={pbsDialogVdc.id}
+          vdcName={pbsDialogVdc.name}
+          pbsConnections={pbsConnections}
+          open={!!pbsDialogVdc}
+          onClose={() => setPbsDialogVdc(null)}
+        />
+      )}
 
       {/* Delete Confirmation Dialog */}
       <Dialog open={!!deleteVdc} onClose={() => setDeleteVdc(null)}>

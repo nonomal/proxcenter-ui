@@ -31,6 +31,7 @@ export async function GET(req: Request) {
         baseUrl: true,
         hasCeph: true,
         sshEnabled: true,
+        fingerprint: true,
         createdAt: true,
       },
     })
