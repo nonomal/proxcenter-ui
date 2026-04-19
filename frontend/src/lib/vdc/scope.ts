@@ -37,7 +37,12 @@ interface CacheEntry {
 
 const scopeCache = new Map<string, CacheEntry>()
 
-const CACHE_TTL_MS = 60_000
+// Short TTL: scope drives VM-create pickers (nodes, storages, networks), so
+// stale reads are user-visible. Mutations call clearVdcScopeCache, but that
+// relies on the caller actually being invoked — this is a safety net when the
+// caller is out of band (direct DB edits, race between hot-reload and an
+// entry cached by the previous module instance).
+const CACHE_TTL_MS = 5_000
 
 // ---------------------------------------------------------------------------
 // getVdcScope
@@ -217,6 +222,50 @@ export function applyVdcFilter(cluster: any, scope: VdcScope | null): any {
     })
 
   return { ...cluster, nodes: filteredNodes }
+}
+
+// ---------------------------------------------------------------------------
+// guardTenantStorageWrite
+// ---------------------------------------------------------------------------
+
+/**
+ * Enforce that the current caller may write to a given PVE storage:
+ * - super admins (no vDC scope) pass through unchanged
+ * - tenants must target a storage listed in their vDC AND whose backend is
+ *   not shared (ceph/nfs/cifs leak content across tenants).
+ * Returns a Response (403) when blocked, null when allowed.
+ */
+export async function guardTenantStorageWrite(
+  connId: string,
+  storage: string
+): Promise<Response | null> {
+  const { getCurrentTenantId } = await import('@/lib/tenant')
+  const { NextResponse } = await import('next/server')
+  const { getConnectionById } = await import('@/lib/connections/getConnection')
+  const { pveFetch } = await import('@/lib/proxmox/client')
+
+  const scope = getVdcScope(await getCurrentTenantId())
+  if (!scope) return null
+
+  const allowed = scope.storagesByConnection.get(connId)
+  if (!allowed || !allowed.has(storage)) {
+    return NextResponse.json({ error: 'Storage not accessible' }, { status: 403 })
+  }
+
+  const conn = await getConnectionById(connId)
+  try {
+    const config = await pveFetch<any>(conn, `/storage/${encodeURIComponent(storage)}`)
+    if (config?.shared === 1 || config?.shared === true) {
+      return NextResponse.json(
+        { error: 'Shared storages are not writable from a tenant' },
+        { status: 403 }
+      )
+    }
+  } catch {
+    return NextResponse.json({ error: 'Storage not accessible' }, { status: 403 })
+  }
+
+  return null
 }
 
 // ---------------------------------------------------------------------------

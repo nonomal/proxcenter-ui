@@ -141,11 +141,12 @@ export interface CreateVnetParams {
   pveName: string
   zoneName: string
   tag: number
-  firewall?: boolean
 }
 
 /**
  * Creates a VNet on PVE. Caller must invoke applySdn(conn) afterwards.
+ * The VNet firewall toggle is NOT part of the VNet schema in PVE 8.x — use
+ * setVnetFirewallEnabled() after creation to enable/disable it.
  */
 export async function createVnetPve(conn: any, params: CreateVnetParams): Promise<void> {
   const body = new URLSearchParams()
@@ -153,7 +154,6 @@ export async function createVnetPve(conn: any, params: CreateVnetParams): Promis
   body.append('zone', params.zoneName)
   body.append('tag', String(params.tag))
   body.append('type', 'vnet')
-  body.append('firewall', params.firewall === false ? '0' : '1')
 
   try {
     await pveFetch(conn, '/cluster/sdn/vnets', { method: 'POST', body })
@@ -165,13 +165,39 @@ export async function createVnetPve(conn: any, params: CreateVnetParams): Promis
 export async function updateVnetPve(
   conn: any,
   pveName: string,
-  patch: { firewall?: boolean; alias?: string }
+  patch: { alias?: string }
 ): Promise<void> {
   const body = new URLSearchParams()
-  if (patch.firewall !== undefined) body.append('firewall', patch.firewall ? '1' : '0')
   if (patch.alias !== undefined) body.append('alias', patch.alias)
+  if ([...body.keys()].length === 0) return
 
   await pveFetch(conn, `/cluster/sdn/vnets/${encodeURIComponent(pveName)}`, { method: 'PUT', body })
+}
+
+/**
+ * Enable or disable the VNet-level firewall via the SDN firewall options
+ * endpoint: `/cluster/sdn/vnets/{vnet}/firewall/options` (PVE 8.3+).
+ * Older PVE builds may not implement this route — we swallow 501 responses
+ * and surface a clearer error so the caller can decide (e.g. skip when
+ * disabling, warn when enabling).
+ */
+export async function setVnetFirewallEnabled(conn: any, pveName: string, enabled: boolean): Promise<void> {
+  const body = new URLSearchParams()
+  body.append('enable', enabled ? '1' : '0')
+  try {
+    await pveFetch(conn, `/cluster/sdn/vnets/${encodeURIComponent(pveName)}/firewall/options`, { method: 'PUT', body })
+  } catch (err: any) {
+    const msg = String(err?.message || '')
+    // Not implemented: cluster runs a PVE that doesn't ship SDN VNet firewall.
+    if (msg.includes('501') || msg.toLowerCase().includes('not implemented')) {
+      throw new Error(
+        `VNet firewall is not supported on this Proxmox cluster — upgrade to PVE 8.3+ or leave the toggle off (${pveName}).`
+      )
+    }
+    // Missing options row is OK when we're turning it off.
+    if (!enabled && msg.includes('404')) return
+    throw new Error(`Failed to set VNet "${pveName}" firewall to ${enabled}: ${msg}`)
+  }
 }
 
 export async function deleteVnetPve(conn: any, pveName: string): Promise<void> {

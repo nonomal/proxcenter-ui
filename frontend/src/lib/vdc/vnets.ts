@@ -8,9 +8,11 @@ import { getConnectionById } from '@/lib/connections/getConnection'
 import { prisma } from '@/lib/db/prisma'
 
 import type { VdcVnet } from './types'
+import { clearVdcScopeCache } from './scope'
+
 import {
   createVnetPve,
-  updateVnetPve,
+  setVnetFirewallEnabled,
   deleteVnetPve,
   allocateVni,
   applySdn,
@@ -154,7 +156,6 @@ export async function createVnetForTenant(input: CreateVnetInput): Promise<VdcVn
     pveName: input.pveName,
     zoneName: vdc.sdnZoneName,
     tag,
-    firewall,
   })
 
   const id = randomUUID()
@@ -169,9 +170,30 @@ export async function createVnetForTenant(input: CreateVnetInput): Promise<VdcVn
     throw new Error(`Failed to persist VNet: ${err?.message}`)
   }
 
+  // applySdn MUST run before the firewall options endpoint: fresh VNets are
+  // in a "pending" state until applied, and PVE's firewall subsystem refuses
+  // to attach options to a VNet it doesn't see yet (500 "invalid vnet").
   try { await applySdn(conn) } catch (err: any) {
     console.warn(`[vdc-vnets] applySdn failed after create: ${err?.message}`)
   }
+
+  // Firewall default on a fresh VNet is "disabled" — only POST when the user
+  // asked for it enabled. If this fails we roll back both DB and PVE so the
+  // system state stays consistent.
+  if (firewall) {
+    try {
+      await setVnetFirewallEnabled(conn, input.pveName, true)
+    } catch (err: any) {
+      db.prepare('DELETE FROM vdc_vnets WHERE id = ?').run(id)
+      try { await deleteVnetPve(conn, input.pveName) } catch {}
+      try { await applySdn(conn) } catch {}
+      throw err
+    }
+  }
+
+  // Invalidate the tenant scope cache so the next network-choices /
+  // VM-create flow sees the new VNet instead of stale 60s-cached data.
+  clearVdcScopeCache(vdc.tenantId)
 
   return {
     id,
@@ -206,7 +228,7 @@ export async function updateVnetForTenant(
 
   if (patch.firewall !== undefined) {
     const conn = await getConn(vdc)
-    await updateVnetPve(conn, pveName, { firewall: patch.firewall })
+    await setVnetFirewallEnabled(conn, pveName, patch.firewall)
     try { await applySdn(conn) } catch (err: any) {
       console.warn(`[vdc-vnets] applySdn failed after update: ${err?.message}`)
     }
@@ -269,6 +291,8 @@ export async function deleteVnetForTenant(
   try { await applySdn(conn) } catch (err: any) {
     console.warn(`[vdc-vnets] applySdn failed after delete: ${err?.message}`)
   }
+
+  clearVdcScopeCache(vdc.tenantId)
 
   return { deleted: true }
 }
