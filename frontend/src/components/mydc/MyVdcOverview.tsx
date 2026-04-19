@@ -1,5 +1,6 @@
 'use client'
 
+import { useMemo } from 'react'
 import { useTranslations } from 'next-intl'
 
 import { Box, Paper, Typography } from '@mui/material'
@@ -26,8 +27,14 @@ export default function MyVdcOverview({ vdc }: Props) {
   const unlimitedLabel = t('vdc.quotaUnlimited')
   const formatMbAsGb = (mb: number) => `${(mb / 1024).toFixed(1)} GB`
 
-  const connectionIds: string[] = vdc.connectionId ? [vdc.connectionId] : []
-  const allowedStorages: string[] = Array.isArray(vdc.storages) ? vdc.storages : []
+  const connectionIds = useMemo<string[]>(
+    () => (vdc.connectionId ? [vdc.connectionId] : []),
+    [vdc.connectionId],
+  )
+  const allowedStorages = useMemo<string[]>(
+    () => (Array.isArray(vdc.storages) ? vdc.storages : []),
+    [vdc.storages],
+  )
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>

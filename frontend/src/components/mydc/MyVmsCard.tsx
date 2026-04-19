@@ -47,6 +47,11 @@ export default function MyVmsCard({ connectionIds }: Props) {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
+    if (connectionIds.length === 0) {
+      setGuests([])
+      setLoading(false)
+      return
+    }
     setLoading(true)
     const accepted = new Set(connectionIds)
     const found: Guest[] = []
@@ -80,14 +85,16 @@ export default function MyVmsCard({ connectionIds }: Props) {
 
     src.addEventListener('cluster', onCluster)
     src.addEventListener('done', onDone)
-    src.addEventListener('error', () => {
+    const onError = () => {
       setLoading(false)
       src.close()
-    })
+    }
+    src.addEventListener('error', onError)
 
     return () => {
       src.removeEventListener('cluster', onCluster)
       src.removeEventListener('done', onDone)
+      src.removeEventListener('error', onError)
       src.close()
     }
   }, [connectionIds])
@@ -126,7 +133,9 @@ export default function MyVmsCard({ connectionIds }: Props) {
         <Chip label={guests.length} size="small" sx={{ height: 20 }} />
       </Stack>
 
-      {!loading && guests.length === 0 ? (
+      {loading ? (
+        <Typography variant="caption" color="text.secondary">…</Typography>
+      ) : guests.length === 0 ? (
         <Stack alignItems="center" spacing={1} sx={{ py: 2 }}>
           <Typography variant="body2" color="text.secondary">{t('myVdc.cockpit.noVms')}</Typography>
           <Button size="small" variant="outlined" onClick={() => goInventory()} startIcon={<i className="ri-add-line" />}>
