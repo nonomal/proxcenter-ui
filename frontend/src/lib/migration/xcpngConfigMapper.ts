@@ -64,7 +64,10 @@ export function mapXoToPveConfig(
   }
 
   if (isEfi) {
-    params.efidisk0 = `${targetStorage}:1,efitype=4m,pre-enrolled-keys=0`
+    // pre-enrolled-keys=1 mirrors the Proxmox GUI default for UEFI VMs:
+    // OVMF ships with the standard Microsoft Secure Boot keys so guests
+    // (especially Windows) pass Secure Boot verification after migration.
+    params.efidisk0 = `${targetStorage}:1,efitype=4m,pre-enrolled-keys=1`
   }
 
   return params

@@ -2249,7 +2249,12 @@ export async function runV2vMigrationPipeline(
       }
       body.set("serial0", "socket")
       if (isEfi) {
-        body.set("efidisk0", `${config.targetStorage}:1,efitype=4m,pre-enrolled-keys=0`)
+        // pre-enrolled-keys=1 mirrors the Proxmox GUI default for UEFI
+        // VMs: OVMF ships with the standard Microsoft Secure Boot keys
+        // so Windows (and signed Linux shim bootloaders) pass Secure
+        // Boot verification after migration. Using =0 caused silent
+        // boot failures when the source VM had Secure Boot enabled.
+        body.set("efidisk0", `${config.targetStorage}:1,efitype=4m,pre-enrolled-keys=1`)
       }
       return body
     }
