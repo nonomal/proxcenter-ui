@@ -1,10 +1,12 @@
 import { NextResponse } from "next/server"
+import { cookies } from "next/headers"
 
 import { getSessionPrisma, getCurrentTenantId } from "@/lib/tenant"
 import { pveFetch } from "@/lib/proxmox/client"
 import { getConnectionById } from "@/lib/connections/getConnection"
 import { getDb } from "@/lib/db/sqlite"
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
+import { getDateLocale } from "@/lib/i18n/date"
 
 export const runtime = "nodejs"
 
@@ -515,8 +517,9 @@ function calculateGreenMetrics(data: {
 // Stratégie : filtrer les jours avec trop peu de nodes (données incomplètes)
 function formatTrendsForChartWeighted(
   globalAverages: Map<string, { cpu: number, ram: number, nodeCount: number }>,
-  storageData: Map<string, number[]>
-): { 
+  storageData: Map<string, number[]>,
+  dateLocale: string
+): {
   trends: Array<{ t: string, cpu: number, ram: number, storage?: number }>,
   periodStart: string | null,
   periodEnd: string | null,
@@ -608,7 +611,7 @@ return data.nodeCount >= minNodes
     const dayKey = currentDate.toISOString().split('T')[0]
     const dayData = dataIndex.get(dayKey)
     
-    const label = currentDate.toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' })
+    const label = currentDate.toLocaleDateString(dateLocale, { day: 'numeric', month: 'short' })
     
     if (dayData) {
       // On a des données pour ce jour
@@ -721,12 +724,14 @@ export async function GET(request: Request) {
 
     const prisma = await getSessionPrisma()
     const tenantId = await getCurrentTenantId()
+    const cookieStore = await cookies()
+    const dateLocale = getDateLocale(cookieStore.get('NEXT_LOCALE')?.value || 'en')
     // Parse query params (F4: connectionId filter)
     const { searchParams } = new URL(request.url)
     const filterConnectionId = searchParams.get('connectionId') || undefined
 
     // Check in-memory cache (avoids 26+ RRD calls to Proxmox)
-    const cacheKey = `${tenantId}:${filterConnectionId || 'all'}`
+    const cacheKey = `${tenantId}:${filterConnectionId || 'all'}:${dateLocale}`
     const cached = overviewCache.get(cacheKey)
     if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
       return NextResponse.json(cached.data)
@@ -1214,7 +1219,7 @@ export async function GET(request: Request) {
     const globalAverages = calculateGlobalAverages(allNodesRrdData, nodeCapacities)
     
     // Générer les tendances formatées pour le graphique
-    const trendsResult = formatTrendsForChartWeighted(globalAverages, globalStorageByDay)
+    const trendsResult = formatTrendsForChartWeighted(globalAverages, globalStorageByDay, dateLocale)
     let trends = trendsResult.trends
     let periodStart = trendsResult.periodStart
     let periodEnd = trendsResult.periodEnd
@@ -1234,7 +1239,7 @@ export async function GET(request: Request) {
 
         date.setDate(date.getDate() - i)
         trends.push({
-          t: date.toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' }),
+          t: date.toLocaleDateString(dateLocale, { day: 'numeric', month: 'short' }),
           cpu: Math.round(cpuUsedPct * 10) / 10,
           ram: Math.round(ramUsedPct * 10) / 10,
           storage: Math.round(storageUsedPct * 10) / 10,
@@ -1272,7 +1277,7 @@ export async function GET(request: Request) {
         dayNetout += nodeData.netout.reduce((a, b) => a + b, 0) / nodeData.netout.length
       }
       return {
-        t: new Date(day).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' }),
+        t: new Date(day).toLocaleDateString(dateLocale, { day: 'numeric', month: 'short' }),
         netin: dayNetin,
         netout: dayNetout,
       }

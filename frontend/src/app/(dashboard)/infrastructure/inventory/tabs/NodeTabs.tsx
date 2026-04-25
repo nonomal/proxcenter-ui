@@ -558,9 +558,9 @@ export default function NodeTabs(props: any) {
                         {[
                           { label: '1h', value: 'hour' as RrdTimeframe },
                           { label: '24h', value: 'day' as RrdTimeframe },
-                          { label: '7j', value: 'week' as RrdTimeframe },
-                          { label: '30j', value: 'month' as RrdTimeframe },
-                          { label: '1an', value: 'year' as RrdTimeframe },
+                          { label: t('inventory.rrd7d'), value: 'week' as RrdTimeframe },
+                          { label: t('inventory.rrd30d'), value: 'month' as RrdTimeframe },
+                          { label: t('inventory.rrd1y'), value: 'year' as RrdTimeframe },
                         ].map(opt => (
                           <Chip
                             key={opt.value}

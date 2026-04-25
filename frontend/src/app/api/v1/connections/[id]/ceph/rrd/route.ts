@@ -1,8 +1,10 @@
 import { NextResponse } from "next/server"
+import { cookies } from "next/headers"
 
 import { pveFetch } from "@/lib/proxmox/client"
 import { getConnectionById } from "@/lib/connections/getConnection"
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
+import { getDateLocale } from "@/lib/i18n/date"
 
 export const runtime = "nodejs"
 
@@ -18,6 +20,9 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> |
 
     const denied = await checkPermission(PERMISSIONS.CONNECTION_VIEW, "connection", id)
     if (denied) return denied
+
+    const cookieStore = await cookies()
+    const dateLocale = getDateLocale(cookieStore.get('NEXT_LOCALE')?.value || 'en')
 
     const url = new URL(req.url)
     const timeframe = (url.searchParams.get('timeframe') || 'hour') as Timeframe
@@ -59,8 +64,8 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> |
         
 return {
           time: d.time,
-          timeFormatted: time.toLocaleTimeString('fr-FR', { 
-            hour: '2-digit', 
+          timeFormatted: time.toLocaleTimeString(dateLocale, {
+            hour: '2-digit',
             minute: '2-digit',
             ...(timeframe !== 'hour' ? { day: '2-digit', month: '2-digit' } : {})
           }),

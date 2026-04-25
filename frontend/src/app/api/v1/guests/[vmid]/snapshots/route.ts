@@ -1,9 +1,11 @@
 import { NextResponse } from "next/server"
+import { cookies } from "next/headers"
 
 import { getSessionPrisma } from "@/lib/tenant"
 import { pveFetch } from "@/lib/proxmox/client"
 import { decryptSecret } from "@/lib/crypto/secret"
 import { checkPermission, buildVmResourceId, PERMISSIONS } from "@/lib/rbac"
+import { getDateLocale } from "@/lib/i18n/date"
 
 export const runtime = "nodejs"
 
@@ -72,6 +74,9 @@ export async function GET(
 
     if (denied) return denied
 
+    const cookieStore = await cookies()
+    const dateLocale = getDateLocale(cookieStore.get('NEXT_LOCALE')?.value || 'en')
+
     const conn = await getConnection(connId)
 
     if (!conn) {
@@ -88,8 +93,8 @@ export async function GET(
         name: s.name,
         description: s.description || '',
         snaptime: s.snaptime || 0,
-        snaptimeFormatted: s.snaptime 
-          ? new Date(s.snaptime * 1000).toLocaleString('fr-FR')
+        snaptimeFormatted: s.snaptime
+          ? new Date(s.snaptime * 1000).toLocaleString(dateLocale)
           : '-',
         vmstate: s.vmstate || false,
         parent: s.parent || null,

@@ -64,8 +64,8 @@ function getInflightStore(): Map<string, Promise<{ data: CachedBackup[]; warning
   return (globalThis as any)[INFLIGHT_KEY]
 }
 
-function cacheKey(pbsId: string, tenantId = 'default'): string {
-  return `${tenantId}:${pbsId}`
+function cacheKey(pbsId: string, tenantId = 'default', locale = 'en-US'): string {
+  return `${tenantId}:${pbsId}:${locale}`
 }
 
 type CacheResult =
@@ -73,8 +73,8 @@ type CacheResult =
   | { status: 'stale'; data: CachedBackup[]; warnings: string[] }
   | { status: 'miss' }
 
-export function getPbsBackupsFromCache(pbsId: string, tenantId = 'default'): CacheResult {
-  const entry = getCacheStore().get(cacheKey(pbsId, tenantId))
+export function getPbsBackupsFromCache(pbsId: string, tenantId = 'default', locale = 'en-US'): CacheResult {
+  const entry = getCacheStore().get(cacheKey(pbsId, tenantId, locale))
   if (!entry) return { status: 'miss' }
 
   const age = Date.now() - entry.timestamp
@@ -94,21 +94,25 @@ export function setCachedPbsBackups(
   pbsId: string,
   data: CachedBackup[],
   warnings: string[],
-  tenantId = 'default'
+  tenantId = 'default',
+  locale = 'en-US'
 ): void {
-  getCacheStore().set(cacheKey(pbsId, tenantId), { data, warnings, timestamp: Date.now() })
+  getCacheStore().set(cacheKey(pbsId, tenantId, locale), { data, warnings, timestamp: Date.now() })
 }
 
 export function invalidatePbsBackupCache(pbsId?: string, tenantId?: string): void {
   const store = getCacheStore()
   if (pbsId && tenantId) {
-    store.delete(cacheKey(pbsId, tenantId))
-  } else if (pbsId) {
-    // Invalidate all tenants for this PBS
+    // Invalidate all locales for this tenant+PBS
+    const prefix = `${tenantId}:${pbsId}:`
     for (const key of store.keys()) {
-      if (key.endsWith(`:${pbsId}`) || key.startsWith(`default:${pbsId}`)) {
-        store.delete(key)
-      }
+      if (key.startsWith(prefix)) store.delete(key)
+    }
+  } else if (pbsId) {
+    // Invalidate all tenants and locales for this PBS
+    for (const key of store.keys()) {
+      const parts = key.split(':')
+      if (parts[1] === pbsId) store.delete(key)
     }
   } else {
     store.clear()
@@ -117,18 +121,20 @@ export function invalidatePbsBackupCache(pbsId?: string, tenantId?: string): voi
 
 export function getInflightPbsFetch(
   pbsId: string,
-  tenantId = 'default'
+  tenantId = 'default',
+  locale = 'en-US'
 ): Promise<{ data: CachedBackup[]; warnings: string[] }> | null {
-  return getInflightStore().get(cacheKey(pbsId, tenantId)) ?? null
+  return getInflightStore().get(cacheKey(pbsId, tenantId, locale)) ?? null
 }
 
 export function setInflightPbsFetch(
   p: Promise<{ data: CachedBackup[]; warnings: string[] }> | null,
   pbsId: string,
-  tenantId = 'default'
+  tenantId = 'default',
+  locale = 'en-US'
 ): void {
   const store = getInflightStore()
-  const key = cacheKey(pbsId, tenantId)
+  const key = cacheKey(pbsId, tenantId, locale)
   if (p !== null) {
     store.set(key, p)
   } else {

@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback, useMemo } from 'react'
 
-import { useTranslations } from 'next-intl'
+import { useTranslations, useLocale } from 'next-intl'
 
 import { useSWRFetch } from '@/hooks/useSWRFetch'
 
@@ -15,14 +15,15 @@ import { DEFAULT_THRESHOLDS } from '../constants'
 
 export function useResourceData(connectionId?: string) {
   const t = useTranslations()
+  const locale = useLocale()
 
-  // Build SWR key from connectionId
+  // Build SWR key from connectionId + locale (server pre-formats date labels per locale)
   const swrKey = useMemo(() => {
     const params = new URLSearchParams()
     if (connectionId) params.set('connectionId', connectionId)
     const qs = params.toString() ? `?${params.toString()}` : ''
-    return `/api/v1/resources/overview${qs}`
-  }, [connectionId])
+    return `/api/v1/resources/overview${qs}#${locale}`
+  }, [connectionId, locale])
 
   const { data: json, error: swrError, isLoading, mutate } = useSWRFetch(swrKey, {
     revalidateOnFocus: false,

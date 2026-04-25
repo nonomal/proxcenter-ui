@@ -1,10 +1,12 @@
 import { NextResponse } from "next/server"
+import { cookies } from "next/headers"
 
 import { getSessionPrisma } from "@/lib/tenant"
 import { pbsFetch } from "@/lib/proxmox/pbs-client"
 import { decryptSecret } from "@/lib/crypto/secret"
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
 import { formatBytes } from "@/utils/format"
+import { getDateLocale } from "@/lib/i18n/date"
 
 export const runtime = "nodejs"
 
@@ -33,6 +35,9 @@ export async function GET(
     const denied = await checkPermission(PERMISSIONS.BACKUP_VIEW)
 
     if (denied) return denied
+
+    const cookieStore = await cookies()
+    const dateLocale = getDateLocale(cookieStore.get('NEXT_LOCALE')?.value || 'en')
 
     const url = new URL(req.url)
     const typeFilter = url.searchParams.get('type') // 'vm' | 'ct'
@@ -146,7 +151,7 @@ export async function GET(
                     backupId: snap['backup-id'],
                     vmName: snap.comment || '',
                     backupTime: snap['backup-time'] || 0,
-                    backupTimeFormatted: backupTime?.toLocaleString('fr-FR') || '-',
+                    backupTimeFormatted: backupTime?.toLocaleString(dateLocale) || '-',
                     backupTimeIso: backupTimeIso,
 
                     // Taille
@@ -161,7 +166,7 @@ export async function GET(
                     verification: snap.verification || null,
                     verified: snap.verification?.state === 'ok',
                     verifiedAt: snap.verification?.upid
-                      ? new Date((snap.verification['last-run'] || 0) * 1000).toLocaleString('fr-FR')
+                      ? new Date((snap.verification['last-run'] || 0) * 1000).toLocaleString(dateLocale)
                       : null,
 
                     // Protection

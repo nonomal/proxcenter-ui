@@ -876,7 +876,7 @@ function RootInventoryView({
                       </linearGradient>
                     ))}
                   </defs>
-                    <XAxis dataKey="t" tickFormatter={v => { const d = new Date(Number(v)); return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}` }} minTickGap={40} tick={{ fontSize: 8 }} />
+                    <XAxis dataKey="t" tickFormatter={v => formatTime(Number(v))} minTickGap={40} tick={{ fontSize: 8 }} />
                     <YAxis tick={{ fontSize: 8 }} width={30} domain={[0, 'auto']} />
                     <RechartsTooltip
                       wrapperStyle={{ zIndex: 10 }}

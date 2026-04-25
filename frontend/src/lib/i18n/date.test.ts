@@ -10,8 +10,15 @@ describe('getDateLocale', () => {
     expect(getDateLocale('en')).toBe('en-US')
   })
 
+  it('maps "de" to "de-DE"', () => {
+    expect(getDateLocale('de')).toBe('de-DE')
+  })
+
+  it('maps "zh-CN" to "zh-CN"', () => {
+    expect(getDateLocale('zh-CN')).toBe('zh-CN')
+  })
+
   it('falls back to "en-US" for unknown locale', () => {
-    expect(getDateLocale('de')).toBe('en-US')
     expect(getDateLocale('zh')).toBe('en-US')
     expect(getDateLocale('')).toBe('en-US')
   })

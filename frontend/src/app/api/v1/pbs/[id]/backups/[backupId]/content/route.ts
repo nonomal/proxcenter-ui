@@ -1,10 +1,12 @@
 import { NextResponse } from "next/server"
+import { cookies } from "next/headers"
 
 import { demoResponse } from "@/lib/demo/demo-api"
 import { pbsFetch } from "@/lib/proxmox/pbs-client"
 import { getPbsConnectionById } from "@/lib/connections/getConnection"
 import { formatBytes } from "@/utils/format"
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
+import { getDateLocale } from "@/lib/i18n/date"
 
 export const runtime = "nodejs"
 
@@ -27,6 +29,9 @@ export async function GET(
 
     const denied = await checkPermission(PERMISSIONS.BACKUP_VIEW, "pbs", id)
     if (denied) return denied
+
+    const cookieStore = await cookies()
+    const dateLocale = getDateLocale(cookieStore.get('NEXT_LOCALE')?.value || 'en')
 
     // Décoder le backupId: datastore/type/vmid/timestamp
     const decodedBackupId = decodeURIComponent(backupId)
@@ -125,7 +130,7 @@ export async function GET(
           size: entry.size || 0,
           sizeFormatted: formatBytes(entry.size || 0),
           mtime: entry.mtime,
-          mtimeFormatted: entry.mtime ? new Date(entry.mtime * 1000).toLocaleString('fr-FR') : '-',
+          mtimeFormatted: entry.mtime ? new Date(entry.mtime * 1000).toLocaleString(dateLocale) : '-',
           leaf: entry.leaf,
         }
       })

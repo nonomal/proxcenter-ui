@@ -113,25 +113,25 @@ export const authOptions: NextAuthOptions = {
         }
 
         if (!user) {
-          await logFailure("Utilisateur non trouvé")
+          await logFailure("User not found")
           throw new Error("Identifiants invalides")
         }
 
         if (!user.enabled) {
-          await logFailure("Compte désactivé")
+          await logFailure("Account disabled")
           throw new Error("Compte désactivé")
         }
 
         // Vérifier le mot de passe
         if (!user.password) {
-          await logFailure("Pas de mot de passe local")
+          await logFailure("No local password")
           throw new Error("Ce compte utilise une autre méthode d'authentification")
         }
 
         const isValid = await verifyPassword(credentials.password, user.password)
-        
+
         if (!isValid) {
-          await logFailure("Mot de passe incorrect")
+          await logFailure("Incorrect password")
           throw new Error("Identifiants invalides")
         }
 
