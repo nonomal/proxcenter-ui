@@ -842,17 +842,45 @@ return Number.isFinite(num) ? num.toFixed(2) : String(v)
       throw new Error('Failed to load VM data — please retry')
     }
 
+    // Locate the VM in /cluster/resources. After an intra-cluster qmigrate
+    // the URL still references the source node but PVE has moved the VM —
+    // try a strict match first, then fall back to a node-agnostic match
+    // so the detail panel keeps working without forcing a manual refresh.
+    let g = resources.find(
+      (x: any) => String(x.node) === String(node) && String(x.type) === String(type) && String(x.vmid) === String(vmid)
+    )
+    let effectiveNode = node
+    if (!g) {
+      const moved = resources.find(
+        (x: any) => String(x.type) === String(type) && String(x.vmid) === String(vmid) && typeof x.node === 'string'
+      )
+      if (moved) {
+        g = moved
+        effectiveNode = String(moved.node)
+      }
+    }
+    if (!g) throw new Error('VM not found')
+
     let nodeStatusData: any = null
-    if (nodeStatusR && nodeStatusR.ok) {
+    if (effectiveNode === node && nodeStatusR && nodeStatusR.ok) {
       try {
         const json = await nodeStatusR.json()
         nodeStatusData = json?.data || json
+      } catch {}
+    } else if (effectiveNode !== node) {
+      // VM moved — refetch the host node status for the new location.
+      try {
+        const r = await fetch(`/api/v1/connections/${encodeURIComponent(connId)}/nodes/${encodeURIComponent(effectiveNode)}/status`, { cache: 'no-store' })
+        if (r.ok) {
+          const json = await r.json()
+          nodeStatusData = json?.data || json
+        }
       } catch {}
     }
 
     const isCluster = nodes.length > 1
 
-    const hostNode = nodes.find((n: any) => n.node === node)
+    const hostNode = nodes.find((n: any) => n.node === effectiveNode)
     const nodeCpuInfo = nodeStatusData?.cpuinfo || {}
     const nodeCapacity = {
       maxCpu: hostNode?.maxcpu || 128,
@@ -860,12 +888,6 @@ return Number.isFinite(num) ? num.toFixed(2) : String(v)
       hostSockets: nodeCpuInfo.sockets || undefined,
       hostCoresPerSocket: nodeCpuInfo.cores || undefined,
     }
-
-    const g = resources.find(
-      (x: any) => String(x.node) === String(node) && String(x.type) === String(type) && String(x.vmid) === String(vmid)
-    )
-
-    if (!g) throw new Error('VM not found')
 
     const c = cpuPct(g.cpu)
     const r = pct(Number(g.mem ?? 0), Number(g.maxmem ?? 0))
@@ -1179,8 +1201,9 @@ return Number.isFinite(num) ? num.toFixed(2) : String(v)
     return {
       kindLabel: type === 'lxc' ? 'LXC' : 'VM',
       title: name,
-      subtitle: `${String(type).toUpperCase()} • ${node} • #${vmid}`,
+      subtitle: `${String(type).toUpperCase()} • ${effectiveNode} • #${vmid}`,
       breadcrumb: ['Infrastructure', 'Inventaire', 'VM', String(vmid)],
+      movedTo: effectiveNode !== node ? effectiveNode : undefined,
       status: g.status === 'running' ? 'ok' : 'unknown',
       vmRealStatus: g.status,
       tags: vmTags,
