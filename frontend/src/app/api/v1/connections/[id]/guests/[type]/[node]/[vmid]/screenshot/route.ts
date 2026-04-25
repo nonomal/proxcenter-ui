@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 
 import { getConnectionById } from "@/lib/connections/getConnection"
+import { locateVmInCluster } from "@/lib/proxmox/locateVm"
 import { checkPermission, buildVmResourceId, PERMISSIONS } from "@/lib/rbac"
 import { executeSSH } from "@/lib/ssh/exec"
 import { getNodeIp } from "@/lib/ssh/node-ip"
@@ -57,25 +58,42 @@ export async function GET(
   }
 
   try {
-    const nodeIp = await getNodeIp(conn, node)
     const tmpFile = `/tmp/pxc-screen-${vmid}.ppm`
+    const cmd = `qm monitor ${vmid} <<< 'screendump ${tmpFile}' > /dev/null 2>&1 && base64 -w0 ${tmpFile} && rm -f ${tmpFile}`
 
-    // All via SSH as root: screendump through qm monitor, then read + encode + cleanup
-    const sshResult = await executeSSH(
-      conn.id,
-      nodeIp,
-      `qm monitor ${vmid} <<< 'screendump ${tmpFile}' > /dev/null 2>&1 && base64 -w0 ${tmpFile} && rm -f ${tmpFile}`
-    )
+    // Try the originally-requested node first.
+    let resolvedNode = node
+    let movedTo: string | null = null
+    let nodeIp = await getNodeIp(conn, resolvedNode)
+    let sshResult = await executeSSH(conn.id, nodeIp, cmd)
 
-    if (!sshResult.success || !sshResult.output) {
-      return NextResponse.json({ data: null, reason: 'ssh_failed', error: sshResult.error })
+    // qm monitor exits with status 2 when the VM is not on this node — most
+    // common cause: an intra-cluster migration moved the VM and our caller
+    // is still holding the stale source node. Re-resolve via /cluster/resources
+    // and retry once before surfacing the failure.
+    if (!sshResult.success) {
+      const located = await locateVmInCluster(conn, vmid, "qemu")
+      if (located && located.node !== resolvedNode) {
+        resolvedNode = located.node
+        movedTo = located.node
+        nodeIp = await getNodeIp(conn, resolvedNode)
+        sshResult = await executeSSH(conn.id, nodeIp, cmd)
+      }
     }
 
-    // Cache the result
-    const b64Data = sshResult.output.trim()
-    screenshotCache.set(cacheKey, { data: b64Data, timestamp: Date.now() })
+    if (!sshResult.success || !sshResult.output) {
+      return NextResponse.json({ data: null, reason: 'ssh_failed', error: sshResult.error, movedTo })
+    }
 
-    return NextResponse.json({ data: b64Data, format: 'ppm' })
+    // Cache the result under the resolved node so subsequent calls coming
+    // through the stale node URL still hit the cache.
+    const b64Data = sshResult.output.trim()
+    screenshotCache.set(`${id}:${resolvedNode}:${vmid}`, { data: b64Data, timestamp: Date.now() })
+    if (resolvedNode !== node) {
+      screenshotCache.set(cacheKey, { data: b64Data, timestamp: Date.now() })
+    }
+
+    return NextResponse.json({ data: b64Data, format: 'ppm', movedTo })
   } catch (e: any) {
     return NextResponse.json({ data: null, reason: 'error', error: e?.message || String(e) })
   }

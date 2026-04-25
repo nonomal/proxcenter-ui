@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 
 import { pveFetch } from "@/lib/proxmox/client"
+import { isVmConfigNotFoundError, locateVmInCluster, type GuestType } from "@/lib/proxmox/locateVm"
 import { getConnectionById } from "@/lib/connections/getConnection"
 import { checkPermission, buildVmResourceId, PERMISSIONS } from "@/lib/rbac"
 
@@ -74,21 +75,35 @@ export async function GET(
 
     const conn = await getConnectionById(id)
 
-    // Proxmox: GET /nodes/{node}/{qemu|lxc}/{vmid}/config
-    // Sans paramètre = config effective (après reboot)
-    // Avec current=1 = config actuelle (avant reboot)
-    const [configEffective, configCurrent] = await Promise.all([
-      pveFetch<any>(
+    // Resolve via the original node first; on "config does not exist"
+    // (post-intra-cluster-migration, source .conf already removed by PVE),
+    // re-resolve the VM's current node via /cluster/resources and retry.
+    let resolvedNode = node
+    let movedTo: string | null = null
+    let configEffective: any
+    try {
+      configEffective = await pveFetch<any>(
         conn,
         `/nodes/${encodeURIComponent(node)}/${type}/${encodeURIComponent(vmid)}/config`,
         { method: "GET" }
-      ),
-      pveFetch<any>(
+      )
+    } catch (err: any) {
+      if (!isVmConfigNotFoundError(err)) throw err
+      const located = await locateVmInCluster(conn, vmid, type as GuestType)
+      if (!located || located.node === node) throw err
+      resolvedNode = located.node
+      movedTo = located.node
+      configEffective = await pveFetch<any>(
         conn,
-        `/nodes/${encodeURIComponent(node)}/${type}/${encodeURIComponent(vmid)}/config?current=1`,
+        `/nodes/${encodeURIComponent(resolvedNode)}/${type}/${encodeURIComponent(vmid)}/config`,
         { method: "GET" }
-      ).catch(() => null)
-    ])
+      )
+    }
+    const configCurrent = await pveFetch<any>(
+      conn,
+      `/nodes/${encodeURIComponent(resolvedNode)}/${type}/${encodeURIComponent(vmid)}/config?current=1`,
+      { method: "GET" }
+    ).catch(() => null)
 
     // Calculer les pending changes (différence entre effective et current)
     // = changements qui nécessitent un reboot pour prendre effet
@@ -112,7 +127,7 @@ export async function GET(
       pending: Object.keys(pending).length > 0 ? pending : undefined
     }
 
-    return NextResponse.json({ data: result })
+    return NextResponse.json({ data: result, movedTo })
   } catch (e: any) {
     return NextResponse.json({ error: e?.message || String(e) }, { status: 500 })
   }

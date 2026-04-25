@@ -1,11 +1,91 @@
 import { NextResponse } from 'next/server'
 
 import { pveFetch } from '@/lib/proxmox/client'
-import { getConnectionById } from '@/lib/connections/getConnection'
+import { isVmConfigNotFoundError } from '@/lib/proxmox/locateVm'
+import { getConnectionById, type PveConn } from '@/lib/connections/getConnection'
 import { formatBytes as formatSize } from '@/utils/format'
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
 
 export const runtime = 'nodejs'
+
+/**
+ * Handle source-VM cleanup after a successful migration. Used after both
+ * "exit OK" and "completed with warnings" task outcomes — the logic is
+ * the same so it lives in one place to prevent the drift that bit us in
+ * the KRAEMER cross-migration regression (2026-04-25).
+ *
+ * Three intentional behaviours:
+ *  - Intra-cluster qmigrate: PVE removes the source .conf automatically.
+ *    Reading it returns 500 "Configuration file does not exist". We
+ *    detect that and return silently — no spurious warnings, no delete
+ *    attempt against a non-existent VM.
+ *  - Cross-cluster migration with deleteSource=true: try to unlock via
+ *    SSH, then DELETE the source through the PVE API.
+ *  - Cross-cluster migration without deleteSource: only release the lock
+ *    (the user wants to keep the source VM around).
+ *
+ * Returns `{ message }` where a non-null message overrides the caller's
+ * default success message (used to surface "deleted" / "could not
+ * delete" / "locked" outcomes to the UI).
+ */
+async function handleSourceVmCleanupAfterMigration(args: {
+  connection: PveConn
+  connectionId: string
+  node: string
+  vmid: string
+  deleteSource: boolean
+}): Promise<{ message: string | null }> {
+  const { connection, connectionId, node, vmid, deleteSource } = args
+  let vmConfig: any
+  try {
+    vmConfig = await pveFetch<any>(
+      connection,
+      `/nodes/${encodeURIComponent(node)}/qemu/${encodeURIComponent(vmid)}/config`
+    )
+  } catch (err: any) {
+    if (isVmConfigNotFoundError(err)) {
+      // Intra-cluster qmigrate already cleaned the source up.
+      return { message: null }
+    }
+    console.warn(`[task-api] Could not read source VM ${vmid} config:`, err?.message)
+    return { message: null }
+  }
+
+  let unlocked = !vmConfig?.lock
+  if (vmConfig?.lock) {
+    try {
+      const { executeSSH } = await import('@/lib/ssh/exec')
+      const { getNodeIp } = await import('@/lib/ssh/node-ip')
+      const nodeIp = await getNodeIp(connection, node)
+      const result = await executeSSH(connectionId, nodeIp, `qm unlock ${vmid}`)
+      if (result.success) {
+        console.log(`[task-api] Auto-unlocked VM ${vmid} on ${node} after cross-cluster migration`)
+        unlocked = true
+      } else {
+        console.warn(`[task-api] SSH unlock failed for VM ${vmid}:`, result.error)
+      }
+    } catch (unlockErr: any) {
+      console.warn(`[task-api] Could not auto-unlock VM ${vmid}:`, unlockErr?.message)
+    }
+  }
+
+  if (!deleteSource) return { message: null }
+  if (!unlocked) {
+    return { message: 'Migration completed (source VM locked, cannot delete — configure SSH to enable auto-cleanup)' }
+  }
+  try {
+    await pveFetch(
+      connection,
+      `/nodes/${encodeURIComponent(node)}/qemu/${encodeURIComponent(vmid)}?purge=1&destroy-unreferenced-disks=1`,
+      { method: 'DELETE' }
+    )
+    console.log(`[task-api] Deleted source VM ${vmid} on ${node} after cross-cluster migration`)
+    return { message: 'Migration completed, source VM deleted' }
+  } catch (deleteErr: any) {
+    console.warn(`[task-api] Could not delete source VM ${vmid}:`, deleteErr?.message)
+    return { message: 'Migration completed (source VM could not be deleted, please remove manually)' }
+  }
+}
 
 type TaskStatus = {
   status: string
@@ -458,39 +538,10 @@ return NextResponse.json({ error: `Failed to fetch task status: ${e.message}` },
         const taskType = status?.type || ''
         const vmid = status?.id || ''
         if (vmid && (taskType === 'qmigrate' || taskType.includes('migrate'))) {
-          // Always attempt to unlock source VM after successful migration
-          try {
-            const vmConfig = await pveFetch<any>(connection, `/nodes/${encodeURIComponent(node)}/qemu/${encodeURIComponent(vmid)}/config`)
-            if (vmConfig?.lock) {
-              const { executeSSH } = await import('@/lib/ssh/exec')
-              const { getNodeIp } = await import('@/lib/ssh/node-ip')
-              const nodeIp = await getNodeIp(connection, node)
-              const unlockResult = await executeSSH(connectionId, nodeIp, `qm unlock ${vmid}`)
-              if (unlockResult.success) {
-                console.log(`[task-api] Auto-unlocked VM ${vmid} on ${node} after cross-cluster migration`)
-              } else {
-                console.warn(`[task-api] SSH unlock failed for VM ${vmid}:`, unlockResult.error)
-              }
-            }
-          } catch (unlockErr: any) {
-            console.warn(`[task-api] Could not auto-unlock VM ${vmid}:`, unlockErr?.message)
-          }
-
-          // Delete source VM only if requested.
-          // PVE rejects a body on DELETE ("Unexpected content for method 'DELETE'"),
-          // so purge/destroy-unreferenced-disks must travel as query params.
-          if (deleteSource) {
-            try {
-              await pveFetch(connection, `/nodes/${encodeURIComponent(node)}/qemu/${encodeURIComponent(vmid)}?purge=1&destroy-unreferenced-disks=1`, {
-                method: 'DELETE',
-              })
-              console.log(`[task-api] Deleted source VM ${vmid} on ${node} after clean cross-cluster migration`)
-              message = 'Migration completed, source VM deleted'
-            } catch (deleteErr: any) {
-              console.warn(`[task-api] Could not delete source VM ${vmid}:`, deleteErr?.message)
-              message = 'Migration completed (source VM could not be deleted, please remove manually)'
-            }
-          }
+          const cleanup = await handleSourceVmCleanupAfterMigration({
+            connection, connectionId, node, vmid, deleteSource,
+          })
+          if (cleanup.message) message = cleanup.message
         }
       } else if (exit.includes('received interrupt') || exit.includes('interrupted by user')) {
         message = 'Task stopped by user'
@@ -504,41 +555,10 @@ return NextResponse.json({ error: `Failed to fetch task status: ${e.message}` },
           const taskType = status?.type || ''
           const vmid = status?.id || ''
           if (vmid && (taskType === 'qmigrate' || taskType.includes('migrate'))) {
-            let unlocked = false
-            try {
-              const vmConfig = await pveFetch<any>(connection, `/nodes/${encodeURIComponent(node)}/qemu/${encodeURIComponent(vmid)}/config`)
-              if (vmConfig?.lock) {
-                const { executeSSH } = await import('@/lib/ssh/exec')
-                const { getNodeIp } = await import('@/lib/ssh/node-ip')
-                const nodeIp = await getNodeIp(connection, node)
-                const result = await executeSSH(connectionId, nodeIp, `qm unlock ${vmid}`)
-                if (result.success) {
-                  console.log(`[task-api] Auto-unlocked VM ${vmid} on ${node} via SSH after cross-cluster migration`)
-                  unlocked = true
-                } else {
-                  console.warn(`[task-api] SSH unlock failed for VM ${vmid}:`, result.error)
-                }
-              } else {
-                unlocked = true
-              }
-            } catch (unlockErr: any) {
-              console.warn(`[task-api] Could not auto-unlock VM ${vmid}:`, unlockErr?.message)
-            }
-
-            if (deleteSource && unlocked) {
-              try {
-                await pveFetch(connection, `/nodes/${encodeURIComponent(node)}/qemu/${encodeURIComponent(vmid)}?purge=1&destroy-unreferenced-disks=1`, {
-                  method: 'DELETE',
-                })
-                console.log(`[task-api] Deleted source VM ${vmid} on ${node} after cross-cluster migration`)
-                message = 'Migration completed, source VM deleted'
-              } catch (deleteErr: any) {
-                console.warn(`[task-api] Could not delete source VM ${vmid}:`, deleteErr?.message)
-                message = 'Migration completed (source VM could not be deleted, please remove manually)'
-              }
-            } else if (deleteSource && !unlocked) {
-              message = 'Migration completed (source VM locked, cannot delete — configure SSH to enable auto-cleanup)'
-            }
+            const cleanup = await handleSourceVmCleanupAfterMigration({
+              connection, connectionId, node, vmid, deleteSource,
+            })
+            if (cleanup.message) message = cleanup.message
           }
         } else {
           message = `Failed: ${exit}`
