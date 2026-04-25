@@ -7,6 +7,7 @@ import ChartContainer from '@/components/ChartContainer'
 
 import {
   Alert,
+  AlertTitle,
   Box,
   Button,
   Card,
@@ -279,15 +280,6 @@ export default function FlowsTab() {
 
   useEffect(() => { loadAgents() }, [loadAgents])
 
-  // Refresh OVS port map on mount (resolves ifIndex → VMID)
-  const [portMapLoaded, setPortMapLoaded] = useState(false)
-  useEffect(() => {
-    if (portMapLoaded) return
-    fetch('/api/v1/orchestrator/sflow/portmap', { method: 'POST' })
-      .then(() => setPortMapLoaded(true))
-      .catch(() => {}) // Non-critical
-  }, [portMapLoaded])
-
   // Open configure dialog (all unconfigured nodes)
   const handleOpenConfigDialog = () => {
     setConfigSingleNode(null)
@@ -368,35 +360,8 @@ export default function FlowsTab() {
     )
   }
 
-  // ── sFlow not enabled ──
-  if (status && !status.enabled) {
-    return (
-      <Box sx={{ p: 3, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: 400, gap: 3 }}>
-        <Box sx={{
-          width: 80, height: 80, borderRadius: '50%',
-          bgcolor: `${primaryColor}14`,
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-        }}>
-          <i className="ri-flow-chart" style={{ fontSize: 36, color: primaryColor }} />
-        </Box>
-        <Box sx={{ textAlign: 'center', maxWidth: 500 }}>
-          <Typography variant="h6" fontWeight={700} sx={{ mb: 1 }}>
-            {t('networkFlows.title')}
-          </Typography>
-          <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
-            {t('networkFlows.setupDescription')}
-          </Typography>
-        </Box>
-        <Alert severity="info" sx={{ maxWidth: 500 }}>
-          <Typography variant="caption">
-            {t('networkFlows.requiresOvs')}
-          </Typography>
-        </Alert>
-      </Box>
-    )
-  }
-
-  // ── sFlow active — show flow data ──
+  // ── sFlow collector status ──
+  const collectorOff = !!(status && !status.enabled)
   const activeAgents = status?.agents?.filter(a => a.active).length || 0
   const totalAgents = status?.agents?.length || 0
 
@@ -404,6 +369,39 @@ export default function FlowsTab() {
     <Box sx={{ p: 2, display: 'flex', flexDirection: 'column', gap: 2, height: '100%' }}>
 
       {error && <Alert severity="warning" sx={{ mb: 1 }}>{error}</Alert>}
+
+      {collectorOff && (
+        <Alert severity="warning" sx={{ '& .MuiAlert-message': { width: '100%' } }}>
+          <AlertTitle sx={{ fontWeight: 700 }}>
+            {t('networkFlows.collectorOffTitle')}
+          </AlertTitle>
+          <Typography variant="body2" sx={{ mb: 1 }}>
+            {t('networkFlows.collectorOffDesc')}
+          </Typography>
+          <Box
+            component="pre"
+            sx={{
+              bgcolor: 'action.hover',
+              p: 1.5,
+              borderRadius: 1,
+              fontSize: '0.75rem',
+              overflow: 'auto',
+              my: 1,
+              whiteSpace: 'pre',
+            }}
+          >
+{`orchestrator:
+  ports:
+    - "6343:6343/udp"
+  environment:
+    - PROXCENTER_SFLOW_ENABLED=true
+    - PROXCENTER_SFLOW_LISTEN_ADDRESS=0.0.0.0:6343`}
+          </Box>
+          <Typography variant="caption" color="text.secondary">
+            {t('networkFlows.collectorOffHint')}
+          </Typography>
+        </Alert>
+      )}
 
       {/* Sub-tabs */}
       <Tabs
