@@ -55,7 +55,7 @@ export function buildSudoersTemplate(categories: AllowlistCategoryShape[]): { bo
     if (byPath.size === 0) continue
 
     lines.push(`# ${escapeSudoersLine(cat.label)}`)
-    const paths = Array.from(byPath.keys()).sort()
+    const paths = Array.from(byPath.keys()).sort((a, b) => a.localeCompare(b))
     lines.push(`${SUDO_USER} ALL=(ALL) NOPASSWD: ${paths.join(', ')}`)
     lines.push('')
   }
