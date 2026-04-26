@@ -3,10 +3,11 @@ import { cookies } from "next/headers"
 
 import { demoResponse } from "@/lib/demo/demo-api"
 import { pbsFetch } from "@/lib/proxmox/pbs-client"
-import { getPbsConnectionById } from "@/lib/connections/getConnection"
+import { getPbsConnectionById, getPbsConnectionByIdUnscoped } from "@/lib/connections/getConnection"
 import { formatBytes } from "@/utils/format"
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
 import { getDateLocale } from "@/lib/i18n/date"
+import { assertVdcPbsAccess } from "@/lib/vdc/scope"
 
 export const runtime = "nodejs"
 
@@ -30,13 +31,16 @@ export async function GET(
     const denied = await checkPermission(PERMISSIONS.BACKUP_VIEW, "pbs", id)
     if (denied) return denied
 
+    const access = await assertVdcPbsAccess(id)
+    if (access instanceof Response) return access
+
     const cookieStore = await cookies()
     const dateLocale = getDateLocale(cookieStore.get('NEXT_LOCALE')?.value || 'en')
 
     // Décoder le backupId: datastore/type/vmid/timestamp
     const decodedBackupId = decodeURIComponent(backupId)
     const parts = decodedBackupId.split('/')
-    
+
     if (parts.length < 4) {
       return NextResponse.json({ error: "Invalid backupId format. Expected: datastore/type/vmid/timestamp" }, { status: 400 })
     }
@@ -48,7 +52,13 @@ export async function GET(
     const archiveName = url.searchParams.get('archive') // Nom de l'archive (ex: "root.pxar.didx")
     const ns = url.searchParams.get('ns') || '' // PBS namespace
 
-    const conn = await getPbsConnectionById(id)
+    if (access.kind === 'tenant' && !access.allowed.some(a => a.datastore === datastore && a.namespace === ns)) {
+      return NextResponse.json({ error: 'Backup not accessible for this tenant' }, { status: 403 })
+    }
+
+    const conn = access.kind === 'admin'
+      ? await getPbsConnectionById(id)
+      : await getPbsConnectionByIdUnscoped(id)
 
     // Si pas d'archive spécifiée, lister les fichiers/archives du backup
     if (!archiveName) {

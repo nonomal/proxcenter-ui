@@ -3,11 +3,10 @@ import { cookies } from "next/headers"
 
 import { demoResponse } from "@/lib/demo/demo-api"
 import { pbsFetch } from "@/lib/proxmox/pbs-client"
-import { getPbsConnectionById } from "@/lib/connections/getConnection"
+import { getPbsConnectionById, getPbsConnectionByIdUnscoped } from "@/lib/connections/getConnection"
 import { formatBytes } from "@/utils/format"
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
-import { getVdcScope } from "@/lib/vdc/scope"
-import { getCurrentTenantId } from "@/lib/tenant"
+import { assertVdcPbsAccess } from "@/lib/vdc/scope"
 import { getDateLocale } from "@/lib/i18n/date"
 import {
   type CachedBackup,
@@ -195,6 +194,9 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> |
     const denied = await checkPermission(PERMISSIONS.BACKUP_VIEW, "pbs", id)
     if (denied) return denied
 
+    const access = await assertVdcPbsAccess(id)
+    if (access instanceof Response) return access
+
     const cookieStore = await cookies()
     const dateLocale = getDateLocale(cookieStore.get('NEXT_LOCALE')?.value || 'en')
 
@@ -207,7 +209,9 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> |
     const search = url.searchParams.get('search')?.toLowerCase() || ''
     const noCache = url.searchParams.get('noCache') === '1'
 
-    const conn = await getPbsConnectionById(id)
+    const conn = access.kind === 'admin'
+      ? await getPbsConnectionById(id)
+      : await getPbsConnectionByIdUnscoped(id)
 
     // Get all backups (from cache or fresh fetch)
     let allBackups: CachedBackup[]
@@ -229,16 +233,9 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> |
     }
 
     // Tenant scoping: restrict to the caller's authorised (datastore, namespace) pairs.
-    // Super admins (no vDC scope) see everything. Tenants with scope see only their bindings.
-    const scope = getVdcScope(await getCurrentTenantId())
-    if (scope) {
-      const allowed = scope.pbsNamespacesByConnection.get(id) ?? []
-      if (allowed.length === 0) {
-        allBackups = []
-      } else {
-        const allowedSet = new Set(allowed.map(p => `${p.datastore}|${p.namespace}`))
-        allBackups = allBackups.filter(b => allowedSet.has(`${b.datastore}|${b.namespace}`))
-      }
+    if (access.kind === 'tenant') {
+      const allowedSet = new Set(access.allowed.map(p => `${p.datastore}|${p.namespace}`))
+      allBackups = allBackups.filter(b => allowedSet.has(`${b.datastore}|${b.namespace}`))
     }
 
     // Extract available namespaces from all backups (before filtering)

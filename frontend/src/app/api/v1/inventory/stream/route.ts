@@ -3,7 +3,7 @@ import { NextRequest } from "next/server"
 import { getSessionPrisma, getCurrentTenantId } from "@/lib/tenant"
 import { prisma as globalPrisma } from "@/lib/db/prisma"
 import { demoResponse } from "@/lib/demo/demo-api"
-import { getConnectionById, getPbsConnectionById } from "@/lib/connections/getConnection"
+import { getConnectionById, getPbsConnectionByIdUnscoped } from "@/lib/connections/getConnection"
 import { pveFetch } from "@/lib/proxmox/client"
 import { pbsFetch } from "@/lib/proxmox/pbs-client"
 import { isSharedStorage } from "@/lib/proxmox/storage"
@@ -155,9 +155,8 @@ async function scopePbsDataForTenant(
   const allowed = scope.pbsNamespacesByConnection.get(data.id)
   if (!allowed || allowed.length === 0) return null
 
-  const { getPbsConnectionById } = await import('@/lib/connections/getConnection')
   const { listSnapshotsInNamespace } = await import('@/lib/proxmox/pbsNamespace')
-  const conn = await getPbsConnectionById(data.id).catch(() => null)
+  const conn = await getPbsConnectionByIdUnscoped(data.id).catch(() => null)
   if (!conn) return null
 
   const byStore = new Map<string, string[]>()
@@ -505,7 +504,7 @@ async function fetchStoragesForCluster(conn: {
 
 async function fetchOnePbs(conn: { id: string; name: string }): Promise<PbsServerData> {
   try {
-    const connConfig = await getPbsConnectionById(conn.id)
+    const connConfig = await getPbsConnectionByIdUnscoped(conn.id)
 
     const [statusResult, datastoresResult] = await Promise.allSettled([
       pbsFetch<any>(connConfig, '/status'),
@@ -719,14 +718,22 @@ export async function GET(request: NextRequest) {
           ? { type: 'pve' as const, id: { in: [...vdcScope.connectionIds] } }
           : { type: 'pve' as const }
 
+        // PBS connections are typically owned by the provider tenant, but vDC
+        // tenants must reach them via their bindings (vdc_pbs_namespaces).
+        // When a vDC scope is active, load PBS via globalPrisma restricted to
+        // bound connection IDs; otherwise use session prisma as before.
+        const pbsWhere = vdcScope
+          ? { type: 'pbs' as const, id: { in: [...vdcScope.pbsNamespacesByConnection.keys()] } }
+          : { type: 'pbs' as const }
+
         const [pveConnections, pbsConnections, externalConnections] = await Promise.all([
           connPrisma.connection.findMany({
             where: pveWhere,
             orderBy: { createdAt: 'desc' },
             select: connSelect,
           }),
-          prisma.connection.findMany({
-            where: { type: 'pbs' },
+          connPrisma.connection.findMany({
+            where: pbsWhere,
             orderBy: { createdAt: 'desc' },
             select: { id: true, name: true, type: true },
           }),

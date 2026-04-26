@@ -2,9 +2,10 @@ import { NextResponse } from "next/server"
 
 import { demoResponse } from "@/lib/demo/demo-api"
 import { pbsFetch } from "@/lib/proxmox/pbs-client"
-import { getPbsConnectionById } from "@/lib/connections/getConnection"
+import { getPbsConnectionById, getPbsConnectionByIdUnscoped } from "@/lib/connections/getConnection"
 import { formatBytes } from "@/utils/format"
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
+import { assertVdcPbsAccess } from "@/lib/vdc/scope"
 
 export const runtime = "nodejs"
 
@@ -21,14 +22,29 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> |
     const denied = await checkPermission(PERMISSIONS.BACKUP_VIEW, "pbs", id)
     if (denied) return denied
 
-    const conn = await getPbsConnectionById(id)
+    const access = await assertVdcPbsAccess(id)
+    if (access instanceof Response) return access
+
+    const conn = access.kind === 'admin'
+      ? await getPbsConnectionById(id)
+      : await getPbsConnectionByIdUnscoped(id)
 
     // Récupérer la liste des datastores
     const datastores = await pbsFetch<any[]>(conn, "/admin/datastore")
 
+    // For vDC tenants, restrict to their bound datastores.
+    const allowedDatastores = access.kind === 'tenant'
+      ? new Set(access.allowed.map(a => a.datastore))
+      : null
+    const visibleDatastores = (datastores || []).filter((ds: any) => {
+      if (!allowedDatastores) return true
+      const name = ds.store || ds.name
+      return name && allowedDatastores.has(name)
+    })
+
     // Enrichir chaque datastore avec des infos supplémentaires
     const enrichedDatastores = await Promise.all(
-      (datastores || []).map(async (ds) => {
+      visibleDatastores.map(async (ds) => {
         // PBS utilise "store" comme nom du datastore
         const storeName = ds.store || ds.name
         

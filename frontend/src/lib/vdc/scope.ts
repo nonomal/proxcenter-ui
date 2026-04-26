@@ -284,6 +284,41 @@ export async function guardTenantStorageWrite(
 }
 
 // ---------------------------------------------------------------------------
+// assertVdcPbsAccess
+// ---------------------------------------------------------------------------
+
+export type VdcPbsAccess =
+  | { kind: 'admin' }
+  | { kind: 'tenant'; allowed: ReadonlyArray<{ datastore: string; namespace: string }> }
+
+/**
+ * Authorise the current caller to interact with a PBS connection:
+ * - super admins (no vDC scope) → { kind: 'admin' }, route handlers behave as before.
+ * - tenants with at least one binding on this PBS → { kind: 'tenant', allowed }
+ *   carrying their (datastore, namespace) tuples; route handlers MUST filter
+ *   any returned data through this list.
+ * - any other tenant → 403 Response (return it directly from the route).
+ *
+ * Designed for read paths in /api/v1/pbs/[id]/... where vDC tenants need
+ * cross-tenant access to provider-owned PBS connections, restricted to their
+ * authorised namespaces.
+ */
+export async function assertVdcPbsAccess(connId: string): Promise<VdcPbsAccess | Response> {
+  const { getCurrentTenantId } = await import('@/lib/tenant')
+  const { NextResponse } = await import('next/server')
+
+  const scope = getVdcScope(await getCurrentTenantId())
+  if (!scope) return { kind: 'admin' }
+
+  const allowed = scope.pbsNamespacesByConnection.get(connId)
+  if (!allowed || allowed.length === 0) {
+    return NextResponse.json({ error: 'PBS not accessible for this tenant' }, { status: 403 })
+  }
+
+  return { kind: 'tenant', allowed }
+}
+
+// ---------------------------------------------------------------------------
 // clearVdcScopeCache
 // ---------------------------------------------------------------------------
 
