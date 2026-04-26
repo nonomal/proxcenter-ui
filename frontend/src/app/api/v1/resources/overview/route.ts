@@ -15,24 +15,57 @@ export const runtime = "nodejs"
 const overviewCache = new Map<string, { data: any; timestamp: number }>()
 const CACHE_TTL_MS = 60_000 // 60 seconds
 
-// Charger les paramètres Green depuis la base de données
+// Charger les paramètres Green depuis la base de données.
+// Resolution order:
+//   1. tenant's own settings.green row
+//   2. provider's settings.green row (tenants share datacentre-level config)
+//   3. provider's Default datacentre — auto-seeded from legacy values when
+//      the legacy settings.green rows are absent. After Phase A all the
+//      energy/server-spec config lives on `datacenters` rows, so we always
+//      have something to return.
 async function loadGreenSettings(tenantId: string) {
-  try {
-    const db = getDb()
-    const stmt = db.prepare('SELECT value FROM settings WHERE key = ? AND tenant_id = ?')
-    const row = stmt.get('green', tenantId) as { value: string } | undefined
+  const db = getDb()
+  const stmt = db.prepare('SELECT value FROM settings WHERE key = ? AND tenant_id = ?')
 
-    if (row?.value) {
-      return JSON.parse(row.value)
+  const tryLoad = (tid: string) => {
+    try {
+      const row = stmt.get('green', tid) as { value: string } | undefined
+      if (row?.value) return JSON.parse(row.value)
+    } catch (e: any) {
+      if (!e?.message?.includes('no such table')) {
+        console.warn('Failed to load green settings:', e?.message)
+      }
     }
-  } catch (e: any) {
-    // Silencieux si la table n'existe pas (Community mode)
-    if (!e?.message?.includes('no such table')) {
-      console.warn('Failed to load green settings:', e?.message)
-    }
+    return null
   }
 
-  return null
+  const own = tryLoad(tenantId)
+  if (own) return own
+
+  if (tenantId !== 'default') {
+    const provider = tryLoad('default')
+    if (provider) return provider
+  }
+
+  try {
+    const { ensureDefaultDatacenter } = await import('@/lib/db/datacenters')
+    const dc = ensureDefaultDatacenter()
+    return {
+      pue: dc.pue,
+      electricityPrice: dc.electricityPrice,
+      currency: dc.currency,
+      co2Factor: dc.co2Factor,
+      co2Country: dc.co2CountryPreset ?? null,
+      serverSpecs: {
+        tdpPerCore: dc.tdpPerCoreW,
+        wattsPerGbRam: dc.wattsPerGbRam,
+        overheadPerServer: dc.overheadPerNodeW,
+      },
+    }
+  } catch (e: any) {
+    console.warn('Failed to seed Default datacentre for green fallback:', e?.message)
+    return null
+  }
 }
 
 /**

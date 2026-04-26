@@ -478,6 +478,52 @@ export function getDb() {
       UNIQUE (pve_connection_id, pve_storage_name)
     );
     CREATE INDEX IF NOT EXISTS idx_vdc_pbs_pve_storages_binding ON vdc_pbs_pve_storages(vdc_pbs_namespace_id);
+
+    -- Multi-DC Green-IT (Phase A) — provider-managed datacentre catalogue,
+    -- per-cluster and per-node green configuration.
+    CREATE TABLE IF NOT EXISTS datacenters (
+      id                  TEXT PRIMARY KEY,
+      tenant_id           TEXT NOT NULL DEFAULT 'default',
+      name                TEXT NOT NULL,
+      location_label      TEXT,
+      country             TEXT,
+      latitude            REAL,
+      longitude           REAL,
+      pue                 REAL NOT NULL DEFAULT 1.4,
+      electricity_price   REAL NOT NULL DEFAULT 0.18,
+      currency            TEXT NOT NULL DEFAULT 'EUR',
+      co2_factor          REAL NOT NULL DEFAULT 0.052,
+      co2_country_preset  TEXT,
+      tdp_per_core_w      REAL NOT NULL DEFAULT 10,
+      watts_per_gb_ram    REAL NOT NULL DEFAULT 0.375,
+      overhead_per_node_w REAL NOT NULL DEFAULT 50,
+      comment             TEXT,
+      is_default          INTEGER NOT NULL DEFAULT 0,
+      created_at          TEXT DEFAULT (datetime('now')),
+      updated_at          TEXT DEFAULT (datetime('now'))
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_datacenters_default
+      ON datacenters(tenant_id) WHERE is_default = 1;
+
+    CREATE TABLE IF NOT EXISTS connection_green_config (
+      connection_id        TEXT PRIMARY KEY REFERENCES "Connection"(id) ON DELETE CASCADE,
+      datacenter_id        TEXT REFERENCES datacenters(id) ON DELETE SET NULL,
+      tdp_per_core_w       REAL,
+      watts_per_gb_ram     REAL,
+      overhead_per_node_w  REAL,
+      updated_at           TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS node_green_config (
+      connection_id        TEXT NOT NULL REFERENCES "Connection"(id) ON DELETE CASCADE,
+      node_name            TEXT NOT NULL,
+      datacenter_id        TEXT REFERENCES datacenters(id) ON DELETE SET NULL,
+      tdp_per_core_w       REAL,
+      watts_per_gb_ram     REAL,
+      overhead_per_node_w  REAL,
+      updated_at           TEXT DEFAULT (datetime('now')),
+      PRIMARY KEY (connection_id, node_name)
+    );
   `)
 
   // Phase 4a migration: vdc_quotas.max_vnets (nullable = unlimited)
@@ -500,6 +546,23 @@ export function getDb() {
   db.prepare(
     'CREATE UNIQUE INDEX IF NOT EXISTS idx_vdcs_sdn_zone_name ON vdcs(connection_id, sdn_zone_name)'
   ).run()
+
+  // Multi-DC Phase A — datacentres now own server specs (TDP/core, W/GB RAM,
+  // overhead) so the inheritance chain is self-contained: node → cluster →
+  // DC → constants. ADD COLUMN is wrapped in try/catch for installs that
+  // already have the table from the initial CREATE.
+  for (const colDef of [
+    'ALTER TABLE datacenters ADD COLUMN tdp_per_core_w REAL NOT NULL DEFAULT 10',
+    'ALTER TABLE datacenters ADD COLUMN watts_per_gb_ram REAL NOT NULL DEFAULT 0.375',
+    'ALTER TABLE datacenters ADD COLUMN overhead_per_node_w REAL NOT NULL DEFAULT 50',
+    'ALTER TABLE datacenters ADD COLUMN comment TEXT',
+  ]) {
+    try {
+      db.prepare(colDef).run()
+    } catch (e: any) {
+      if (!String(e?.message || '').includes('duplicate column')) throw e
+    }
+  }
 
   // Auto-create DEFAULT tenant
   {

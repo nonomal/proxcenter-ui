@@ -100,6 +100,11 @@ const SshCommandsTab = dynamic(() => import('@/components/settings/SshCommandsTa
   loading: () => <Box sx={{ p: 3, textAlign: 'center' }}><LinearProgress /></Box>
 })
 
+const DatacentersSection = dynamic(() => import('@/components/settings/green/DatacentersSection'), {
+  ssr: false,
+  loading: () => <Box sx={{ p: 2, textAlign: 'center' }}><LinearProgress /></Box>
+})
+
 /* ==================== Utility ==================== */
 
 function MainTabPanel({ value, index, children }) {
@@ -1983,18 +1988,16 @@ function AITab() {
                       label={t('settings.modelLabel')}
                       onChange={e => setSettings(s => ({ ...s, ollamaModel: e.target.value }))}
                     >
-                      {availableModels.length > 0 ? (
-                        availableModels.map(m => (
+                      {availableModels.length > 0
+                        ? availableModels.map(m => (
                           <MenuItem key={m} value={m}>{m}</MenuItem>
                         ))
-                      ) : (
-                        <>
-                          <MenuItem value='mistral:7b'>mistral:7b ({t('settings.recommended')})</MenuItem>
-                          <MenuItem value='llama3.1:8b'>llama3.1:8b</MenuItem>
-                          <MenuItem value='qwen2.5:7b'>qwen2.5:7b</MenuItem>
-                          <MenuItem value='phi3:14b'>phi3:14b</MenuItem>
-                        </>
-                      )}
+                        : [
+                          <MenuItem key='mistral:7b' value='mistral:7b'>mistral:7b ({t('settings.recommended')})</MenuItem>,
+                          <MenuItem key='llama3.1:8b' value='llama3.1:8b'>llama3.1:8b</MenuItem>,
+                          <MenuItem key='qwen2.5:7b' value='qwen2.5:7b'>qwen2.5:7b</MenuItem>,
+                          <MenuItem key='phi3:14b' value='phi3:14b'>phi3:14b</MenuItem>,
+                        ]}
                     </Select>
                   </FormControl>
 
@@ -2281,206 +2284,10 @@ function GreenTab() {
         {t('settings.greenConfigDescription')}
       </Typography>
 
-      {/* Section PUE & Énergie */}
-      <Card variant='outlined' sx={{ mb: 3 }}>
-        <CardContent>
-          <Typography variant='subtitle1' fontWeight={700} sx={{ mb: 2, display: 'flex', alignItems: 'center', gap: 1 }}>
-            <i className='ri-flashlight-line' style={{ color: '#f59e0b' }} />
-            {t('settings.datacenterEnergy')}
-          </Typography>
-
-          <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '1fr 1fr' }, gap: 3 }}>
-            <Box>
-              <TextField
-                fullWidth
-                type='number'
-                label={t('settings.pueLabel')}
-                value={settings.pue}
-                onChange={e => setSettings(s => ({ ...s, pue: Number.parseFloat(e.target.value) || 1.0 }))}
-                inputProps={{ step: 0.1, min: 1.0, max: 3.0 }}
-                helperText={t('settings.pueHelperTextFull')}
-                sx={{ mb: 2 }}
-              />
-
-              <Alert severity='info' sx={{ fontSize: '0.8rem' }}>
-                <span dangerouslySetInnerHTML={{ __html: t('settings.pueDescriptionFull') }} />
-              </Alert>
-            </Box>
-
-            <Box>
-              <TextField
-                fullWidth
-                type='number'
-                label={t('settings.electricityPriceLabel')}
-                value={settings.electricityPrice}
-                onChange={e => setSettings(s => ({ ...s, electricityPrice: Number.parseFloat(e.target.value) || 0 }))}
-                inputProps={{ step: 0.01, min: 0 }}
-                InputProps={{
-                  endAdornment: <InputAdornment position='end'>{currencySymbol}/kWh</InputAdornment>
-                }}
-                helperText={t('settings.electricityPriceHelper')}
-                sx={{ mb: 2 }}
-              />
-
-              <FormControl fullWidth>
-                <InputLabel>{t('settings.currencyLabel')}</InputLabel>
-                <Select
-                  value={settings.currency || 'EUR'}
-                  label={t('settings.currencyLabel')}
-                  onChange={e => setSettings(s => ({ ...s, currency: e.target.value }))}
-                >
-                  {currencyOptions.map(c => (
-                    <MenuItem key={c.code} value={c.code}>{c.label}</MenuItem>
-                  ))}
-                </Select>
-              </FormControl>
-            </Box>
-          </Box>
-        </CardContent>
-      </Card>
-
-      {/* Section Émissions CO₂ */}
-      <Card variant='outlined' sx={{ mb: 3 }}>
-        <CardContent>
-          <Typography variant='subtitle1' fontWeight={700} sx={{ mb: 2, display: 'flex', alignItems: 'center', gap: 1 }}>
-            <i className='ri-leaf-line' style={{ color: '#22c55e' }} />
-            {t('settings.co2Emissions')}
-          </Typography>
-
-          <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '1fr 1fr' }, gap: 3 }}>
-            <FormControl fullWidth>
-              <InputLabel>{t('settings.countryEnergyMixLabel')}</InputLabel>
-              <Select
-                value={settings.co2Country}
-                label={t('settings.countryEnergyMixLabel')}
-                onChange={e => handleCountryChange(e.target.value)}
-              >
-                {Object.entries(co2FactorsByCountry).map(([key, { label, value }]) => (
-                  <MenuItem key={key} value={key}>
-                    {label} ({value} kg CO₂/kWh)
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
-
-            {settings.co2Country === 'custom' && (
-              <TextField
-                fullWidth
-                type='number'
-                label={t('settings.customCo2FactorLabel')}
-                value={settings.co2Factor}
-                onChange={e => setSettings(s => ({ ...s, co2Factor: Number.parseFloat(e.target.value) || 0 }))}
-                inputProps={{ step: 0.001, min: 0 }}
-                InputProps={{
-                  endAdornment: <InputAdornment position='end'>kg CO₂/kWh</InputAdornment>
-                }}
-              />
-            )}
-          </Box>
-
-          <Alert severity='success' sx={{ mt: 2, fontSize: '0.8rem' }}>
-            {t('settings.co2FactorExplanationFull')}
-          </Alert>
-        </CardContent>
-      </Card>
-
-      {/* Section Spécifications Serveurs */}
-      <Card variant='outlined' sx={{ mb: 3 }}>
-        <CardContent>
-          <Typography variant='subtitle1' fontWeight={700} sx={{ mb: 2, display: 'flex', alignItems: 'center', gap: 1 }}>
-            <i className='ri-server-line' style={{ color: '#8b5cf6' }} />
-            {t('settings.serverSpecs')}
-          </Typography>
-
-          <Typography variant='body2' sx={{ opacity: 0.7, mb: 2 }}>
-            {t('settings.serverSpecsDescriptionFull')}
-          </Typography>
-
-          <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '1fr 1fr 1fr' }, gap: 2 }}>
-            <TextField
-              fullWidth
-              type='number'
-              label={t('settings.tdpPerCore')}
-              value={settings.serverSpecs?.tdpPerCore || 10}
-              onChange={e => setSettings(s => ({
-                ...s,
-                serverSpecs: { ...s.serverSpecs, tdpPerCore: Number.parseFloat(e.target.value) || 10 }
-              }))}
-              inputProps={{ step: 1, min: 1 }}
-              InputProps={{
-                endAdornment: <InputAdornment position='end'>W</InputAdornment>
-              }}
-              helperText={t('settings.tdpPerCoreHelper')}
-            />
-
-            <TextField
-              fullWidth
-              type='number'
-              label={t('settings.ramConsumptionPerGb')}
-              value={settings.serverSpecs?.wattsPerGbRam || 0.375}
-              onChange={e => setSettings(s => ({
-                ...s,
-                serverSpecs: { ...s.serverSpecs, wattsPerGbRam: Number.parseFloat(e.target.value) || 0.375 }
-              }))}
-              inputProps={{ step: 0.1, min: 0 }}
-              InputProps={{
-                endAdornment: <InputAdornment position='end'>W/GB</InputAdornment>
-              }}
-              helperText={t('settings.ramConsumptionHelper')}
-            />
-
-            <TextField
-              fullWidth
-              type='number'
-              label={t('settings.overheadPerServer')}
-              value={settings.serverSpecs?.overheadPerServer || 50}
-              onChange={e => setSettings(s => ({
-                ...s,
-                serverSpecs: { ...s.serverSpecs, overheadPerServer: Number.parseFloat(e.target.value) || 50 }
-              }))}
-              inputProps={{ step: 10, min: 0 }}
-              InputProps={{
-                endAdornment: <InputAdornment position='end'>W</InputAdornment>
-              }}
-              helperText={t('settings.overheadHelper')}
-            />
-          </Box>
-
-          <Divider sx={{ my: 2 }} />
-
-          <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '1fr 1fr' }, gap: 2 }}>
-            <TextField
-              fullWidth
-              type='number'
-              label={t('settings.avgCoresPerServer')}
-              value={settings.serverSpecs?.avgCoresPerServer || 64}
-              onChange={e => setSettings(s => ({
-                ...s,
-                serverSpecs: { ...s.serverSpecs, avgCoresPerServer: Number.parseInt(e.target.value) || 64 }
-              }))}
-              inputProps={{ step: 1, min: 1 }}
-              helperText={t('settings.avgCoresHelper')}
-            />
-
-            <FormControl fullWidth>
-              <InputLabel>{t('settings.storageTypeLabel')}</InputLabel>
-              <Select
-                value={settings.serverSpecs?.storageType || 'mixed'}
-                label={t('settings.storageTypeLabel')}
-                onChange={e => setSettings(s => ({
-                  ...s,
-                  serverSpecs: { ...s.serverSpecs, storageType: e.target.value }
-                }))}
-              >
-                <MenuItem value='hdd'>{t('settings.storageTypes.hdd')}</MenuItem>
-                <MenuItem value='ssd'>{t('settings.storageTypes.ssd')}</MenuItem>
-                <MenuItem value='nvme'>{t('settings.storageTypes.nvme')}</MenuItem>
-                <MenuItem value='mixed'>{t('settings.storageTypes.mixed')}</MenuItem>
-              </Select>
-            </FormControl>
-          </Box>
-        </CardContent>
-      </Card>
+      {/* Datacenter catalogue — energy + server-spec defaults live per-DC. */}
+      <Box sx={{ mb: 3 }}>
+        <DatacentersSection />
+      </Box>
 
       {/* Section Affichage */}
       <Card variant='outlined' sx={{ mb: 3 }}>
@@ -2627,7 +2434,7 @@ export default function SettingsPage() {
     { label: t('settings.license'), icon: 'ri-key-2-line', component: LicenseTab, providerOnly: true },
     { label: t('settings.ai'), icon: 'ri-robot-line', component: AITab, requiredFeature: Features.AI_INSIGHTS, providerOnly: true },
     { label: 'RSE / Green IT', icon: 'ri-leaf-line', component: GreenTab, requiredFeature: Features.GREEN_METRICS, providerOnly: true },
-    { label: 'White Label', icon: 'ri-pantone-line', component: WhiteLabelTab, requiredFeature: Features.WHITE_LABEL, providerOnly: true },
+    { label: 'White Label', icon: 'ri-pantone-line', component: WhiteLabelTab, requiredFeature: Features.WHITE_LABEL },
     { label: t('vdc.title'), icon: 'ri-cloud-line', component: VdcTab, requiredFeature: Features.MULTI_TENANCY, providerOnly: true },
     { label: 'Tenants', icon: 'ri-building-line', component: TenantsTab, requiredFeature: Features.MULTI_TENANCY, providerOnly: true },
     { label: t('settings.sshCommands.tabLabel'), icon: 'ri-terminal-line', component: SshCommandsTab },
