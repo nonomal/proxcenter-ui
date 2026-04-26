@@ -40,6 +40,7 @@ export type DetailsPayload = {
   breadcrumb: string[]
   status: Status
   vmRealStatus?: string
+  movedTo?: string
   tags: string[]
   kpis: Kpi[]
   properties: KV[]
