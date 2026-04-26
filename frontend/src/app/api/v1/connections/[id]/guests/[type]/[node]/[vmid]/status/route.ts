@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 
 import { pveFetch } from "@/lib/proxmox/client"
+import { isVmConfigNotFoundError, locateVmInCluster, type GuestType } from "@/lib/proxmox/locateVm"
 import { getConnectionById } from "@/lib/connections/getConnection"
 import { checkPermission, buildVmResourceId, PERMISSIONS } from "@/lib/rbac"
 
@@ -30,11 +31,31 @@ export async function GET(_req: Request, ctx: RouteContext) {
     if (denied) return denied
 
     const conn = await getConnectionById(id)
-    
-    const statusData = await pveFetch<any>(
-      conn,
-      `/nodes/${encodeURIComponent(node)}/${encodeURIComponent(type)}/${encodeURIComponent(vmid)}/status/current`
-    )
+
+    // Resolve via the original node first; on "config does not exist"
+    // (typical post-intra-cluster-migration when callers still hold a
+    // stale node), look the VM up in /cluster/resources and retry on
+    // its current node. Surfaces movedTo so the frontend can update its
+    // node reference and stop polling the stale URL.
+    let resolvedNode = node
+    let movedTo: string | null = null
+    let statusData: any
+    try {
+      statusData = await pveFetch<any>(
+        conn,
+        `/nodes/${encodeURIComponent(node)}/${encodeURIComponent(type)}/${encodeURIComponent(vmid)}/status/current`
+      )
+    } catch (err: any) {
+      if (!isVmConfigNotFoundError(err)) throw err
+      const located = await locateVmInCluster(conn, vmid, type as GuestType)
+      if (!located || located.node === node) throw err
+      resolvedNode = located.node
+      movedTo = located.node
+      statusData = await pveFetch<any>(
+        conn,
+        `/nodes/${encodeURIComponent(resolvedNode)}/${encodeURIComponent(type)}/${encodeURIComponent(vmid)}/status/current`
+      )
+    }
 
     return NextResponse.json({
       data: {
@@ -46,11 +67,12 @@ export async function GET(_req: Request, ctx: RouteContext) {
         maxmem: statusData?.maxmem,
         disk: statusData?.disk,
         maxdisk: statusData?.maxdisk,
-      }
+      },
+      movedTo,
     })
   } catch (e: any) {
     console.error("[guest/status] Error:", e)
-    
-return NextResponse.json({ error: e?.message || String(e) }, { status: 500 })
+
+    return NextResponse.json({ error: e?.message || String(e) }, { status: 500 })
   }
 }

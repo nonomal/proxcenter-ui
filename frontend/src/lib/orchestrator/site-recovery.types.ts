@@ -1,13 +1,23 @@
 // Site Recovery Types - Ceph RBD cross-cluster replication & disaster recovery
 
+import type { ScheduleSpec } from '@/components/automation/site-recovery/schedule/types'
+
 // ============================================
 // Replication Jobs
 // ============================================
 
 export type ReplicationJobStatus = 'synced' | 'syncing' | 'error' | 'paused' | 'pending'
 
+export interface BandwidthWindow {
+  days: number[]          // 0=Sun, 1=Mon, …, 6=Sat
+  start_hour: number      // 0-23
+  end_hour: number        // 0-23, wraparound if end <= start
+  rate_limit_mbps: number
+}
+
 export interface ReplicationJob {
   id: string
+  name: string
   vm_ids: number[]
   vm_names: string[]
   tags: string[]            // stored tags for dynamic resolution (empty = VM-based job)
@@ -17,11 +27,16 @@ export interface ReplicationJob {
   vmid_prefix: number
   status: ReplicationJobStatus
   schedule: string
+  schedule_spec: ScheduleSpec | null   // null = RPO mode
+  timezone: string                     // IANA, "" = UTC
   rpo_target: number      // seconds
   last_sync?: string | null
   next_sync?: string | null
+  retry_count: number
+  next_retry_at?: string | null
   throughput_bps: number
   rate_limit_mbps: number
+  bandwidth_windows: BandwidthWindow[]
   network_mapping: Record<string, string>  // source bridge → target bridge
   progress_percent: number
   error_message?: string
@@ -30,24 +45,31 @@ export interface ReplicationJob {
 }
 
 export interface CreateReplicationJobRequest {
+  name?: string
   vm_ids: number[]
   tags?: string[]
   source_cluster: string
   target_cluster: string
   target_pool: string
-  schedule: string
-  rpo_target: number
+  schedule?: string
+  rpo_target?: number
+  schedule_spec?: ScheduleSpec | null
+  timezone?: string
   rate_limit_mbps: number
+  bandwidth_windows?: BandwidthWindow[]
   vmid_prefix?: number
   install_pv?: boolean
   network_mapping: Record<string, string>
 }
 
 export interface UpdateReplicationJobRequest {
-  schedule?: string
+  name?: string
+  schedule_spec?: ScheduleSpec | null
+  clear_schedule_spec?: boolean
+  timezone?: string
   rpo_target?: number
   rate_limit_mbps?: number
-  online_mode?: boolean
+  bandwidth_windows?: BandwidthWindow[]
   network_mapping?: Record<string, string>
 }
 
@@ -160,7 +182,9 @@ export interface ReplicationHealthKPIs {
   replicated_bytes: number
   error_count: number
   total_jobs: number
-  rpo_compliance: number  // 0-100 percentage
+  rpo_compliance: number   // 0-100 percentage
+  concurrent_jobs: number
+  max_concurrent_jobs: number
 }
 
 export interface JobStatusSummary {

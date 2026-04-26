@@ -1,6 +1,6 @@
 'use client'
 
-import React from 'react'
+import React, { useState } from 'react'
 import dynamic from 'next/dynamic'
 import { useTranslations } from 'next-intl'
 
@@ -22,6 +22,7 @@ import {
   FormControl,
   FormControlLabel,
   IconButton,
+  InputAdornment,
   InputLabel,
   LinearProgress,
   MenuItem,
@@ -43,9 +44,11 @@ const EditDiskDialog = dynamic(() => import('@/components/HardwareModals').then(
 const EditNetworkDialog = dynamic(() => import('@/components/HardwareModals').then(mod => ({ default: mod.EditNetworkDialog })), { ssr: false })
 const EditScsiControllerDialog = dynamic(() => import('@/components/HardwareModals').then(mod => ({ default: mod.EditScsiControllerDialog })), { ssr: false })
 const AddOtherHardwareDialog = dynamic(() => import('@/components/HardwareModals').then(mod => ({ default: mod.AddOtherHardwareDialog })), { ssr: false })
+const EditOtherHardwareDialog = dynamic(() => import('@/components/HardwareModals').then(mod => ({ default: mod.EditOtherHardwareDialog })), { ssr: false })
 const CloneVmDialog = dynamic(() => import('@/components/HardwareModals').then(mod => ({ default: mod.CloneVmDialog })), { ssr: false })
 import { MigrateVmDialog, CrossClusterMigrateParams } from '@/components/MigrateVmDialog'
 
+import { BULK_MIG_CONCURRENCY } from '../bulkMigrationConfig'
 import CreateVmDialog from '../CreateVmDialog'
 import CreateLxcDialog from '../CreateLxcDialog'
 import HaGroupDialog from '../HaGroupDialog'
@@ -108,15 +111,21 @@ export interface InventoryDialogsProps {
   setEditNetworkDialogOpen: (v: boolean) => void
   addOtherHardwareDialogOpen: boolean
   setAddOtherHardwareDialogOpen: (v: boolean) => void
+  editOtherHardwareDialogOpen: boolean
+  setEditOtherHardwareDialogOpen: (v: boolean) => void
+  selectedOtherHardware: any
+  setSelectedOtherHardware: (v: any) => void
   selectedDisk: any
   setSelectedDisk: (v: any) => void
+  editDiskInitialTab: number
+  setEditDiskInitialTab: (v: number) => void
   selectedNetwork: any
   setSelectedNetwork: (v: any) => void
   handleSaveDisk: (...args: any[]) => any
   handleSaveNetwork: (...args: any[]) => any
   handleSaveScsiController: (...args: any[]) => any
   handleEditDisk: (...args: any[]) => any
-  handleDeleteDisk: (...args: any[]) => any
+  handleDetachDisk: (...args: any[]) => any
   handleResizeDisk: (...args: any[]) => any
   handleMoveDisk: (...args: any[]) => any
   handleDeleteNetwork: (...args: any[]) => any
@@ -141,7 +150,7 @@ export interface InventoryDialogsProps {
   handleTableCloneVm: (...args: any[]) => any
 
   // Edit option dialog
-  editOptionDialog: { key: string; label: string; value: any; type: 'text' | 'boolean' | 'select' | 'hotplug'; options?: { value: string; label: string }[] } | null
+  editOptionDialog: { key: string; label: string; value: any; type: 'text' | 'boolean' | 'select' | 'vga' | 'hotplug'; options?: { value: string; label: string }[] } | null
   setEditOptionDialog: (v: any) => void
   editOptionValue: any
   setEditOptionValue: (v: any) => void
@@ -213,7 +222,7 @@ export interface InventoryDialogsProps {
   executeBulkAction: () => void
 
   // ESXi / External migration dialog
-  esxiMigrateVm: { vmid: string; name: string; connId: string; connName: string; cpu?: number; memoryMB?: number; committed?: number; guestOS?: string; licenseFull?: boolean; hostType?: string; diskPaths?: string[] } | null
+  esxiMigrateVm: { vmid: string; name: string; connId: string; connName: string; cpu?: number; memoryMB?: number; committed?: number; guestOS?: string; licenseFull?: boolean; hostType?: string; diskPaths?: string[]; status?: string; toolsStatus?: string; toolsRunningStatus?: string } | null
   setEsxiMigrateVm: (v: any) => void
   migTargetConn: string
   setMigTargetConn: (v: string) => void
@@ -232,13 +241,13 @@ export interface InventoryDialogsProps {
   setMigTempStorage: (v: string) => void
   migType: 'cold' | 'live' | 'sshfs_boot'
   setMigType: (v: 'cold' | 'live' | 'sshfs_boot') => void
-  migTransferMode: 'https' | 'sshfs'
-  setMigTransferMode: (v: 'https' | 'sshfs') => void
+  migTransferMode: 'https' | 'sshfs' | 'auto'
+  setMigTransferMode: (v: 'https' | 'sshfs' | 'auto') => void
   migPveConnections: any[]
   migNodes: any[]
   migStorages: any[]
   migSshfsAvailable: boolean | null
-  vcenterPreflight: { checked: boolean; ok: boolean; installing: boolean; errors: string[]; virtV2vInstalled: boolean; virtioWinInstalled: boolean; detectedDisks: string[]; tempStorages: { path: string; availableBytes: number; totalBytes: number; filesystem: string }[] } | null
+  vcenterPreflight: { checked: boolean; ok: boolean; installing: boolean; errors: string[]; virtV2vInstalled: boolean; virtioWinInstalled: boolean; nbdkitInstalled: boolean; nbdcopyInstalled: boolean; guestfsToolsInstalled: boolean; ovmfInstalled: boolean; detectedDisks: string[]; tempStorages: { path: string; availableBytes: number; totalBytes: number; filesystem: string }[] } | null
   setVcenterPreflight: (v: any) => void
   migStarting: boolean
   setMigStarting: (v: boolean) => void
@@ -263,7 +272,7 @@ export interface InventoryDialogsProps {
   setBulkMigLogsExpanded: (v: React.SetStateAction<boolean>) => void
   bulkMigLogsFilter: string | null
   setBulkMigLogsFilter: (v: string | null) => void
-  bulkMigConfigRef: React.MutableRefObject<{ sourceConnectionId: string; targetConnectionId: string; targetStorage: string; networkBridge: string; migrationType: string; transferMode: string; startAfterMigration: boolean; sourceType: string } | null>
+  bulkMigConfigRef: React.MutableRefObject<{ sourceConnectionId: string; targetConnectionId: string; targetStorage: string; networkBridge: string; migrationType: string; transferMode: string; startAfterMigration: boolean; sourceType: string; tempStorage?: string } | null>
   bulkMigHostInfo: any
 
   // Upgrade dialog
@@ -275,7 +284,67 @@ export interface InventoryDialogsProps {
 /* Component                                                           */
 /* ------------------------------------------------------------------ */
 
-const BULK_MIG_CONCURRENCY = 2
+/*
+ * BULK_MIG_CONCURRENCY now lives in ./bulkMigrationConfig.ts so the dispatcher
+ * here and the queued-job poller in ../InventoryDetails.tsx read the same
+ * value. Previously each file declared its own copy and they silently drifted
+ * (dialogs at 1, details at 2) which made bulk migrations still run 2 in
+ * parallel after we lowered the dispatcher's count.
+ */
+
+/**
+ * A <pre>-style code block with an overlaid "Copy" button. The command is
+ * copied to the user's clipboard via the Clipboard API on click, and the icon
+ * swaps to a checkmark for ~1.5s to give visual confirmation. Used by the
+ * virtio-win manual install instructions so the user can paste straight into
+ * their Proxmox SSH session without hand-selecting the text.
+ *
+ * Extracted as its own component because it carries a tiny local state (the
+ * "copied" flag) which can't live inside the IIFEs that render the preflight
+ * checklists around it.
+ */
+function CopyableCommand({ command }: { command: string }) {
+  const [copied, setCopied] = useState(false)
+  const handleCopy = async () => {
+    try {
+      // navigator.clipboard is the modern API; falls back to a no-op if the
+      // browser blocked it (insecure context, permissions). Not worth a
+      // textarea-select-exec fallback given ProxCenter already requires a
+      // secure HTTPS context for auth.
+      await navigator.clipboard.writeText(command)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch {
+      // swallow — user can still select + copy manually
+    }
+  }
+  return (
+    <Box sx={{ position: 'relative' }}>
+      <Box
+        component="pre"
+        sx={{
+          bgcolor: (theme) => theme.palette.mode === 'dark' ? 'rgba(0,0,0,0.3)' : 'rgba(0,0,0,0.04)',
+          p: 1, pr: 5, borderRadius: 1, fontSize: 10, m: 0, overflow: 'auto',
+          fontFamily: 'monospace', whiteSpace: 'pre-wrap', wordBreak: 'break-all',
+        }}
+      >
+        {command}
+      </Box>
+      <IconButton
+        size="small"
+        onClick={handleCopy}
+        title={copied ? 'Copied!' : 'Copy to clipboard'}
+        sx={{
+          position: 'absolute', top: 4, right: 4,
+          bgcolor: (theme) => theme.palette.mode === 'dark' ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+          '&:hover': { bgcolor: (theme) => theme.palette.mode === 'dark' ? 'rgba(255,255,255,0.15)' : 'rgba(0,0,0,0.12)' },
+        }}
+      >
+        <i className={copied ? 'ri-check-line' : 'ri-file-copy-line'} style={{ fontSize: 14, color: copied ? '#2e7d32' : undefined }} />
+      </IconButton>
+    </Box>
+  )
+}
 
 export default function InventoryDialogs(props: InventoryDialogsProps) {
   const {
@@ -289,8 +358,9 @@ export default function InventoryDialogs(props: InventoryDialogsProps) {
     addDiskDialogOpen, setAddDiskDialogOpen, addNetworkDialogOpen, setAddNetworkDialogOpen,
     editScsiControllerDialogOpen, setEditScsiControllerDialogOpen, editDiskDialogOpen, setEditDiskDialogOpen,
     editNetworkDialogOpen, setEditNetworkDialogOpen, addOtherHardwareDialogOpen, setAddOtherHardwareDialogOpen,
-    selectedDisk, setSelectedDisk, selectedNetwork, setSelectedNetwork,
-    handleSaveDisk, handleSaveNetwork, handleSaveScsiController, handleEditDisk, handleDeleteDisk,
+    editOtherHardwareDialogOpen, setEditOtherHardwareDialogOpen, selectedOtherHardware, setSelectedOtherHardware,
+    selectedDisk, setSelectedDisk, editDiskInitialTab, setEditDiskInitialTab, selectedNetwork, setSelectedNetwork,
+    handleSaveDisk, handleSaveNetwork, handleSaveScsiController, handleEditDisk, handleDetachDisk,
     handleResizeDisk, handleMoveDisk, handleDeleteNetwork,
     migrateDialogOpen, setMigrateDialogOpen, cloneDialogOpen, setCloneDialogOpen,
     handleMigrateVm, handleCrossClusterMigrate, handleCloneVm, selectedVmIsCluster,
@@ -327,6 +397,100 @@ export default function InventoryDialogs(props: InventoryDialogsProps) {
   const theme = useTheme()
   const toast = useToast()
   const { addTask: addPCTask, registerOnRestore } = useProxCenterTasks()
+
+  // virtio-win ISO download progress (background curl + polling)
+  const [virtioWinProgress, setVirtioWinProgress] = useState<{ downloading: boolean; percent: number; sizeBytes: number } | null>(null)
+  const virtioWinPollRef = React.useRef<ReturnType<typeof setInterval> | null>(null)
+
+  // Cleanup polling on unmount
+  React.useEffect(() => {
+    return () => { if (virtioWinPollRef.current) clearInterval(virtioWinPollRef.current) }
+  }, [])
+
+  // Source datastore pre-flight: detect vSAN-backed source disks for direct-ESXi sources so
+  // we can block the migration upfront with a clear message rather than letting the user fill
+  // the form and hit submit before the backend throws. vCenter/Hyper-V/Nutanix sources go
+  // through v2v-pipeline which uses NFC and handles vSAN natively, so we skip the check for them.
+  const [sourceDatastores, setSourceDatastores] = useState<string[]>([])
+  const [sourceDatastoresLoading, setSourceDatastoresLoading] = useState(false)
+  React.useEffect(() => {
+    if (!esxiMigrateVm) { setSourceDatastores([]); return }
+    if (esxiMigrateVm.hostType === 'vcenter' || esxiMigrateVm.hostType === 'hyperv' || esxiMigrateVm.hostType === 'nutanix') {
+      setSourceDatastores([])
+      return
+    }
+    setSourceDatastoresLoading(true)
+    fetch(`/api/v1/vmware/${esxiMigrateVm.connId}/vms/${esxiMigrateVm.vmid}`)
+      .then(r => r.json())
+      .then(d => {
+        const disks = (d?.data?.disks || []) as { fileName?: string }[]
+        const names = [...new Set(disks
+          .map(disk => (disk.fileName || '').match(/^\[([^\]]+)\]/)?.[1])
+          .filter((n): n is string => !!n))]
+        setSourceDatastores(names)
+      })
+      .catch(() => setSourceDatastores([]))
+      .finally(() => setSourceDatastoresLoading(false))
+  }, [esxiMigrateVm?.connId, esxiMigrateVm?.vmid, esxiMigrateVm?.hostType])
+  const sourceVsanDatastores = sourceDatastores.filter(n => n.toLowerCase().includes('vsan'))
+  const vsanBlocksMigration = sourceVsanDatastores.length > 0
+
+  const startVirtioWinDownload = async () => {
+    const installNodes = migTargetNode === '__auto__'
+      ? migNodeOptions.filter((o: any) => o.connId === migTargetConn && o.status === 'online').map((o: any) => o.node)
+      : [migTargetNode]
+    if (installNodes.length === 0) return
+
+    // Start background download on all target nodes
+    setVirtioWinProgress({ downloading: true, percent: 0, sizeBytes: 0 })
+    await Promise.all(installNodes.map((node: string) => fetch('/api/v1/migrations/preflight', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ targetConnectionId: migTargetConn, targetNode: node, action: 'install-virtio-win' }),
+    }))).catch(() => {})
+
+    // Poll progress every 2s (check first node as representative)
+    const pollNode = installNodes[0]
+    virtioWinPollRef.current = setInterval(async () => {
+      try {
+        const r = await fetch('/api/v1/migrations/preflight', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ targetConnectionId: migTargetConn, targetNode: pollNode, action: 'check-virtio-win' }),
+        })
+        const d = await r.json()
+        setVirtioWinProgress({ downloading: d.downloading, percent: d.percent || 0, sizeBytes: d.sizeBytes || 0 })
+        if (d.done) {
+          if (virtioWinPollRef.current) clearInterval(virtioWinPollRef.current)
+          virtioWinPollRef.current = null
+          setVirtioWinProgress(null)
+          // Re-run preflight to update checklist
+          const results = await Promise.all(installNodes.map(async (node: string) => {
+            const r2 = await fetch('/api/v1/migrations/preflight', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ targetConnectionId: migTargetConn, targetNode: node }),
+            })
+            return r2.json()
+          }))
+          setVcenterPreflight({
+            checked: true,
+            ok: results.every((r: any) => !(r.errors || []).length),
+            installing: false,
+            errors: [],
+            virtV2vInstalled: results.every((r: any) => !!r.virtV2vInstalled),
+            virtioWinInstalled: results.every((r: any) => !!r.virtioWinInstalled),
+            nbdkitInstalled: results.every((r: any) => !!r.nbdkitInstalled),
+            nbdcopyInstalled: results.every((r: any) => !!r.nbdcopyInstalled),
+            guestfsToolsInstalled: results.every((r: any) => !!r.guestfsToolsInstalled),
+            ovmfInstalled: results.every((r: any) => !!r.ovmfInstalled),
+            detectedDisks: [],
+            tempStorages: results[0]?.tempStorages || [],
+          })
+        }
+      } catch {}
+    }, 2000)
+  }
 
   return (
     <>
@@ -725,13 +889,14 @@ export default function InventoryDialogs(props: InventoryDialogsProps) {
                 setSelectedDisk(null)
               }}
               onSave={handleEditDisk}
-              onDelete={handleDeleteDisk}
+              onDelete={handleDetachDisk}
               onResize={handleResizeDisk}
               onMoveStorage={handleMoveDisk}
               connId={connId}
               node={node}
               disk={selectedDisk}
               existingDisks={data?.disksInfo?.map((d: any) => d.id) || []}
+              initialTab={editDiskInitialTab}
             />
 
             <EditNetworkDialog
@@ -759,6 +924,19 @@ export default function InventoryDialogs(props: InventoryDialogsProps) {
                 ...(data?.otherHardwareInfo?.map((h: any) => h.id) || []),
                 ...(data?.cloudInitConfig?.drive ? ['cloudinit'] : []),
               ]}
+            />
+
+            <EditOtherHardwareDialog
+              open={editOtherHardwareDialogOpen}
+              onClose={() => {
+                setEditOtherHardwareDialogOpen(false)
+                setSelectedOtherHardware(null)
+              }}
+              onSave={handleSaveDisk}
+              onDelete={async (id: string) => { await handleSaveDisk({ delete: id }) }}
+              connId={connId}
+              node={node}
+              hardware={selectedOtherHardware}
             />
 
             {/* Dialog de migration */}
@@ -889,6 +1067,91 @@ export default function InventoryDialogs(props: InventoryDialogsProps) {
                       label={fieldLabels[field] || field}
                     />
                   ))}
+                </Stack>
+              )
+            })()}
+            {editOptionDialog?.type === 'vga' && (() => {
+              const MEMORY_CAPABLE = new Set(['std', 'cirrus', 'vmware', 'qxl', 'virtio', 'virtio-gl'])
+              const raw = typeof editOptionValue === 'string' ? editOptionValue : ''
+              const parts = raw.split(',').map((p: string) => p.trim()).filter(Boolean)
+              const vgaType = parts[0] || 'std'
+              const memMatch = parts.slice(1).find((p: string) => p.startsWith('memory='))
+              const memory = memMatch ? parseInt(memMatch.split('=')[1], 10) : NaN
+              const memoryCapable = MEMORY_CAPABLE.has(vgaType)
+              const memoryValue = memoryCapable ? (Number.isFinite(memory) ? memory : 16) : undefined
+              const clipboardMatch = parts.slice(1).find((p: string) => p.startsWith('clipboard='))
+              // MUI Select doesn't handle empty-string values cleanly, so we use
+              // "default" as the sentinel for "no explicit clipboard" (which
+              // means SPICE if the display is SPICE, per PVE).
+              const clipboard = clipboardMatch ? clipboardMatch.split('=')[1] : 'default'
+              // Build the PVE VGA string. Omit `memory=16` (PVE default) and
+              // `clipboard=default` (our sentinel) to keep configs clean.
+              const buildValue = (nextType: string, nextMemory: number | undefined, nextClipboard: string): string => {
+                const segments = [nextType]
+                if (MEMORY_CAPABLE.has(nextType) && typeof nextMemory === 'number' && nextMemory !== 16) {
+                  segments.push(`memory=${nextMemory}`)
+                }
+                if (MEMORY_CAPABLE.has(nextType) && nextClipboard && nextClipboard !== 'default') {
+                  segments.push(`clipboard=${nextClipboard}`)
+                }
+                return segments.join(',')
+              }
+              return (
+                <Stack spacing={2}>
+                  <FormControl fullWidth size="small">
+                    <InputLabel>{editOptionDialog.label}</InputLabel>
+                    <Select
+                      value={vgaType}
+                      onChange={(e) => {
+                        const nextType = String(e.target.value)
+                        const nextMem = MEMORY_CAPABLE.has(nextType) ? (memoryValue ?? 16) : undefined
+                        const nextClip = MEMORY_CAPABLE.has(nextType) ? clipboard : ''
+                        setEditOptionValue(buildValue(nextType, nextMem, nextClip))
+                      }}
+                      label={editOptionDialog.label}
+                    >
+                      {(editOptionDialog.options || []).map((opt) => (
+                        <MenuItem key={opt.value} value={opt.value}>{opt.label}</MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+                  {memoryCapable && (
+                    <>
+                      <TextField
+                        fullWidth
+                        size="small"
+                        type="number"
+                        label={t('inventory.displayMemory')}
+                        helperText={t('inventory.displayMemoryHelper')}
+                        inputProps={{ min: 4, max: 512, step: 1 }}
+                        InputProps={{ endAdornment: <InputAdornment position="end">MB</InputAdornment> }}
+                        value={memoryValue ?? ''}
+                        onChange={(e) => {
+                          const n = parseInt(e.target.value, 10)
+                          if (Number.isFinite(n)) setEditOptionValue(buildValue(vgaType, n, clipboard))
+                        }}
+                        onBlur={(e) => {
+                          const n = parseInt(e.target.value, 10)
+                          const clamped = Number.isFinite(n) ? Math.max(4, Math.min(512, n)) : 16
+                          setEditOptionValue(buildValue(vgaType, clamped, clipboard))
+                        }}
+                      />
+                      <FormControl fullWidth size="small">
+                        <InputLabel>{t('inventory.displayClipboard')}</InputLabel>
+                        <Select
+                          value={clipboard}
+                          onChange={(e) => setEditOptionValue(buildValue(vgaType, memoryValue, String(e.target.value)))}
+                          label={t('inventory.displayClipboard')}
+                        >
+                          <MenuItem value="default">{t('inventory.displayClipboardDefault')}</MenuItem>
+                          <MenuItem value="vnc">{t('inventory.displayClipboardVnc')}</MenuItem>
+                        </Select>
+                        <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5 }}>
+                          {t('inventory.displayClipboardHelper')}
+                        </Typography>
+                      </FormControl>
+                    </>
+                  )}
                 </Stack>
               )
             })()}
@@ -1676,8 +1939,9 @@ return
                       ))}
                     </Select>
                   </FormControl>
-                  {/* Migration type selector — hidden for vCenter (cold only) */}
-                  {esxiMigrateVm?.hostType !== 'vcenter' && esxiMigrateVm?.hostType !== 'hyperv' && esxiMigrateVm?.hostType !== 'nutanix' && (
+                  {/* Migration type selector — hidden for Hyper-V / Nutanix (cold only).
+                      vCenter and direct ESXi both support cold + live. */}
+                  {esxiMigrateVm?.hostType !== 'hyperv' && esxiMigrateVm?.hostType !== 'nutanix' && (
                   <Box>
                     <Typography variant="subtitle2" sx={{ mb: 0.75, color: 'text.secondary', fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5 }}>
                       {t('inventoryPage.esxiMigration.migrationType')}
@@ -1686,7 +1950,6 @@ return
                       {([
                         { value: 'cold' as const, icon: 'ri-shut-down-line', color: 'info.main', labelKey: 'migrationTypeCold', descKey: 'migrationTypeColdDesc' },
                         { value: 'live' as const, icon: 'ri-flashlight-line', color: 'success.main', labelKey: 'migrationTypeLive', descKey: 'migrationTypeLiveDesc' },
-                        { value: 'sshfs_boot' as const, icon: 'ri-speed-line', color: 'warning.main', labelKey: 'migrationTypeSshfsBoot', descKey: 'migrationTypeSshfsBootDesc' },
                       ]).map(opt => (
                         <MuiTooltip key={opt.value} title={t(`inventoryPage.esxiMigration.${opt.descKey}`)} arrow placement="top">
                           <Box
@@ -1710,37 +1973,26 @@ return
                   </Box>
                   )}
 
-                  {/* Transfer mode selector — hidden for vCenter (virt-v2v handles transfer) */}
-                  {esxiMigrateVm?.hostType !== 'vcenter' && esxiMigrateVm?.hostType !== 'hyperv' && esxiMigrateVm?.hostType !== 'nutanix' && (
-                  <Box>
-                    <Typography variant="subtitle2" sx={{ mb: 0.75, color: 'text.secondary', fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5 }}>
-                      {t('inventoryPage.esxiMigration.transferMode')}
-                    </Typography>
-                    <Stack direction="row" spacing={1}>
-                      {([
-                        { value: 'sshfs' as const, icon: 'ri-folder-shared-line', color: 'warning.main', labelKey: 'transferModeSshfs', descKey: 'transferModeSshfsDesc' },
-                        { value: 'https' as const, icon: 'ri-download-cloud-line', color: 'info.main', labelKey: 'transferModeHttps', descKey: 'transferModeHttpsDesc' },
-                      ]).map(opt => (
-                        <MuiTooltip key={opt.value} title={t(`inventoryPage.esxiMigration.${opt.descKey}`)} arrow placement="top">
-                          <Box
-                            onClick={() => setMigTransferMode(opt.value)}
-                            sx={{
-                              flex: 1, py: 1, px: 1.5, borderRadius: 1.5, border: '2px solid', cursor: 'pointer', transition: 'all 0.15s',
-                              borderColor: migTransferMode === opt.value ? `${opt.color}` : 'divider',
-                              bgcolor: migTransferMode === opt.value ? (theme.palette.mode === 'dark' ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.02)') : 'transparent',
-                              '&:hover': { borderColor: `${opt.color}` },
-                              display: 'flex', alignItems: 'center', gap: 1, justifyContent: 'center',
-                            }}
-                          >
-                            <i className={opt.icon} style={{ fontSize: 16, color: migTransferMode === opt.value ? theme.palette[opt.color.split('.')[0] as 'warning' | 'info'].main : undefined, opacity: migTransferMode === opt.value ? 1 : 0.6 }} />
-                            <Typography variant="body2" fontWeight={migTransferMode === opt.value ? 700 : 500} fontSize={12} noWrap>
-                              {t(`inventoryPage.esxiMigration.${opt.labelKey}`)}
-                            </Typography>
-                          </Box>
-                        </MuiTooltip>
-                      ))}
-                    </Stack>
-                  </Box>
+                  {/* Transfer method is auto-detected by the backend (SSHFS when ESXi SSH is
+                      available, HTTPS otherwise). No user-facing selector — the choice is an
+                      implementation detail and was confusing in practice. */}
+
+                  {/* vSAN source blocks direct-ESXi migration — requires vCenter (NFC protocol). */}
+                  {vsanBlocksMigration && (
+                    <Alert severity="error" sx={{ fontSize: 12 }} icon={<i className="ri-error-warning-line" style={{ fontSize: 18 }} />}>
+                      {t('inventoryPage.esxiMigration.vsanRequiresVcenter', { datastores: sourceVsanDatastores.join(', ') })}
+                    </Alert>
+                  )}
+
+                  {/* Windows guest note — only shown for Live mode on direct ESXi.
+                      Direct-ESXi Cold is auto-routed through virt-v2v (see api route),
+                      which injects the VirtIO drivers + guest tools during conversion,
+                      so no manual install is needed on that path. Live stays on the
+                      in-house fast path without injection, hence the reminder. */}
+                  {!vsanBlocksMigration && esxiMigrateVm?.hostType !== 'vcenter' && esxiMigrateVm?.hostType !== 'hyperv' && esxiMigrateVm?.hostType !== 'nutanix' && !!esxiMigrateVm?.guestOS?.toLowerCase().includes('win') && migType === 'live' && (
+                    <Alert severity="info" sx={{ fontSize: 12 }} icon={<i className="ri-windows-line" style={{ fontSize: 18 }} />}>
+                      {t('inventoryPage.esxiMigration.windowsVirtioNote')}
+                    </Alert>
                   )}
 
                   {/* sshfs not installed warning */}
@@ -1750,59 +2002,217 @@ return
                     </Alert>
                   )}
 
-                  {/* vCenter preflight warning */}
-                  {(esxiMigrateVm?.hostType === 'vcenter' || esxiMigrateVm?.hostType === 'hyperv' || esxiMigrateVm?.hostType === 'nutanix') && vcenterPreflight?.checked && !vcenterPreflight.virtV2vInstalled && (
-                    <Alert
-                      severity="warning"
-                      sx={{ fontSize: 12 }}
-                      icon={<i className="ri-tools-line" style={{ fontSize: 18 }} />}
-                      action={
+
+                  {/*
+                    v2v dependency checklist — shown for vCenter/Hyper-V/Nutanix sources,
+                    and also for direct-ESXi Windows guests in Cold mode (the API route
+                    auto-routes them through virt-v2v for automatic driver injection, so
+                    the same apt packages are needed on the target node).
+                    Every required apt package that the v2v pipeline shells out to at
+                    some phase gets its own line with a green ✓ or red ✗. The Install
+                    button is a single action that apt-installs the whole bundle
+                    (installV2vPackages on the backend), so we show it whenever ANY
+                    required dep is missing. The Start Migration button in the footer
+                    is gated on the same condition via the isV2vDepsSatisfied derived
+                    below — deps missing -> button disabled.
+                  */}
+                  {(() => {
+                    const isV2vVcenter = esxiMigrateVm?.hostType === 'vcenter' || esxiMigrateVm?.hostType === 'hyperv' || esxiMigrateVm?.hostType === 'nutanix'
+                    const isWindowsGuest = !!esxiMigrateVm?.guestOS?.toLowerCase().includes('win')
+                    const isDirectEsxiWinCold = !isV2vVcenter && isWindowsGuest && migType === 'cold'
+                    return (isV2vVcenter || isDirectEsxiWinCold) && vcenterPreflight?.checked
+                  })() && (() => {
+                    const isWindowsGuest = !!esxiMigrateVm?.guestOS?.toLowerCase().includes('win')
+                    // Describe the scope of the preflight check so the user understands
+                    // that the dep status is aggregated across ALL nodes the batch
+                    // could land on when Auto is selected, not just a single node.
+                    const isAuto = migTargetNode === '__auto__'
+                    const checkedNodes = isAuto
+                      ? migNodeOptions.filter((o: any) => o.connId === migTargetConn && o.status === 'online').length
+                      : 1
+                    const scopeLabel = isAuto ? `all ${checkedNodes} online nodes of the cluster` : 'the target node'
+                    // Split the dep list into "apt-installable" (what the Install button
+                    // covers) and "manual" (virtio-win — a proprietary Red Hat ISO not
+                    // packaged in Debian repos, the user must fetch it themselves). The
+                    // button only handles the apt-installable bucket; virtio-win gets
+                    // its own instruction block with the copy-pasteable curl command.
+                    const aptChecklist = [
+                      { label: 'virt-v2v', installed: vcenterPreflight.virtV2vInstalled, required: true, note: 'VM OS conversion + driver injection' },
+                      { label: 'nbdkit', installed: vcenterPreflight.nbdkitInstalled, required: true, note: 'needed by virt-v2v -i disk on vSAN VMs' },
+                      { label: 'libnbd-bin (nbdcopy)', installed: vcenterPreflight.nbdcopyInstalled, required: true, note: 'virt-v2v disk copy step' },
+                      { label: 'guestfs-tools (rhsrvany)', installed: vcenterPreflight.guestfsToolsInstalled, required: true, note: 'Windows firstboot scripts' },
+                      { label: 'ovmf', installed: vcenterPreflight.ovmfInstalled, required: true, note: 'UEFI firmware for output metadata' },
+                    ]
+                    const virtioWinMissing = !vcenterPreflight.virtioWinInstalled
+                    const virtioWinRequired = isWindowsGuest
+                    const missingApt = aptChecklist.some(d => !d.installed)
+                    const allAptOk = !missingApt
+                    const allOk = allAptOk && (!virtioWinRequired || !virtioWinMissing)
+                    if (allOk) {
+                      return (
+                        <Alert severity="success" sx={{ fontSize: 12 }} icon={<i className="ri-checkbox-circle-line" style={{ fontSize: 18 }} />}>
+                          All virt-v2v dependencies are installed on {scopeLabel}.
+                        </Alert>
+                      )
+                    }
+                    // Build the full checklist for display (apt + virtio-win info line).
+                    const checklist: { label: string; installed: boolean; required: boolean; note?: string; manual?: boolean }[] = [
+                      ...aptChecklist,
+                      { label: 'virtio-win ISO', installed: vcenterPreflight.virtioWinInstalled, required: virtioWinRequired, note: virtioWinRequired ? 'Windows guest drivers — MANUAL install' : 'Windows guest drivers (not needed for Linux VMs)', manual: true },
+                    ]
+                    return (
+                      <>
+                      {missingApt && <Alert
+                        severity="warning"
+                        sx={{ fontSize: 12, '& .MuiAlert-message': { width: '100%' } }}
+                        icon={<i className="ri-tools-line" style={{ fontSize: 18 }} />}
+                      >
+                        <Typography variant="body2" fontWeight={600} sx={{ mb: 0.5 }}>
+                          {isAuto
+                            ? `At least one node in the cluster is missing required migration tools (checked ${checkedNodes} online nodes)`
+                            : 'Target node is missing required migration tools'}
+                        </Typography>
+                        <Box component="ul" sx={{ m: 0, pl: 2, mb: 1 }}>
+                          {checklist.map(dep => (
+                            <Box
+                              component="li"
+                              key={dep.label}
+                              sx={{
+                                listStyle: 'none',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 1,
+                                fontSize: 11,
+                                py: 0.25,
+                                opacity: dep.required ? 1 : 0.7,
+                              }}
+                            >
+                              {dep.installed ? (
+                                <i className="ri-checkbox-circle-fill" style={{ fontSize: 14, color: '#2e7d32' }} />
+                              ) : (
+                                <i className="ri-close-circle-fill" style={{ fontSize: 14, color: dep.required ? '#d32f2f' : '#ed6c02' }} />
+                              )}
+                              <span><strong>{dep.label}</strong>{dep.note ? <span style={{ opacity: 0.6 }}> — {dep.note}</span> : null}{!dep.required ? <span style={{ opacity: 0.6 }}> (optional)</span> : null}</span>
+                            </Box>
+                          ))}
+                        </Box>
                         <Button
                           size="small"
                           color="warning"
+                          variant="contained"
                           disabled={vcenterPreflight.installing}
                           startIcon={vcenterPreflight.installing ? <CircularProgress size={14} color="inherit" /> : <i className="ri-download-line" />}
                           onClick={async () => {
                             setVcenterPreflight(prev => prev ? { ...prev, installing: true } : prev)
                             try {
-                              const connNodes = migNodeOptions.filter((o: any) => o.connId === migTargetConn)
-                              const fetchNode = migTargetNode === '__auto__' ? (connNodes[0]?.node || migTargetNode) : migTargetNode
-                              await fetch('/api/v1/migrations/preflight', {
+                              // Install target = every online node of the cluster when Auto
+                              // is selected, otherwise just the single chosen node. apt-get
+                              // is idempotent so re-installing on nodes that already have
+                              // the deps is a no-op. We run in parallel for speed.
+                              // NOTE: apt-install only covers virt-v2v + nbdkit + libnbd-bin.
+                              // virtio-win is a separate ISO the user must fetch manually
+                              // (see the instructions block below). Don't mix them here.
+                              const installNodes = migTargetNode === '__auto__'
+                                ? migNodeOptions.filter((o: any) => o.connId === migTargetConn && o.status === 'online').map((o: any) => o.node)
+                                : [migTargetNode]
+                              await Promise.all(installNodes.map((node: string) => fetch('/api/v1/migrations/preflight', {
                                 method: 'POST',
                                 headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ targetConnectionId: migTargetConn, targetNode: fetchNode, action: 'install' }),
+                                body: JSON.stringify({ targetConnectionId: migTargetConn, targetNode: node, action: 'install' }),
+                              })))
+                              // Re-check across the same node set and aggregate (AND semantics).
+                              const results = await Promise.all(installNodes.map(async (node: string) => {
+                                const r2 = await fetch('/api/v1/migrations/preflight', {
+                                  method: 'POST',
+                                  headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify({ targetConnectionId: migTargetConn, targetNode: node }),
+                                })
+                                return r2.json()
+                              }))
+                              const allVirtV2v = results.every((r: any) => !!r.virtV2vInstalled)
+                              const allNbdkit = results.every((r: any) => !!r.nbdkitInstalled)
+                              const allNbdcopy = results.every((r: any) => !!r.nbdcopyInstalled)
+                              const allGuestfsTools = results.every((r: any) => !!r.guestfsToolsInstalled)
+                              const allOvmf = results.every((r: any) => !!r.ovmfInstalled)
+                              const allVirtioWin = results.every((r: any) => !!r.virtioWinInstalled)
+                              const firstWithDisks = results.find((r: any) => r.detectedDisks && r.detectedDisks.length > 0)
+                              const firstWithStorages = results[0]
+                              setVcenterPreflight({
+                                checked: true,
+                                ok: results.every((r: any) => !(r.errors || []).length),
+                                installing: false,
+                                errors: [],
+                                virtV2vInstalled: allVirtV2v,
+                                virtioWinInstalled: allVirtioWin,
+                                nbdkitInstalled: allNbdkit,
+                                nbdcopyInstalled: allNbdcopy,
+                                guestfsToolsInstalled: allGuestfsTools,
+                                ovmfInstalled: allOvmf,
+                                detectedDisks: firstWithDisks?.detectedDisks || [],
+                                tempStorages: firstWithStorages?.tempStorages || [],
                               })
-                              // Re-check after install
-                              const r2 = await fetch('/api/v1/migrations/preflight', {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ targetConnectionId: migTargetConn, targetNode: fetchNode }),
-                              })
-                              const d2 = await r2.json()
-                              setVcenterPreflight({ checked: true, ok: !d2.errors?.length, installing: false, errors: d2.errors || [], virtV2vInstalled: d2.virtV2vInstalled ?? false, virtioWinInstalled: d2.virtioWinInstalled ?? false, detectedDisks: d2.detectedDisks || [], tempStorages: d2.tempStorages || [] })
                             } catch {
                               setVcenterPreflight(prev => prev ? { ...prev, installing: false } : prev)
                             }
                           }}
                           sx={{ textTransform: 'none', fontSize: 11, whiteSpace: 'nowrap' }}
                         >
-                          {vcenterPreflight.installing ? 'Installing...' : 'Install'}
+                          {vcenterPreflight.installing
+                            ? (migTargetNode === '__auto__' ? `Installing on ${migNodeOptions.filter((o: any) => o.connId === migTargetConn && o.status === 'online').length} nodes…` : 'Installing on target node…')
+                            : 'Install missing packages'}
                         </Button>
-                      }
-                    >
-                      virt-v2v is not installed on the target node. It is required for migrations.
-                    </Alert>
-                  )}
+                      </Alert>}
+                      {/* Manual virtio-win instruction block. We hide it entirely
+                          for Linux guests (isWindowsGuest is derived from the VM's
+                          Guest OS string that vSphere/the hypervisor returned) so
+                          the modal doesn't show irrelevant instructions for a VM
+                          the user is migrating as Linux. For Windows guests we
+                          surface the copy-paste command because the ISO is a
+                          proprietary Red Hat ISO (not in Debian repos) that we
+                          intentionally don't auto-fetch. Informational only, the
+                          Start Migration button is not blocked on this. */}
+                      {virtioWinMissing && virtioWinRequired && (
+                        <Alert severity="info" sx={{ fontSize: 11, mt: 1, '& .MuiAlert-message': { width: '100%' } }} icon={<i className="ri-windows-line" style={{ fontSize: 18 }} />}>
+                          <Typography variant="body2" fontWeight={600} sx={{ mb: 0.5 }}>
+                            virtio-win ISO (Windows guest detected)
+                          </Typography>
+                          <Typography variant="body2" sx={{ mb: 1, fontSize: 11 }}>
+                            Windows VirtIO drivers (storage + network) required for VM to boot after conversion.
+                          </Typography>
+                          {virtioWinProgress ? (
+                            <Box>
+                              <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.5 }}>
+                                <Typography variant="caption" sx={{ fontSize: 10 }}>
+                                  Downloading virtio-win.iso… {(virtioWinProgress.sizeBytes / 1048576).toFixed(0)} MB
+                                </Typography>
+                                <Typography variant="caption" fontWeight={700} sx={{ fontSize: 10 }}>
+                                  {virtioWinProgress.percent}%
+                                </Typography>
+                              </Box>
+                              <LinearProgress variant="determinate" value={virtioWinProgress.percent} sx={{ height: 6, borderRadius: 1 }} />
+                            </Box>
+                          ) : (
+                            <Button
+                              size="small"
+                              variant="contained"
+                              startIcon={<i className="ri-download-2-line" />}
+                              onClick={startVirtioWinDownload}
+                              sx={{ textTransform: 'none', fontSize: 11 }}
+                            >
+                              Download virtio-win ISO (~700 MB)
+                            </Button>
+                          )}
+                        </Alert>
+                      )}
+                      </>
+                    )
+                  })()}
 
-                  {/* virtio-win warning for Windows VMs */}
-                  {(esxiMigrateVm?.hostType === 'vcenter' || esxiMigrateVm?.hostType === 'hyperv' || esxiMigrateVm?.hostType === 'nutanix') && vcenterPreflight?.checked && !vcenterPreflight.virtioWinInstalled && esxiMigrateVm?.guestOS?.toLowerCase().includes('win') && (
-                    <Alert severity="warning" sx={{ fontSize: 11 }} icon={<i className="ri-windows-line" style={{ fontSize: 18 }} />}>
-                      virtio-win drivers not found on the target node. Windows VMs will boot without optimized disk and network drivers. Download the ISO and place it at <code>/usr/share/virtio-win/virtio-win.iso</code> on the Proxmox node.
-                    </Alert>
-                  )}
-
-                  {/* Temporary storage for virt-v2v */}
-                  {(esxiMigrateVm?.hostType === 'vcenter' || esxiMigrateVm?.hostType === 'hyperv' || esxiMigrateVm?.hostType === 'nutanix') && vcenterPreflight?.tempStorages && vcenterPreflight.tempStorages.length > 0 && (
+                  {/* Temporary storage — used by virt-v2v for vcenter/hyperv/nutanix sources,
+                      and by the direct-ESXi pipeline for SSHFS mount root + VMDK dumps + clone
+                      targets. /tmp is often a tiny tmpfs on PVE; offering the selector lets the
+                      user pin the multi-GB work to a real filesystem. */}
+                  {vcenterPreflight?.tempStorages && vcenterPreflight.tempStorages.length > 0 && (
                     <Box>
                       <TextField
                         select
@@ -1922,6 +2332,41 @@ return
                 ) : null
               })()}
 
+              {/* Cold-on-running warning: Offline migration requires the VM to be off.
+                  We ask the user to power it down first instead of auto-powering off,
+                  which surprises users whose VM wasn't actually ready for shutdown. */}
+              {migType === 'cold' && (esxiMigrateVm?.status === 'running' || esxiMigrateVm?.status === 'poweredOn') && (
+                <Alert severity="warning" sx={{ fontSize: 12 }} icon={<i className="ri-alert-line" style={{ fontSize: 18 }} />}>
+                  Offline migration requires the source VM to be powered off. Please stop{' '}
+                  <strong>{esxiMigrateVm.name || esxiMigrateVm.vmid}</strong> before starting the migration, or switch to Live migration.
+                </Alert>
+              )}
+              {/* Live-on-stopped warning: Live migration snapshots the running VM so
+                  the transfer happens with zero interruption. On a stopped VM the
+                  snapshot step is pointless and you may as well use Offline. Block
+                  rather than silently fall back, to make the choice explicit. */}
+              {migType === 'live' && esxiMigrateVm && esxiMigrateVm.status !== 'running' && esxiMigrateVm.status !== 'poweredOn' && (
+                <Alert severity="warning" sx={{ fontSize: 12 }} icon={<i className="ri-alert-line" style={{ fontSize: 18 }} />}>
+                  Live migration requires the source VM to be running (so VMware can
+                  snapshot and quiesce the guest). <strong>{esxiMigrateVm.name || esxiMigrateVm.vmid}</strong>
+                  is currently {esxiMigrateVm.status || 'stopped'}. Start it first, or switch to
+                  Offline migration.
+                </Alert>
+              )}
+              {/* Live-on-Windows-without-Tools: VSS quiesce requires running VMware
+                  Tools in the guest, otherwise the snapshot is crash-consistent and
+                  virt-v2v fails on the dirty NTFS 10+ minutes into the migration.
+                  Fail fast here before the user commits to a long download. */}
+              {migType === 'live' && esxiMigrateVm && (esxiMigrateVm.status === 'running' || esxiMigrateVm.status === 'poweredOn') && (esxiMigrateVm.guestOS || '').toLowerCase().includes('windows') && esxiMigrateVm.toolsRunningStatus !== 'guestToolsRunning' && (
+                <Alert severity="warning" sx={{ fontSize: 12 }} icon={<i className="ri-alert-line" style={{ fontSize: 18 }} />}>
+                  Live migration of a Windows guest requires VMware Tools installed AND running in the source VM
+                  (VSS quiesce is the only way to capture a clean NTFS snapshot while the VM keeps running). Current state:
+                  toolsStatus=<strong>{esxiMigrateVm.toolsStatus || 'unknown'}</strong>, toolsRunningStatus=<strong>{esxiMigrateVm.toolsRunningStatus || 'unknown'}</strong>.
+                  Install VMware Tools on <strong>{esxiMigrateVm.name || esxiMigrateVm.vmid}</strong> and retry, or shut it down
+                  (run <code>powercfg /h off</code> then <code>shutdown /s /f /t 0</code> inside Windows) and use Offline migration.
+                </Alert>
+              )}
+
               {/* Info banner */}
               <Box sx={{ p: 1.5, borderRadius: 1, bgcolor: theme.palette.mode === 'dark' ? 'rgba(var(--mui-palette-primary-mainChannel) / 0.08)' : 'rgba(var(--mui-palette-primary-mainChannel) / 0.06)', border: '1px solid', borderColor: 'primary.main', borderOpacity: 0.2, display: 'flex', alignItems: 'center', gap: 1 }}>
                 <i className="ri-information-line" style={{ fontSize: 18, color: theme.palette.primary.main }} />
@@ -1931,7 +2376,9 @@ return
                     : esxiMigrateVm?.hostType === 'hyperv'
                     ? 'Cold migration only. Mount your Hyper-V share at /mnt/hyperv/ on the target Proxmox node. Disks are detected automatically.'
                     : esxiMigrateVm?.hostType === 'vcenter'
-                    ? 'Cold migration only. virt-v2v will handle disk conversion and virtio driver injection automatically.'
+                    ? (migType === 'live'
+                        ? 'Live migration: vCenter snapshot is created on the running VM, disks are exported via NFC while the VM stays up, then the source is powered off and the snapshot removed just before virt-v2v runs. Downtime = convert + import + boot (minutes).'
+                        : 'Cold migration: the source VM must be powered off. virt-v2v handles disk conversion and virtio driver injection automatically.')
                     : migType === 'cold' ? t('inventoryPage.esxiMigration.coldMigrationInfo')
                     : migType === 'live' ? t('inventoryPage.esxiMigration.liveMigrationInfo')
                     : t('inventoryPage.esxiMigration.sshfsBootMigrationInfo')
@@ -2089,7 +2536,56 @@ return
               <Button onClick={() => setEsxiMigrateVm(null)} disabled={migStarting}>{t('common.cancel')}</Button>
               <Button
                 variant="outlined"
-                disabled={!migTargetConn || !migTargetNode || !migTargetStorage || migStarting || ((esxiMigrateVm?.hostType === 'vcenter' || esxiMigrateVm?.hostType === 'hyperv' || esxiMigrateVm?.hostType === 'nutanix') ? ((vcenterPreflight?.checked && !vcenterPreflight.virtV2vInstalled) || !migTempStorage || (() => { const sel = vcenterPreflight?.tempStorages?.find(s => s.path === migTempStorage); return sel ? sel.availableBytes < (esxiMigrateVm?.committed || 0) * 2 : true })()) : ((migTargetConn && !migPveConnections.find((c: any) => c.id === migTargetConn)?.sshEnabled) || (migSshfsAvailable === false && (migTransferMode === 'sshfs' || migType === 'sshfs_boot'))))}
+                disabled={(() => {
+                  // Base requirements (always apply)
+                  if (!migTargetConn || !migTargetNode || !migTargetStorage || migStarting) return true
+                  const isV2vVcenter = esxiMigrateVm?.hostType === 'vcenter' || esxiMigrateVm?.hostType === 'hyperv' || esxiMigrateVm?.hostType === 'nutanix'
+                  const isWindowsGuest = !!esxiMigrateVm?.guestOS?.toLowerCase().includes('win')
+                  // Direct-ESXi Windows Cold is auto-routed through virt-v2v by the API
+                  // for automatic driver injection, so we gate on the same deps as vCenter.
+                  const isDirectEsxiWinCold = !isV2vVcenter && isWindowsGuest && migType === 'cold'
+                  const needsV2vDeps = isV2vVcenter || isDirectEsxiWinCold
+                  // Power-state gates: cold needs the VM off, live needs it on.
+                  // Applies to every source type. Auto-power-off/on is intentionally
+                  // NOT done here - the user toggles VM state on the source hypervisor
+                  // themselves so a surprise shutdown never happens, and live migration
+                  // on a stopped VM is pointless (it becomes just a cold run with an
+                  // orphan snapshot attempt).
+                  const isRunning = esxiMigrateVm?.status === 'running' || esxiMigrateVm?.status === 'poweredOn'
+                  if (migType === 'cold' && isRunning) return true
+                  if (migType === 'live' && esxiMigrateVm && !isRunning) return true
+                  // Live + Windows needs running VMware Tools for VSS quiesce,
+                  // otherwise virt-v2v will fail on a dirty NTFS. Fail fast in
+                  // the UI rather than 10 min into the migration.
+                  if (migType === 'live' && esxiMigrateVm && (esxiMigrateVm.guestOS || '').toLowerCase().includes('windows') && esxiMigrateVm.toolsRunningStatus !== 'guestToolsRunning') return true
+                  if (needsV2vDeps) {
+                    if (!vcenterPreflight?.checked) return false // preflight not run yet, don't pre-gate
+                    if (!vcenterPreflight.virtV2vInstalled) return true
+                    if (!vcenterPreflight.nbdkitInstalled) return true
+                    if (!vcenterPreflight.nbdcopyInstalled) return true
+                    if (!vcenterPreflight.guestfsToolsInstalled) return true
+                    if (!vcenterPreflight.ovmfInstalled) return true
+                    // virtio-win is required for Windows guests — without it the
+                    // VM will likely BSOD with INACCESSIBLE_BOOT_DEVICE.
+                    if (isWindowsGuest && !vcenterPreflight.virtioWinInstalled) return true
+                    // Temp storage must have at least 2x the source VM's committed
+                    // space (rough heuristic: NFC download + virt-v2v converted output).
+                    if (!migTempStorage) return true
+                    const sel = vcenterPreflight.tempStorages?.find(s => s.path === migTempStorage)
+                    if (!sel || sel.availableBytes < (esxiMigrateVm?.committed || 0) * 2) return true
+                    // Direct-ESXi via v2v also requires SSH + key on the source connection
+                    // (virt-v2v -it ssh doesn't do password auth).
+                    if (isDirectEsxiWinCold && migTargetConn && !migPveConnections.find((c: any) => c.id === migTargetConn)?.sshEnabled) return true
+                    return false
+                  }
+                  // ESXi-direct path: SSH must be configured on the target Proxmox
+                  // connection and sshfs/pv must be available when those modes selected.
+                  if (migTargetConn && !migPveConnections.find((c: any) => c.id === migTargetConn)?.sshEnabled) return true
+                  if (migSshfsAvailable === false && (migTransferMode === 'sshfs' || migType === 'sshfs_boot')) return true
+                  // vSAN source on direct-ESXi: blocked because vSAN objects need NFC via vCenter.
+                  if (vsanBlocksMigration) return true
+                  return false
+                })()}
                 sx={{ textTransform: 'none' }}
                 startIcon={migStarting ? <CircularProgress size={16} color="inherit" /> : <img src={theme.palette.mode === 'dark' ? '/images/proxmox-logo-dark.svg' : '/images/proxmox-logo.svg'} alt="" width={16} height={16} />}
                 onClick={async () => {
@@ -2107,14 +2603,38 @@ return
                         targetNode: migTargetNode,
                         targetStorage: migTargetStorage,
                         networkBridge: migNetworkBridge,
-                        migrationType: (esxiMigrateVm.hostType === 'vcenter' || esxiMigrateVm.hostType === 'hyperv' || esxiMigrateVm.hostType === 'nutanix') ? 'cold' : migType,
+                        // vCenter supports cold + live via the v2v pipeline
+                        // (NFC-on-snapshot). Hyper-V / Nutanix are still cold only.
+                        migrationType: (esxiMigrateVm.hostType === 'hyperv' || esxiMigrateVm.hostType === 'nutanix') ? 'cold'
+                          : (esxiMigrateVm.hostType === 'vcenter' ? (migType === 'sshfs_boot' ? 'cold' : migType) : migType),
                         transferMode: (esxiMigrateVm.hostType === 'vcenter' || esxiMigrateVm.hostType === 'hyperv' || esxiMigrateVm.hostType === 'nutanix') ? 'v2v' : migTransferMode,
                         startAfterMigration: migStartAfter,
-                        ...((esxiMigrateVm.hostType === 'vcenter' || esxiMigrateVm.hostType === 'hyperv' || esxiMigrateVm.hostType === 'nutanix') && migTempStorage !== '/tmp' && {
+                        // Forward tempStorage for every source type — v2v uses it as virt-v2v's -os,
+                        // direct-ESXi uses it as the base path for SSHFS mount + VMDK dumps + clones.
+                        ...(migTempStorage !== '/tmp' && {
                           tempStorage: migTempStorage,
                         }),
                         ...(esxiMigrateVm.hostType === 'hyperv' && migDiskPaths.trim() && {
                           diskPaths: migDiskPaths.trim().split('\n').map((p: string) => p.trim()).filter(Boolean),
+                        }),
+                        // vCenter inventory path resolved server-side via SOAP and threaded
+                        // down through esxiMigrateVm. Required by libvirt's vpx driver to
+                        // locate the VM in the vCenter inventory hierarchy.
+                        // We deliberately DO NOT gate on hostType==='vcenter' here: the
+                        // backend route decides whether to invoke the v2v pipeline based on
+                        // the connection's subType (DB-side), and the frontend hostType has
+                        // historically only been set to 'vmware' for both ESXi and vCenter.
+                        // Sending these fields unconditionally is harmless for ESXi (where
+                        // they're always undefined and the spreads no-op) and unblocks
+                        // vCenter regardless of how the host derived hostType.
+                        ...((esxiMigrateVm as any).vcenterDatacenter && {
+                          vcenterDatacenter: (esxiMigrateVm as any).vcenterDatacenter,
+                        }),
+                        ...((esxiMigrateVm as any).vcenterCluster && {
+                          vcenterCluster: (esxiMigrateVm as any).vcenterCluster,
+                        }),
+                        ...((esxiMigrateVm as any).vcenterHost && {
+                          vcenterHost: (esxiMigrateVm as any).vcenterHost,
                         }),
                       }),
                     })
@@ -2209,17 +2729,53 @@ return
         </DialogTitle>
         <DialogContent>
           <Stack spacing={2.5} sx={{ mt: 1 }}>
-            {/* Selected VMs summary */}
-            <Box sx={{ p: 2, borderRadius: 1.5, bgcolor: theme.palette.mode === 'dark' ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.02)', border: '1px solid', borderColor: 'divider', maxHeight: 150, overflow: 'auto' }}>
+            {/* Selected VMs summary — uses the same VM-icon + status-pastille
+                visual as the inventory tree (see InventoryTree.tsx renderVmItem)
+                so the user gets a consistent at-a-glance status across the app.
+                The hypervisor-specific icon (esxi-vm.svg / ri-computer-line) is
+                chosen from bulkMigHostInfo.hostType; the bottom-right dot is
+                green=running, orange=paused/suspended, red=stopped.
+                Hidden once migration starts (bulkMigJobs populated): the
+                per-job progress rows below already list the same VMs with
+                live status, so the static summary becomes redundant noise. */}
+            {bulkMigJobs.length === 0 && <Box sx={{ p: 2, borderRadius: 1.5, bgcolor: theme.palette.mode === 'dark' ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.02)', border: '1px solid', borderColor: 'divider', maxHeight: 150, overflow: 'auto' }}>
               <Typography variant="subtitle2" sx={{ mb: 1, color: 'text.secondary', fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5 }}>{t('inventoryPage.esxiMigration.selectedVms')}</Typography>
-              {(bulkMigHostInfo?.vms || []).filter((vm: any) => bulkMigSelected.has(vm.vmid)).map((vm: any) => (
-                <Box key={vm.vmid} sx={{ display: 'flex', alignItems: 'center', gap: 1, py: 0.3 }}>
-                  <Chip size="small" label={vm.status === 'running' ? 'ON' : 'OFF'} sx={{ height: 18, fontSize: 9, fontWeight: 700, bgcolor: vm.status === 'running' ? 'success.main' : 'action.disabledBackground', color: vm.status === 'running' ? '#fff' : 'text.secondary' }} />
-                  <Typography variant="body2" fontSize={12} fontWeight={600}>{vm.name || vm.vmid}</Typography>
-                  <Typography variant="caption" color="text.secondary">{vm.cpu} vCPU · {vm.memory_size_MiB ? `${(vm.memory_size_MiB / 1024).toFixed(1)} GB` : '?'}</Typography>
-                </Box>
-              ))}
-            </Box>
+              {(() => {
+                // Pick the hypervisor-specific VM icon. Mirrors the small map
+                // used in InventoryTree.tsx for the migration section.
+                const vmIconByType: Record<string, string | undefined> = {
+                  vmware: '/images/esxi-vm.svg',
+                  hyperv: undefined,
+                  xcpng: undefined,
+                  nutanix: undefined,
+                }
+                const vmIconSrc = vmIconByType[bulkMigHostInfo?.hostType || ''] || undefined
+                return (bulkMigHostInfo?.vms || []).filter((vm: any) => bulkMigSelected.has(vm.vmid)).map((vm: any) => {
+                  const dotColor =
+                    vm.status === 'running' ? '#4caf50' :
+                    vm.status === 'paused' || vm.status === 'suspended' ? '#ed6c02' :
+                    '#f44336'
+                  return (
+                    <Box key={vm.vmid} sx={{ display: 'flex', alignItems: 'center', gap: 1, py: 0.3 }}>
+                      <Box component="span" sx={{ position: 'relative', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 14, height: 14, flexShrink: 0 }}>
+                        {vmIconSrc
+                          ? <img src={vmIconSrc} alt="" width={14} height={14} style={{ opacity: 0.7 }} />
+                          : <i className="ri-computer-line" style={{ fontSize: 14, opacity: 0.7 }} />
+                        }
+                        <Box sx={{
+                          position: 'absolute', bottom: -2, right: -3,
+                          width: 7, height: 7, borderRadius: '50%',
+                          bgcolor: dotColor,
+                          border: '1.5px solid', borderColor: 'background.paper',
+                          boxShadow: vm.status === 'running' ? `0 0 4px ${dotColor}` : 'none',
+                        }} />
+                      </Box>
+                      <Typography variant="body2" fontSize={12} fontWeight={600}>{vm.name || vm.vmid}</Typography>
+                    </Box>
+                  )
+                })
+              })()}
+            </Box>}
 
             {bulkMigJobs.length === 0 && (
               <>
@@ -2234,35 +2790,44 @@ return
                     <FormControl fullWidth size="small">
                       <InputLabel>{t('inventoryPage.esxiMigration.targetNode')}</InputLabel>
                       <Select
-                        value={migTargetConn && migTargetNode ? (migTargetNode === '__auto__' ? '__auto__' : `${migTargetConn}::${migTargetNode}`) : ''}
+                        /*
+                         * Value encoding: "<connId>::<node>" for a specific node,
+                         * "<connId>::__auto__" for cluster-wide round-robin auto.
+                         * The legacy global "__auto__" is gone — it silently picked
+                         * the first connection and was unusable in multi-cluster
+                         * setups (migNodes stayed empty, bulk distribution failed).
+                         * Auto is now per-cluster so the user explicitly picks
+                         * WHICH cluster to spread the batch across.
+                         */
+                        value={migTargetConn && migTargetNode ? `${migTargetConn}::${migTargetNode}` : ''}
                         onChange={e => {
                           const val = e.target.value as string
-                          if (val === '__auto__') {
-                            const firstConn = migNodeOptions[0]
-                            setMigTargetConn(firstConn?.connId || '')
-                            setMigTargetNode('__auto__')
-                          } else {
-                            const [connId, node] = val.split('::')
-                            setMigTargetConn(connId || '')
-                            setMigTargetNode(node || '')
-                          }
+                          const [connId, node] = val.split('::')
+                          setMigTargetConn(connId || '')
+                          setMigTargetNode(node || '')
                           setMigTargetStorage('')
                           setMigNetworkBridge('')
                         }}
                         label={t('inventoryPage.esxiMigration.targetNode')}
                         renderValue={(val) => {
-                          if (val === '__auto__') return (
-                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                              <i className="ri-equalizer-line" style={{ fontSize: 14, color: theme.palette.primary.main }} />
-                              <Typography variant="body2" fontWeight={500}>{t('inventoryPage.esxiMigration.autoDistribute')}</Typography>
-                            </Box>
-                          )
                           const [connId, node] = (val as string).split('::')
                           const conn = migPveConnections.find((c: any) => c.id === connId)
                           const opt = migNodeOptions.find((o: any) => o.connId === connId && o.node === node)
                           const isCluster = conn?.hosts?.length > 1
                           const isDarkRv = theme.palette.mode === 'dark'
                           if (!conn) return ''
+                          // Auto mode tied to a cluster: show a clear label that
+                          // makes the scope obvious ("Auto across <cluster>") so
+                          // the user knows the batch lands only on that cluster's
+                          // nodes, not everywhere.
+                          if (node === '__auto__') return (
+                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                              <i className="ri-equalizer-line" style={{ fontSize: 14, color: theme.palette.primary.main }} />
+                              <Typography variant="body2" fontWeight={500}>
+                                {t('inventoryPage.esxiMigration.autoDistribute')} — {conn.name}
+                              </Typography>
+                            </Box>
+                          )
                           return (
                             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                               <Box component="span" sx={{ position: 'relative', display: 'inline-flex', alignItems: 'center', width: 14, height: 14, flexShrink: 0 }}>
@@ -2274,21 +2839,12 @@ return
                           )
                         }}
                       >
-                        <MenuItem value="__auto__">
-                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                            <i className="ri-equalizer-line" style={{ fontSize: 16, color: theme.palette.primary.main }} />
-                            <Box>
-                              <Typography variant="body2" fontWeight={600} fontSize={13}>{t('inventoryPage.esxiMigration.autoDistribute')}</Typography>
-                              <Typography variant="caption" color="text.secondary" fontSize={10}>{t('inventoryPage.esxiMigration.autoDistributeDesc')}</Typography>
-                            </Box>
-                          </Box>
-                        </MenuItem>
                         {migPveConnections.map((conn: any, connIdx: number) => {
                           const isCluster = conn.hosts?.length > 1
                           const isDark = theme.palette.mode === 'dark'
                           const connNodes = migNodeOptions.filter((o: any) => o.connId === conn.id)
                           const items: React.ReactNode[] = []
-                          items.push(<Divider key={`div-${conn.id}`} />)
+                          if (connIdx > 0) items.push(<Divider key={`div-${conn.id}`} />)
                           if (isCluster) {
                             items.push(
                               <MenuItem key={`header-${conn.id}`} disabled sx={{ opacity: '1 !important', py: 0.5, minHeight: 32, bgcolor: isDark ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.03)' }}>
@@ -2300,6 +2856,26 @@ return
                                   <Chip size="small" label="Cluster" sx={{ height: 16, fontSize: 9, fontWeight: 600 }} />
                                 </Box>
                               </MenuItem>
+                            )
+                            // Per-cluster Auto entry: round-robin across THIS cluster's
+                            // nodes only. Previously there was a single global Auto that
+                            // silently bound to the first connection — unusable in multi-
+                            // cluster setups. Exposing it per-cluster makes the scope
+                            // obvious to the user.
+                            items.push(
+                              <MenuItem key={`${conn.id}::__auto__`} value={`${conn.id}::__auto__`} sx={{ pl: 4 }}>
+                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, width: '100%' }}>
+                                  <i className="ri-equalizer-line" style={{ fontSize: 16, color: theme.palette.primary.main, width: 14 }} />
+                                  <Box>
+                                    <Typography variant="body2" fontWeight={600} fontSize={13}>
+                                      {t('inventoryPage.esxiMigration.autoDistribute')}
+                                    </Typography>
+                                    <Typography variant="caption" color="text.secondary" fontSize={10}>
+                                      {t('inventoryPage.esxiMigration.autoDistributeDesc')}
+                                    </Typography>
+                                  </Box>
+                                </Box>
+                              </MenuItem>,
                             )
                             connNodes.forEach((node: any) => {
                               items.push(
@@ -2414,8 +2990,9 @@ return
                   </Stack>
                 </Box>
 
-                {/* Migration type — hidden for vCenter (cold only) */}
-                {bulkMigHostInfo?.hostType !== 'vcenter' && bulkMigHostInfo?.hostType !== 'hyperv' && bulkMigHostInfo?.hostType !== 'nutanix' && (
+                {/* Migration type — hidden for Hyper-V / Nutanix (cold only).
+                    vCenter and direct ESXi both support cold + live. */}
+                {bulkMigHostInfo?.hostType !== 'hyperv' && bulkMigHostInfo?.hostType !== 'nutanix' && (
                 <Box>
                   <Typography variant="subtitle2" sx={{ mb: 0.75, color: 'text.secondary', fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5 }}>
                     {t('inventoryPage.esxiMigration.migrationType')}
@@ -2424,7 +3001,6 @@ return
                     {([
                       { value: 'cold' as const, icon: 'ri-shut-down-line', color: 'info.main', labelKey: 'migrationTypeCold', descKey: 'migrationTypeColdDesc' },
                       { value: 'live' as const, icon: 'ri-flashlight-line', color: 'success.main', labelKey: 'migrationTypeLive', descKey: 'migrationTypeLiveDesc' },
-                      { value: 'sshfs_boot' as const, icon: 'ri-speed-line', color: 'warning.main', labelKey: 'migrationTypeSshfsBoot', descKey: 'migrationTypeSshfsBootDesc' },
                     ]).map(opt => (
                       <MuiTooltip key={opt.value} title={t(`inventoryPage.esxiMigration.${opt.descKey}`)} arrow placement="top">
                         <Box
@@ -2448,38 +3024,9 @@ return
                 </Box>
                 )}
 
-                {/* Transfer mode — hidden for vCenter (virt-v2v handles transfer) */}
-                {bulkMigHostInfo?.hostType !== 'vcenter' && bulkMigHostInfo?.hostType !== 'hyperv' && bulkMigHostInfo?.hostType !== 'nutanix' && (
-                <Box>
-                  <Typography variant="subtitle2" sx={{ mb: 0.75, color: 'text.secondary', fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5 }}>
-                    {t('inventoryPage.esxiMigration.transferMode')}
-                  </Typography>
-                  <Stack direction="row" spacing={1}>
-                    {([
-                      { value: 'sshfs' as const, icon: 'ri-folder-shared-line', color: 'warning.main', labelKey: 'transferModeSshfs', descKey: 'transferModeSshfsDesc' },
-                      { value: 'https' as const, icon: 'ri-download-cloud-line', color: 'info.main', labelKey: 'transferModeHttps', descKey: 'transferModeHttpsDesc' },
-                    ]).map(opt => (
-                      <MuiTooltip key={opt.value} title={t(`inventoryPage.esxiMigration.${opt.descKey}`)} arrow placement="top">
-                        <Box
-                          onClick={() => setMigTransferMode(opt.value)}
-                          sx={{
-                            flex: 1, py: 1, px: 1.5, borderRadius: 1.5, border: '2px solid', cursor: 'pointer', transition: 'all 0.15s',
-                            borderColor: migTransferMode === opt.value ? `${opt.color}` : 'divider',
-                            bgcolor: migTransferMode === opt.value ? (theme.palette.mode === 'dark' ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.02)') : 'transparent',
-                            '&:hover': { borderColor: `${opt.color}` },
-                            display: 'flex', alignItems: 'center', gap: 1, justifyContent: 'center',
-                          }}
-                        >
-                          <i className={opt.icon} style={{ fontSize: 16, color: migTransferMode === opt.value ? theme.palette[opt.color.split('.')[0] as 'warning' | 'info'].main : undefined, opacity: migTransferMode === opt.value ? 1 : 0.6 }} />
-                          <Typography variant="body2" fontWeight={migTransferMode === opt.value ? 700 : 500} fontSize={12} noWrap>
-                            {t(`inventoryPage.esxiMigration.${opt.labelKey}`)}
-                          </Typography>
-                        </Box>
-                      </MuiTooltip>
-                    ))}
-                  </Stack>
-                </Box>
-                )}
+                {/* Transfer method is auto-detected by the backend (SSHFS when ESXi SSH is
+                    available, HTTPS otherwise). No user-facing selector — the choice is an
+                    implementation detail and was confusing in practice. */}
 
                 {/* sshfs not installed warning */}
                 {bulkMigHostInfo?.hostType !== 'vcenter' && bulkMigHostInfo?.hostType !== 'hyperv' && bulkMigHostInfo?.hostType !== 'nutanix' && migSshfsAvailable === false && (migTransferMode === 'sshfs' || migType === 'sshfs_boot') && (
@@ -2488,10 +3035,13 @@ return
                   </Alert>
                 )}
 
+
                 {/* vCenter/Hyper-V info banner for bulk */}
                 {bulkMigHostInfo?.hostType === 'vcenter' && (
                   <Alert severity="info" sx={{ fontSize: 12 }} icon={<i className="ri-information-line" style={{ fontSize: 18 }} />}>
-                    Cold migration only. virt-v2v will handle disk conversion and virtio driver injection automatically.
+                    {migType === 'live'
+                      ? 'Live migration: each VM is snapshotted, its disks are NFC-exported while it stays running, then the source is powered off + snapshot removed just before virt-v2v. Per-VM downtime = convert + import + boot.'
+                      : 'Cold migration: each source VM must be powered off first. virt-v2v handles disk conversion and virtio driver injection automatically.'}
                   </Alert>
                 )}
                 {bulkMigHostInfo?.hostType === 'hyperv' && (
@@ -2505,48 +3055,249 @@ return
                   </Alert>
                 )}
 
-                {/* vCenter/Hyper-V/Nutanix preflight warning for bulk */}
-                {(bulkMigHostInfo?.hostType === 'vcenter' || bulkMigHostInfo?.hostType === 'hyperv' || bulkMigHostInfo?.hostType === 'nutanix') && vcenterPreflight?.checked && !vcenterPreflight.virtV2vInstalled && (
-                  <Alert
-                    severity="warning"
-                    sx={{ fontSize: 12 }}
-                    icon={<i className="ri-tools-line" style={{ fontSize: 18 }} />}
-                    action={
+                {/* vCenter/Hyper-V/Nutanix preflight checklist for bulk migration.
+                    Mirrors the single-VM checklist above: the Install button only
+                    covers apt-installable deps (virt-v2v / nbdkit / libnbd-bin),
+                    virtio-win is a separate manual step surfaced via instructions
+                    below and does NOT block the Start Migration button. */}
+                {(bulkMigHostInfo?.hostType === 'vcenter' || bulkMigHostInfo?.hostType === 'hyperv' || bulkMigHostInfo?.hostType === 'nutanix') && vcenterPreflight?.checked && (() => {
+                  const isAutoBulk = migTargetNode === '__auto__'
+                  const checkedNodesBulk = isAutoBulk
+                    ? migNodeOptions.filter((o: any) => o.connId === migTargetConn && o.status === 'online').length
+                    : 1
+                  const scopeLabelBulk = isAutoBulk ? `all ${checkedNodesBulk} online nodes of the cluster` : 'the target node'
+                  // Detect whether the user has any Windows VMs in the selected
+                  // batch by looking at the Guest OS string each hypervisor
+                  // reports (same field shown in the "Guest OS" table column).
+                  // If the batch is 100% Linux, virtio-win is irrelevant and we
+                  // hide both the checklist row and the manual install block to
+                  // avoid noise. Mixed Linux+Windows batches still show it.
+                  const selectedVms = (bulkMigHostInfo?.vms || []).filter((vm: any) => bulkMigSelected.has(vm.vmid))
+                  const hasWindowsInBatch = selectedVms.some((vm: any) => {
+                    const os = (vm.guest_OS || vm.guestOS || '').toString().toLowerCase()
+                    return os.includes('win')
+                  })
+                  const aptChecklistBulk = [
+                    { label: 'virt-v2v', installed: vcenterPreflight.virtV2vInstalled, required: true, note: 'VM OS conversion + driver injection' },
+                    { label: 'nbdkit', installed: vcenterPreflight.nbdkitInstalled, required: true, note: 'needed by virt-v2v -i disk on vSAN VMs' },
+                    { label: 'libnbd-bin (nbdcopy)', installed: vcenterPreflight.nbdcopyInstalled, required: true, note: 'virt-v2v disk copy step' },
+                    { label: 'guestfs-tools (rhsrvany)', installed: vcenterPreflight.guestfsToolsInstalled, required: true, note: 'Windows firstboot scripts' },
+                    { label: 'ovmf', installed: vcenterPreflight.ovmfInstalled, required: true, note: 'UEFI firmware for output metadata' },
+                  ]
+                  const virtioWinMissingBulk = !vcenterPreflight.virtioWinInstalled && hasWindowsInBatch
+                  const missingAptBulk = aptChecklistBulk.some(d => !d.installed)
+                  // Only include the virtio-win row in the checklist when the
+                  // batch actually contains a Windows guest — no point showing
+                  // it otherwise.
+                  const fullChecklist = hasWindowsInBatch
+                    ? [
+                      ...aptChecklistBulk,
+                      { label: 'virtio-win ISO', installed: vcenterPreflight.virtioWinInstalled, required: false, note: 'Windows guest drivers — MANUAL install, optional' },
+                    ]
+                    : aptChecklistBulk
+                  if (!missingAptBulk && !virtioWinMissingBulk) {
+                    return (
+                      <Alert severity="success" sx={{ fontSize: 12 }} icon={<i className="ri-checkbox-circle-line" style={{ fontSize: 18 }} />}>
+                        All virt-v2v dependencies are installed on {scopeLabelBulk}.
+                      </Alert>
+                    )
+                  }
+                  return (
+                    <>
+                    {missingAptBulk && <Alert
+                      severity="warning"
+                      sx={{ fontSize: 12, '& .MuiAlert-message': { width: '100%' } }}
+                      icon={<i className="ri-tools-line" style={{ fontSize: 18 }} />}
+                    >
+                      <Typography variant="body2" fontWeight={600} sx={{ mb: 0.5 }}>
+                        {isAutoBulk
+                          ? `At least one node in the cluster is missing required migration tools (checked ${checkedNodesBulk} online nodes)`
+                          : 'Target node is missing required migration tools'}
+                      </Typography>
+                      <Box component="ul" sx={{ m: 0, pl: 2, mb: 1 }}>
+                        {fullChecklist.map(dep => (
+                          <Box
+                            component="li"
+                            key={dep.label}
+                            sx={{ listStyle: 'none', display: 'flex', alignItems: 'center', gap: 1, fontSize: 11, py: 0.25, opacity: dep.required ? 1 : 0.7 }}
+                          >
+                            {dep.installed ? (
+                              <i className="ri-checkbox-circle-fill" style={{ fontSize: 14, color: '#2e7d32' }} />
+                            ) : (
+                              <i className="ri-close-circle-fill" style={{ fontSize: 14, color: dep.required ? '#d32f2f' : '#ed6c02' }} />
+                            )}
+                            <span><strong>{dep.label}</strong>{dep.note ? <span style={{ opacity: 0.6 }}> — {dep.note}</span> : null}{!dep.required ? <span style={{ opacity: 0.6 }}> (optional)</span> : null}</span>
+                          </Box>
+                        ))}
+                      </Box>
                       <Button
                         size="small"
                         color="warning"
+                        variant="contained"
                         disabled={vcenterPreflight.installing}
                         startIcon={vcenterPreflight.installing ? <CircularProgress size={14} color="inherit" /> : <i className="ri-download-line" />}
                         onClick={async () => {
                           setVcenterPreflight(prev => prev ? { ...prev, installing: true } : prev)
                           try {
-                            const connNodes = migNodeOptions.filter((o: any) => o.connId === migTargetConn)
-                            const fetchNode = migTargetNode === '__auto__' ? (connNodes[0]?.node || migTargetNode) : migTargetNode
-                            await fetch('/api/v1/migrations/preflight', {
+                            // Bulk install target = every online node of the cluster when
+                            // Auto is selected. apt-installs virt-v2v + nbdkit + libnbd-bin
+                            // only. virtio-win is manual and handled in the instruction
+                            // block below.
+                            const installNodes = migTargetNode === '__auto__'
+                              ? migNodeOptions.filter((o: any) => o.connId === migTargetConn && o.status === 'online').map((o: any) => o.node)
+                              : [migTargetNode]
+                            await Promise.all(installNodes.map((node: string) => fetch('/api/v1/migrations/preflight', {
                               method: 'POST',
                               headers: { 'Content-Type': 'application/json' },
-                              body: JSON.stringify({ targetConnectionId: migTargetConn, targetNode: fetchNode, action: 'install' }),
+                              body: JSON.stringify({ targetConnectionId: migTargetConn, targetNode: node, action: 'install' }),
+                            })))
+                            const results = await Promise.all(installNodes.map(async (node: string) => {
+                              const r2 = await fetch('/api/v1/migrations/preflight', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ targetConnectionId: migTargetConn, targetNode: node }),
+                              })
+                              return r2.json()
+                            }))
+                            setVcenterPreflight({
+                              checked: true,
+                              ok: results.every((r: any) => !(r.errors || []).length),
+                              installing: false,
+                              errors: [],
+                              virtV2vInstalled: results.every((r: any) => !!r.virtV2vInstalled),
+                              virtioWinInstalled: results.every((r: any) => !!r.virtioWinInstalled),
+                              nbdkitInstalled: results.every((r: any) => !!r.nbdkitInstalled),
+                              nbdcopyInstalled: results.every((r: any) => !!r.nbdcopyInstalled),
+                              guestfsToolsInstalled: results.every((r: any) => !!r.guestfsToolsInstalled),
+                              ovmfInstalled: results.every((r: any) => !!r.ovmfInstalled),
+                              detectedDisks: [],
+                              tempStorages: results[0]?.tempStorages || [],
                             })
-                            const r2 = await fetch('/api/v1/migrations/preflight', {
-                              method: 'POST',
-                              headers: { 'Content-Type': 'application/json' },
-                              body: JSON.stringify({ targetConnectionId: migTargetConn, targetNode: fetchNode }),
-                            })
-                            const d2 = await r2.json()
-                            setVcenterPreflight({ checked: true, ok: !d2.errors?.length, installing: false, errors: d2.errors || [], virtV2vInstalled: d2.virtV2vInstalled ?? false, virtioWinInstalled: d2.virtioWinInstalled ?? false, detectedDisks: d2.detectedDisks || [], tempStorages: d2.tempStorages || [] })
                           } catch {
                             setVcenterPreflight(prev => prev ? { ...prev, installing: false } : prev)
                           }
                         }}
                         sx={{ textTransform: 'none', fontSize: 11, whiteSpace: 'nowrap' }}
                       >
-                        {vcenterPreflight.installing ? 'Installing...' : 'Install'}
+                        {vcenterPreflight.installing
+                          ? (isAutoBulk ? `Installing on ${checkedNodesBulk} nodes…` : 'Installing on target node…')
+                          : 'Install missing packages'}
                       </Button>
-                    }
-                  >
-                    virt-v2v is not installed on the target node. It is required for migrations.
-                  </Alert>
-                )}
+                    </Alert>}
+                    {virtioWinMissingBulk && (() => {
+                      const windowsCount = selectedVms.filter((vm: any) => {
+                        const os = (vm.guest_OS || vm.guestOS || '').toString().toLowerCase()
+                        return os.includes('win')
+                      }).length
+                      return (
+                        <Alert severity="info" sx={{ fontSize: 11, mt: 1, '& .MuiAlert-message': { width: '100%' } }} icon={<i className="ri-windows-line" style={{ fontSize: 18 }} />}>
+                          <Typography variant="body2" fontWeight={600} sx={{ mb: 0.5 }}>
+                            virtio-win ISO ({windowsCount} Windows VM{windowsCount === 1 ? '' : 's'} in the batch)
+                          </Typography>
+                          <Typography variant="body2" sx={{ mb: 1, fontSize: 11 }}>
+                            Windows VirtIO drivers required for Windows VMs to boot after conversion.
+                          </Typography>
+                          {virtioWinProgress ? (
+                            <Box>
+                              <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.5 }}>
+                                <Typography variant="caption" sx={{ fontSize: 10 }}>
+                                  Downloading virtio-win.iso… {(virtioWinProgress.sizeBytes / 1048576).toFixed(0)} MB
+                                </Typography>
+                                <Typography variant="caption" fontWeight={700} sx={{ fontSize: 10 }}>
+                                  {virtioWinProgress.percent}%
+                                </Typography>
+                              </Box>
+                              <LinearProgress variant="determinate" value={virtioWinProgress.percent} sx={{ height: 6, borderRadius: 1 }} />
+                            </Box>
+                          ) : (
+                            <Button
+                              size="small"
+                              variant="contained"
+                              startIcon={<i className="ri-download-2-line" />}
+                              onClick={startVirtioWinDownload}
+                              sx={{ textTransform: 'none', fontSize: 11 }}
+                            >
+                              Download virtio-win ISO (~700 MB)
+                            </Button>
+                          )}
+                        </Alert>
+                      )
+                    })()}
+                    </>
+                  )
+                })()}
+
+                {/* Temporary storage (bulk). Used by virt-v2v and by the direct-ESXi
+                    pipeline (SSHFS mount root, VMDK dumps, vmkfstools clone targets).
+                    Without this, paths default to /tmp on the target node, which is
+                    often a small partition (tmpfs or root FS). For bulk jobs with
+                    several multi-GB VMs the dir fills up and subsequent migrations
+                    hang or fail with "no space left on device". */}
+                {vcenterPreflight?.tempStorages && vcenterPreflight.tempStorages.length > 0 && (() => {
+                  const selectedBulkVms = (bulkMigHostInfo?.vms || []).filter((vm: any) => bulkMigSelected.has(vm.vmid))
+                  // Peak disk usage in bulk = biggest committed disk × 2 (source + converted).
+                  // Sequential runs (BULK_MIG_CONCURRENCY=1) so only one VM occupies tempStorage at a time.
+                  const maxCommitted = selectedBulkVms.reduce((m: number, vm: any) => Math.max(m, vm.committed || 0), 0)
+                  const requiredBytes = maxCommitted * 2
+                  return (
+                    <Box>
+                      <TextField
+                        select
+                        fullWidth
+                        size="small"
+                        label="Temporary Storage"
+                        value={migTempStorage}
+                        onChange={(e) => setMigTempStorage(e.target.value)}
+                        helperText={(() => {
+                          const sel = vcenterPreflight.tempStorages.find(s => s.path === migTempStorage)
+                          if (!sel) return 'Select where virt-v2v writes temporary files during conversion'
+                          const availGB = (sel.availableBytes / 1073741824).toFixed(1)
+                          const reqGB = (requiredBytes / 1073741824).toFixed(1)
+                          if (requiredBytes > 0 && sel.availableBytes < requiredBytes) return `Insufficient space: ${availGB} GB available, ~${reqGB} GB required for largest VM in batch`
+                          return requiredBytes > 0
+                            ? `${availGB} GB available (${sel.filesystem}), ~${reqGB} GB peak needed per VM`
+                            : `${availGB} GB available (${sel.filesystem})`
+                        })()}
+                        error={(() => {
+                          const sel = vcenterPreflight.tempStorages.find(s => s.path === migTempStorage)
+                          return sel && requiredBytes > 0 ? sel.availableBytes < requiredBytes : false
+                        })()}
+                      >
+                        {vcenterPreflight.tempStorages.map(s => {
+                          const usedPct = Math.round(((s.totalBytes - s.availableBytes) / s.totalBytes) * 100)
+                          const availGB = (s.availableBytes / 1073741824).toFixed(1)
+                          const totalGB = (s.totalBytes / 1073741824).toFixed(1)
+                          return (
+                            <MenuItem key={s.path} value={s.path}>
+                              <Box sx={{ width: '100%' }}>
+                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
+                                  <i className="ri-hard-drive-2-line" style={{ fontSize: 14, opacity: 0.5 }} />
+                                  <Typography variant="body2" sx={{ fontFamily: '"JetBrains Mono", monospace', fontSize: 12 }}>{s.path}</Typography>
+                                  <Typography variant="caption" sx={{ ml: 'auto', opacity: 0.6 }}>
+                                    {availGB} / {totalGB} GB free
+                                  </Typography>
+                                </Box>
+                                <LinearProgress
+                                  variant="determinate"
+                                  value={usedPct}
+                                  sx={{
+                                    height: 4,
+                                    borderRadius: 2,
+                                    bgcolor: 'action.hover',
+                                    '& .MuiLinearProgress-bar': {
+                                      bgcolor: usedPct > 90 ? 'error.main' : usedPct > 70 ? 'warning.main' : 'success.main',
+                                      borderRadius: 2,
+                                    }
+                                  }}
+                                />
+                              </Box>
+                            </MenuItem>
+                          )
+                        })}
+                      </TextField>
+                    </Box>
+                  )
+                })()}
 
                 <FormControlLabel
                   control={<Switch size="small" checked={migStartAfter} onChange={(_, v) => setMigStartAfter(v)} />}
@@ -2559,13 +3310,53 @@ return
                 )}
 
                 {migType === 'cold' && bulkMigHostInfo?.vms && (() => {
-                  const runningVms = bulkMigHostInfo.vms.filter((vm: any) => bulkMigSelected.has(vm.vmid) && vm.status === 'running')
+                  const runningVms = bulkMigHostInfo.vms.filter((vm: any) => bulkMigSelected.has(vm.vmid) && (vm.status === 'running' || vm.status === 'poweredOn'))
                   return runningVms.length > 0 ? (
                     <Alert severity="warning" sx={{ fontSize: 12 }}>
                       {t('inventoryPage.esxiMigration.coldMigrationRunningVms')}
                       <Box component="ul" sx={{ m: 0, mt: 0.5, pl: 2 }}>
                         {runningVms.map((vm: any) => (
                           <li key={vm.vmid}><strong>{vm.name || vm.vmid}</strong></li>
+                        ))}
+                      </Box>
+                    </Alert>
+                  ) : null
+                })()}
+                {migType === 'live' && bulkMigHostInfo?.vms && (() => {
+                  const stoppedVms = bulkMigHostInfo.vms.filter((vm: any) => bulkMigSelected.has(vm.vmid) && vm.status !== 'running' && vm.status !== 'poweredOn')
+                  return stoppedVms.length > 0 ? (
+                    <Alert severity="warning" sx={{ fontSize: 12 }}>
+                      Live migration requires the source VM to be running (so VMware can snapshot + quiesce the guest).
+                      The following selected VM(s) are not running. Start them first, or switch the batch to Offline migration:
+                      <Box component="ul" sx={{ m: 0, mt: 0.5, pl: 2 }}>
+                        {stoppedVms.map((vm: any) => (
+                          <li key={vm.vmid}><strong>{vm.name || vm.vmid}</strong> ({vm.status || 'stopped'})</li>
+                        ))}
+                      </Box>
+                    </Alert>
+                  ) : null
+                })()}
+                {/* Live + Windows guests without running VMware Tools: VSS quiesce
+                    won't run so the snapshot will be crash-consistent and virt-v2v
+                    will fail on the dirty NTFS mid-conversion. Surface the offenders
+                    upfront rather than wasting download time. */}
+                {migType === 'live' && bulkMigHostInfo?.vms && (() => {
+                  const winNoTools = bulkMigHostInfo.vms.filter((vm: any) =>
+                    bulkMigSelected.has(vm.vmid) &&
+                    (vm.status === 'running' || vm.status === 'poweredOn') &&
+                    (vm.guest_OS || vm.guestOS || '').toString().toLowerCase().includes('windows') &&
+                    vm.toolsRunningStatus !== 'guestToolsRunning'
+                  )
+                  return winNoTools.length > 0 ? (
+                    <Alert severity="warning" sx={{ fontSize: 12 }}>
+                      Live migration of Windows guests requires VMware Tools installed AND running
+                      (VSS quiesce is the only way to capture a clean NTFS snapshot while the VM keeps running).
+                      The following selected Windows VM(s) do not have Tools running. Install / repair Tools
+                      in each guest and retry, or switch the batch to Offline migration (with{' '}
+                      <code>powercfg /h off</code> + <code>shutdown /s /f /t 0</code> on each guest):
+                      <Box component="ul" sx={{ m: 0, mt: 0.5, pl: 2 }}>
+                        {winNoTools.map((vm: any) => (
+                          <li key={vm.vmid}><strong>{vm.name || vm.vmid}</strong> (toolsStatus={vm.toolsStatus || 'unknown'}, toolsRunningStatus={vm.toolsRunningStatus || 'unknown'})</li>
                         ))}
                       </Box>
                     </Alert>
@@ -2605,33 +3396,107 @@ return
                     sx={{ height: 6, borderRadius: 3 }}
                   />
 
-                  {/* Individual jobs — shown when expanded */}
-                  {bulkMigProgressExpanded && (
-                    <Box sx={{ pl: 1 }}>
-                      {bulkMigJobs.map((job) => (
-                        <Box key={job.vmid} sx={{ display: 'flex', alignItems: 'center', gap: 1.5, py: 0.75, borderBottom: '1px solid', borderColor: 'divider', '&:last-child': { borderBottom: 'none' } }}>
-                          <Box sx={{ flex: 1, minWidth: 0 }}>
-                            <Typography variant="body2" fontWeight={600} fontSize={12} noWrap>{job.name}</Typography>
-                            <LinearProgress
-                              variant={job.status === 'pending' ? 'indeterminate' : 'determinate'}
-                              value={job.status === 'queued' ? 0 : job.progress}
-                              color={job.status === 'completed' ? 'success' : job.status === 'failed' || job.status === 'cancelled' ? 'error' : 'primary'}
-                              sx={{ height: 4, borderRadius: 2, mt: 0.5, ...(job.status === 'queued' ? { opacity: 0.3 } : {}) }}
-                            />
-                          </Box>
-                          <Chip
-                            size="small"
-                            label={job.status === 'completed' ? t('inventoryPage.esxiMigration.completed') : job.status === 'failed' ? t('inventoryPage.esxiMigration.failed') : job.status === 'queued' ? t('inventoryPage.esxiMigration.queued') : `${job.progress}%`}
-                            sx={{
-                              height: 20, fontSize: 10, fontWeight: 700, minWidth: 50,
-                              bgcolor: job.status === 'completed' ? 'success.main' : job.status === 'failed' ? 'error.main' : job.status === 'queued' ? 'action.disabled' : 'primary.main',
-                              color: '#fff',
-                            }}
-                          />
-                        </Box>
-                      ))}
-                    </Box>
-                  )}
+                  {/* Individual jobs — shown when expanded.
+                      Each row reuses the source-logo → animated-flow → Proxmox-logo
+                      visual from the single-VM modal (search "migFlow" above), but
+                      shrunk to fit a list row. The flowing dots are rendered ONLY
+                      for the job(s) currently transferring/converting; queued jobs
+                      show a paused icon, completed jobs show a solid green line,
+                      failed jobs show a red cross. This makes it obvious at a glance
+                      WHICH VM is actively moving without parsing the chip text. */}
+                  {bulkMigProgressExpanded && (() => {
+                    // Resolve the source hypervisor logo once for the whole batch
+                    // (every VM in the batch shares the same source connection).
+                    const srcLogo =
+                      bulkMigHostInfo?.hostType === 'hyperv' ? '/images/hyperv-logo.svg' :
+                      bulkMigHostInfo?.hostType === 'nutanix' ? '/images/nutanix-logo.svg' :
+                      bulkMigHostInfo?.hostType === 'xcpng' ? '/images/xcpng-logo.svg' :
+                      '/images/esxi-logo.svg'
+                    const dstLogo = theme.palette.mode === 'dark' ? '/images/proxmox-logo-dark.svg' : '/images/proxmox-logo.svg'
+                    return (
+                      <Box sx={{ pl: 1 }}>
+                        {bulkMigJobs.map((job) => {
+                          const isDone = job.status === 'completed'
+                          const isFailed = job.status === 'failed' || job.status === 'cancelled'
+                          const isQueued = job.status === 'queued'
+                          const isActive = !isDone && !isFailed && !isQueued
+                          return (
+                            <Box key={job.vmid} sx={{ display: 'flex', alignItems: 'center', gap: 1, py: 0.75, borderBottom: '1px solid', borderColor: 'divider', '&:last-child': { borderBottom: 'none' } }}>
+                              {/* Source hypervisor logo */}
+                              <Box sx={{
+                                width: 24, height: 24, borderRadius: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+                                bgcolor: theme.palette.mode === 'dark' ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.04)',
+                                border: '1px solid', borderColor: isDone ? 'success.main' : isFailed ? 'error.main' : 'divider',
+                                opacity: isQueued ? 0.4 : 1,
+                              }}>
+                                <img src={srcLogo} alt="" width={14} height={14} style={{ opacity: isDone ? 0.4 : 1 }} />
+                              </Box>
+                              {/* Animated flow track (dots flow only for the active job).
+                                  Same migFlow keyframe as the single-VM upper block;
+                                  duration/spacing are slightly tighter to match the
+                                  smaller track length. */}
+                              <Box sx={{ width: 70, position: 'relative', height: 16, display: 'flex', alignItems: 'center', flexShrink: 0 }}>
+                                <Box sx={{ position: 'absolute', inset: 0, top: '50%', height: 2, transform: 'translateY(-50%)', bgcolor: isDone ? 'success.main' : isFailed ? 'error.main' : 'divider', borderRadius: 1, opacity: isQueued ? 0.3 : 1 }} />
+                                {isActive && [0, 1, 2, 3].map(idx => (
+                                  <Box key={idx} sx={{
+                                    position: 'absolute', width: 5, height: 5, borderRadius: '50%',
+                                    bgcolor: 'primary.main',
+                                    animation: 'migFlowBulk 1.6s ease-in-out infinite',
+                                    animationDelay: `${idx * 0.4}s`,
+                                    opacity: 0,
+                                    '@keyframes migFlowBulk': {
+                                      '0%': { left: '0%', opacity: 0, transform: 'scale(0.5)' },
+                                      '15%': { opacity: 1, transform: 'scale(1)' },
+                                      '85%': { opacity: 1, transform: 'scale(1)' },
+                                      '100%': { left: '100%', opacity: 0, transform: 'scale(0.5)' },
+                                    },
+                                  }} />
+                                ))}
+                                {isFailed && (
+                                  <Box sx={{ position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%, -50%)', color: 'error.main', fontSize: 14, lineHeight: 1 }}>
+                                    <i className="ri-close-circle-fill" />
+                                  </Box>
+                                )}
+                                {isQueued && (
+                                  <Box sx={{ position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%, -50%)', color: 'text.disabled', fontSize: 12, lineHeight: 1 }}>
+                                    <i className="ri-pause-circle-line" />
+                                  </Box>
+                                )}
+                              </Box>
+                              {/* Proxmox logo */}
+                              <Box sx={{
+                                width: 24, height: 24, borderRadius: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+                                bgcolor: theme.palette.mode === 'dark' ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.04)',
+                                border: '1px solid', borderColor: isDone ? 'success.main' : isFailed ? 'error.main' : 'divider',
+                                opacity: isQueued ? 0.4 : 1,
+                              }}>
+                                <img src={dstLogo} alt="" width={14} height={14} style={{ opacity: isDone ? 1 : 0.6 }} />
+                              </Box>
+                              {/* VM name + thin progress bar */}
+                              <Box sx={{ flex: 1, minWidth: 0 }}>
+                                <Typography variant="body2" fontWeight={600} fontSize={12} noWrap>{job.name}</Typography>
+                                <LinearProgress
+                                  variant={job.status === 'pending' ? 'indeterminate' : 'determinate'}
+                                  value={isQueued ? 0 : job.progress}
+                                  color={isDone ? 'success' : isFailed ? 'error' : 'primary'}
+                                  sx={{ height: 4, borderRadius: 2, mt: 0.5, ...(isQueued ? { opacity: 0.3 } : {}) }}
+                                />
+                              </Box>
+                              <Chip
+                                size="small"
+                                label={isDone ? t('inventoryPage.esxiMigration.completed') : isFailed ? t('inventoryPage.esxiMigration.failed') : isQueued ? t('inventoryPage.esxiMigration.queued') : `${job.progress}%`}
+                                sx={{
+                                  height: 20, fontSize: 10, fontWeight: 700, minWidth: 50,
+                                  bgcolor: isDone ? 'success.main' : isFailed ? 'error.main' : isQueued ? 'action.disabled' : 'primary.main',
+                                  color: '#fff',
+                                }}
+                              />
+                            </Box>
+                          )
+                        })}
+                      </Box>
+                    )
+                  })()}
 
                   {/* Logs section — collapsible */}
                   <Box
@@ -2706,17 +3571,78 @@ return
               <Button onClick={() => setBulkMigOpen(false)} disabled={bulkMigStarting}>{t('common.cancel')}</Button>
               <Button
                 variant="outlined"
-                disabled={!migTargetConn || !migTargetNode || !migTargetStorage || bulkMigStarting || ((bulkMigHostInfo?.hostType === 'vcenter' || bulkMigHostInfo?.hostType === 'hyperv' || bulkMigHostInfo?.hostType === 'nutanix') ? (vcenterPreflight?.checked && !vcenterPreflight.virtV2vInstalled) : ((migTargetConn && !migPveConnections.find((c: any) => c.id === migTargetConn)?.sshEnabled) || (migSshfsAvailable === false && (migTransferMode === 'sshfs' || migType === 'sshfs_boot')))) || (migType === 'cold' && bulkMigHostInfo?.vms?.some((vm: any) => bulkMigSelected.has(vm.vmid) && vm.status === 'running'))}
+                disabled={(() => {
+                  if (!migTargetConn || !migTargetNode || !migTargetStorage || bulkMigStarting) return true
+                  const isV2vSource = bulkMigHostInfo?.hostType === 'vcenter' || bulkMigHostInfo?.hostType === 'hyperv' || bulkMigHostInfo?.hostType === 'nutanix'
+                  if (isV2vSource) {
+                    if (vcenterPreflight?.checked) {
+                      if (!vcenterPreflight.virtV2vInstalled) return true
+                      if (!vcenterPreflight.nbdkitInstalled) return true
+                      if (!vcenterPreflight.nbdcopyInstalled) return true
+                      if (!vcenterPreflight.guestfsToolsInstalled) return true
+                      if (!vcenterPreflight.ovmfInstalled) return true
+                      // In bulk, block if batch contains Windows VMs and virtio-win is missing
+                      if (!vcenterPreflight.virtioWinInstalled) {
+                        const hasWin = (bulkMigHostInfo?.vms || [])
+                          .filter((vm: any) => bulkMigSelected.has(vm.vmid))
+                          .some((vm: any) => (vm.guest_OS || vm.guestOS || '').toString().toLowerCase().includes('win'))
+                        if (hasWin) return true
+                      }
+                    }
+                  } else {
+                    if (migTargetConn && !migPveConnections.find((c: any) => c.id === migTargetConn)?.sshEnabled) return true
+                    if (migSshfsAvailable === false && (migTransferMode === 'sshfs' || migType === 'sshfs_boot')) return true
+                  }
+                  // Batch-wide power-state gates. The inner Alerts list the offending
+                  // VMs individually; here we just return true so the button is disabled
+                  // whenever the batch mixes the chosen migrationType with an incompatible
+                  // VM state.
+                  if (migType === 'cold' && bulkMigHostInfo?.vms?.some((vm: any) => bulkMigSelected.has(vm.vmid) && (vm.status === 'running' || vm.status === 'poweredOn'))) return true
+                  if (migType === 'live' && bulkMigHostInfo?.vms?.some((vm: any) => bulkMigSelected.has(vm.vmid) && vm.status !== 'running' && vm.status !== 'poweredOn')) return true
+                  // Live + Windows in the batch without running VMware Tools: block
+                  // (symmetric with the individual modal check).
+                  if (migType === 'live' && bulkMigHostInfo?.vms?.some((vm: any) =>
+                    bulkMigSelected.has(vm.vmid) &&
+                    (vm.status === 'running' || vm.status === 'poweredOn') &&
+                    (vm.guest_OS || vm.guestOS || '').toString().toLowerCase().includes('windows') &&
+                    vm.toolsRunningStatus !== 'guestToolsRunning'
+                  )) return true
+                  return false
+                })()}
                 sx={{ textTransform: 'none' }}
                 startIcon={bulkMigStarting ? <CircularProgress size={16} color="inherit" /> : <img src={theme.palette.mode === 'dark' ? '/images/proxmox-logo-dark.svg' : '/images/proxmox-logo.svg'} alt="" width={16} height={16} />}
                 onClick={async () => {
                   if (!bulkMigHostInfo) return
                   setBulkMigStarting(true)
                   const vmsToMigrate = bulkMigHostInfo.vms.filter((vm: any) => bulkMigSelected.has(vm.vmid))
-                  // Build node list for round-robin distribution
-                  const nodeList = migTargetNode === '__auto__' ? migNodes.map((n: any) => n.node || n) : [migTargetNode]
+                  // Build node list for round-robin distribution.
+                  // - Auto mode: spread across every online node of the CHOSEN cluster
+                  //   (migTargetConn). We filter migNodeOptions by connId + online
+                  //   status so a degraded/offline node in the cluster doesn't get
+                  //   jobs round-robined to it.
+                  // - Manual mode: single target node, every job lands there.
+                  let nodeList: string[]
+                  if (migTargetNode === '__auto__') {
+                    const clusterNodes = migNodeOptions
+                      .filter((o: any) => o.connId === migTargetConn && o.status === 'online')
+                      .map((o: any) => o.node)
+                    // Fallback: if status info missing/empty, take all nodes of the
+                    // cluster so we at least try instead of skipping the whole batch.
+                    nodeList = clusterNodes.length > 0
+                      ? clusterNodes
+                      : migNodeOptions.filter((o: any) => o.connId === migTargetConn).map((o: any) => o.node)
+                  } else {
+                    nodeList = [migTargetNode]
+                  }
+                  if (nodeList.length === 0) {
+                    setBulkMigStarting(false)
+                    return
+                  }
 
-                  // Create all jobs — first N as 'pending' (will be started), rest as 'queued'
+                  // Create all jobs, first N as 'pending' (will be started), rest as 'queued'.
+                  // We carry the vCenter inventory path on each job so it can be threaded
+                  // through the per-VM POST below; bulk migrations may span multiple hosts
+                  // inside the same vCenter so the path can differ per VM.
                   const jobs: typeof bulkMigJobs = vmsToMigrate.map((vm: any, idx: number) => ({
                     vmid: vm.vmid,
                     name: vm.name || vm.vmid,
@@ -2724,7 +3650,10 @@ return
                     status: idx < BULK_MIG_CONCURRENCY ? 'pending' : 'queued',
                     progress: 0,
                     targetNode: nodeList[idx % nodeList.length],
-                  }))
+                    vcenterDatacenter: vm.vcenterDatacenter,
+                    vcenterCluster: vm.vcenterCluster,
+                    vcenterHost: vm.vcenterHost,
+                  } as any))
 
                   // Start the first batch
                   const isVcenterBulk = bulkMigHostInfo.hostType === 'vcenter'
@@ -2745,9 +3674,36 @@ return
                           targetNode: job.targetNode,
                           targetStorage: migTargetStorage,
                           networkBridge: migNetworkBridge,
-                          migrationType: (isVcenterBulk || isHypervBulk || isNutanixBulk) ? 'cold' : migType,
+                          // vCenter supports cold + live (NFC-on-snapshot); Hyper-V /
+                          // Nutanix still force cold since their pipelines don't have a
+                          // snapshot-based transfer path. sshfs_boot is ESXi-direct only.
+                          migrationType: (isHypervBulk || isNutanixBulk) ? 'cold'
+                            : (isVcenterBulk ? (migType === 'sshfs_boot' ? 'cold' : migType) : migType),
                           transferMode: (isVcenterBulk || isHypervBulk || isNutanixBulk) ? 'v2v' : migTransferMode,
                           startAfterMigration: migStartAfter,
+                          // vCenter inventory path required by libvirt vpx URI (auto-discovered
+                          // server-side via SOAP). Bulk jobs may target different ESXi hosts
+                          // inside the same vCenter, so the path is per-VM. Same rationale
+                          // as the single-migration POST: we don't gate on isVcenterBulk
+                          // because the bulk host info's hostType isn't reliably 'vcenter'.
+                          ...((job as any).vcenterDatacenter && {
+                            vcenterDatacenter: (job as any).vcenterDatacenter,
+                          }),
+                          ...((job as any).vcenterCluster && {
+                            vcenterCluster: (job as any).vcenterCluster,
+                          }),
+                          ...((job as any).vcenterHost && {
+                            vcenterHost: (job as any).vcenterHost,
+                          }),
+                          // tempStorage lets the user pick where virt-v2v writes
+                          // temp files (vcenter/hyperv/nutanix) OR where the
+                          // direct-ESXi pipeline mounts SSHFS + writes VMDK dumps.
+                          // Omit when it's the default /tmp so the server-side
+                          // default is used and we don't inadvertently pass an
+                          // empty string.
+                          ...(migTempStorage && migTempStorage !== '/tmp' && {
+                            tempStorage: migTempStorage,
+                          }),
                         }),
                       })
                       const d = await res.json()
@@ -2778,10 +3734,17 @@ return
                     targetConnectionId: migTargetConn,
                     targetStorage: migTargetStorage,
                     networkBridge: migNetworkBridge,
-                    migrationType: isVcenterBulk ? 'cold' : migType,
+                    migrationType: (isHypervBulk || isNutanixBulk) ? 'cold'
+                      : (isVcenterBulk ? (migType === 'sshfs_boot' ? 'cold' : migType) : migType),
                     transferMode: isVcenterBulk ? 'v2v' : migTransferMode,
                     startAfterMigration: migStartAfter,
                     sourceType,
+                    // Persisted across the queued-job poller so retries use the
+                    // same temp storage the user selected when starting the batch.
+                    // Applies to every source type (virt-v2v and direct-ESXi both honour it).
+                    ...(migTempStorage && migTempStorage !== '/tmp' && {
+                      tempStorage: migTempStorage,
+                    }),
                   }
                   setBulkMigJobs(jobs)
                   setBulkMigStarting(false)
@@ -2841,7 +3804,7 @@ return
             variant="contained"
             color="warning"
             startIcon={<i className="ri-vip-crown-line" />}
-            onClick={() => { setUpgradeDialogOpen(false); window.open('https://www.proxcenter.io/', '_blank') }}
+            onClick={() => { setUpgradeDialogOpen(false); window.open('https://www.proxcenter.io/', '_blank', 'noopener,noreferrer') }}
             sx={{ textTransform: 'none' }}
           >
             {t('inventoryPage.esxiMigration.upgradePlan')}

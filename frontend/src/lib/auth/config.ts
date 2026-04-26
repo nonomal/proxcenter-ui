@@ -113,25 +113,25 @@ export const authOptions: NextAuthOptions = {
         }
 
         if (!user) {
-          await logFailure("Utilisateur non trouvé")
+          await logFailure("User not found")
           throw new Error("Identifiants invalides")
         }
 
         if (!user.enabled) {
-          await logFailure("Compte désactivé")
+          await logFailure("Account disabled")
           throw new Error("Compte désactivé")
         }
 
         // Vérifier le mot de passe
         if (!user.password) {
-          await logFailure("Pas de mot de passe local")
+          await logFailure("No local password")
           throw new Error("Ce compte utilise une autre méthode d'authentification")
         }
 
         const isValid = await verifyPassword(credentials.password, user.password)
-        
+
         if (!isValid) {
-          await logFailure("Mot de passe incorrect")
+          await logFailure("Incorrect password")
           throw new Error("Identifiants invalides")
         }
 
@@ -190,6 +190,25 @@ export const authOptions: NextAuthOptions = {
 
         if (!ldapUser) {
           throw new Error("Identifiants LDAP invalides")
+        }
+
+        // Check group restriction BEFORE creating/updating user
+        const ldapConfigForRestriction = getLdapConfig()
+        if (ldapConfigForRestriction?.requireGroup && ldapConfigForRestriction.allowedGroups.length > 0) {
+          const userGroups = ldapUser.groups || []
+          const isAllowed = ldapConfigForRestriction.allowedGroups.some(allowedGroup => {
+            return userGroups.some(userGroup => {
+              // Exact DN match
+              if (userGroup === allowedGroup) return true
+              // CN extraction for simplified match
+              const cnMatch = userGroup.match(/^CN=([^,]+)/i)
+              return cnMatch && cnMatch[1] === allowedGroup
+            })
+          })
+
+          if (!isAllowed) {
+            throw new Error("Access denied: your LDAP account is not in an authorized group")
+          }
         }
 
         const db = getDb()

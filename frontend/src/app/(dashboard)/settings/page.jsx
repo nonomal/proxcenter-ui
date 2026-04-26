@@ -90,6 +90,16 @@ const TenantsTab = dynamic(() => import('@/components/settings/TenantsTab'), {
   loading: () => <Box sx={{ p: 3, textAlign: 'center' }}><LinearProgress /></Box>
 })
 
+const AlertThresholdsTab = dynamic(() => import('@/components/settings/AlertThresholdsTab'), {
+  ssr: false,
+  loading: () => <Box sx={{ p: 3, textAlign: 'center' }}><LinearProgress /></Box>
+})
+
+const SshCommandsTab = dynamic(() => import('@/components/settings/SshCommandsTab'), {
+  ssr: false,
+  loading: () => <Box sx={{ p: 3, textAlign: 'center' }}><LinearProgress /></Box>
+})
+
 /* ==================== Utility ==================== */
 
 function MainTabPanel({ value, index, children }) {
@@ -1577,6 +1587,15 @@ function LicenseTab() {
             </Box>
           </Box>
 
+          {licenseStatus?.is_nfr && (
+            <Chip
+              size='small'
+              color='warning'
+              label='NFR / Not For Resale'
+              sx={{ mb: 2, fontWeight: 600 }}
+            />
+          )}
+
           {isLicensed && licenseStatus.license_id && (
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2, px: 1.5, py: 0.75, borderRadius: 1, bgcolor: 'action.hover' }}>
               <i className='ri-fingerprint-line' style={{ fontSize: 16, opacity: 0.5 }} />
@@ -2596,11 +2615,12 @@ export default function SettingsPage() {
     return hasFeature(tab.requiredFeature)
   }
 
-  const allTabNames = ['connections', 'appearance', 'notifications', 'ldap', 'oidc', 'license', 'ai', 'green', 'white-label', 'vdc', 'tenants']
+  const allTabNames = ['connections', 'appearance', 'alert-thresholds', 'notifications', 'ldap', 'oidc', 'license', 'ai', 'green', 'white-label', 'vdc', 'tenants', 'ssh-commands']
 
   const allTabs = [
     { label: t('settings.connections'), icon: 'ri-link', component: ConnectionsTab, providerOnly: true },
     { label: t('settings.appearance'), icon: 'ri-palette-line', component: AppearanceTab },
+    { label: t('settings.alertThresholds.title'), icon: 'ri-alarm-warning-line', component: AlertThresholdsTab },
     { label: t('settings.notifications'), icon: 'ri-notification-3-line', component: NotificationsTab, requiredFeature: Features.NOTIFICATIONS },
     { label: 'LDAP / Active Directory', icon: 'ri-server-line', component: LdapConfigTab, requiredFeature: Features.LDAP },
     { label: 'OIDC / SSO', icon: 'ri-shield-keyhole-line', component: OidcConfigTab, requiredFeature: Features.OIDC },
@@ -2610,6 +2630,7 @@ export default function SettingsPage() {
     { label: 'White Label', icon: 'ri-pantone-line', component: WhiteLabelTab, requiredFeature: Features.WHITE_LABEL, providerOnly: true },
     { label: t('vdc.title'), icon: 'ri-cloud-line', component: VdcTab, requiredFeature: Features.MULTI_TENANCY, providerOnly: true },
     { label: 'Tenants', icon: 'ri-building-line', component: TenantsTab, requiredFeature: Features.MULTI_TENANCY, providerOnly: true },
+    { label: t('settings.sshCommands.tabLabel'), icon: 'ri-terminal-line', component: SshCommandsTab },
   ]
 
   // Hide provider-only tabs (Tenants, vDC) unless super admin AND currently in provider tenant

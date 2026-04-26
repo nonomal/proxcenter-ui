@@ -6,6 +6,7 @@ import { demoResponse } from "@/lib/demo/demo-api"
 import { getConnectionById, getPbsConnectionById } from "@/lib/connections/getConnection"
 import { pveFetch } from "@/lib/proxmox/client"
 import { pbsFetch } from "@/lib/proxmox/pbs-client"
+import { isSharedStorage } from "@/lib/proxmox/storage"
 import { getRBACContext, filterVmsByPermission, PERMISSIONS, checkPermission } from "@/lib/rbac"
 import { resolveManagementIp } from "@/lib/proxmox/resolveManagementIp"
 import {
@@ -56,6 +57,7 @@ type GuestData = {
   status: string
   node: string
   cpu?: number
+  maxcpu?: number
   mem?: number
   maxmem?: number
   disk?: number
@@ -66,6 +68,7 @@ type GuestData = {
   template?: number | boolean
   hastate?: string
   hagroup?: string
+  lock?: string  // PVE lock type: "migrate", "backup", "snapshot", etc.
 }
 
 type HaResource = {
@@ -344,9 +347,10 @@ async function fetchOneCluster(conn: {
         type: g.type || 'qemu',
         status: g.status || 'unknown',
         node: g.node,
-        cpu: g.cpu, mem: g.mem, maxmem: g.maxmem,
+        cpu: g.cpu, maxcpu: g.maxcpu, mem: g.mem, maxmem: g.maxmem,
         disk: g.disk, maxdisk: g.maxdisk,
         uptime: g.uptime, pool: g.pool, tags: g.tags,
+        lock: g.lock,
         template: g.template === 1 || g.template === true,
         hastate: (() => {
           const haSid = `${g.type === 'lxc' ? 'ct' : 'vm'}:${g.vmid}`
@@ -456,7 +460,7 @@ async function fetchStoragesForCluster(conn: {
     const nodeStorages = new Map<string, StorageItem[]>()
 
     for (const item of allItems) {
-      if (item.shared) {
+      if (isSharedStorage(item)) {
         // For shared storages, aggregate usage across nodes
         if (!sharedSet.has(item.storage)) {
           sharedSet.set(item.storage, { ...item, node: '' })

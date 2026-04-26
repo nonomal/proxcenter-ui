@@ -3,6 +3,8 @@
  * Used by both the VMware API routes and the migration pipeline
  */
 
+import { retrieveAllPropertiesEx } from "./pagination"
+
 export interface SoapSession {
   baseUrl: string
   cookie: string
@@ -159,10 +161,16 @@ export async function soapGetVmConfig(session: SoapSession, vmid: string): Promi
           <urn:pathSet>config.version</urn:pathSet>
           <urn:pathSet>config.uuid</urn:pathSet>
           <urn:pathSet>config.firmware</urn:pathSet>
+          <urn:pathSet>config.files.vmPathName</urn:pathSet>
           <urn:pathSet>config.hardware.device</urn:pathSet>
           <urn:pathSet>runtime.powerState</urn:pathSet>
           <urn:pathSet>storage.perDatastoreUsage</urn:pathSet>
           <urn:pathSet>snapshot</urn:pathSet>
+          <urn:pathSet>guest.toolsStatus</urn:pathSet>
+          <urn:pathSet>guest.toolsRunningStatus</urn:pathSet>
+          <urn:pathSet>guest.toolsVersionStatus2</urn:pathSet>
+          <urn:pathSet>summary.guest.toolsStatus</urn:pathSet>
+          <urn:pathSet>summary.guest.toolsRunningStatus</urn:pathSet>
         </urn:propSet>
         <urn:objectSet>
           <urn:obj type="VirtualMachine">${vmid}</urn:obj>
@@ -303,6 +311,85 @@ export async function soapRemoveAllSnapshots(session: SoapSession, vmid: string)
   }
 }
 
+/**
+ * Query whether a snapshot was actually quiesced (= VSS ran successfully in
+ * the guest). When soapCreateSnapshot is called with quiesce=true, vCenter
+ * silently falls back to a crash-consistent snapshot if VSS can't run (no
+ * VMware Tools, broken VSS writers, etc.) and the call still succeeds. The
+ * only way to know is to read the `quiesced` property on the resulting
+ * snapshot MOR afterwards. Returns true if the snapshot is flagged quiesced,
+ * false otherwise (including on query error — defensive).
+ */
+export async function soapGetSnapshotQuiesced(session: SoapSession, snapshotMor: string): Promise<boolean> {
+  const body = `<?xml version="1.0" encoding="UTF-8"?>
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:urn="urn:vim25">
+  <soapenv:Body>
+    <urn:RetrievePropertiesEx>
+      <urn:_this type="PropertyCollector">${session.propertyCollector}</urn:_this>
+      <urn:specSet>
+        <urn:propSet><urn:type>VirtualMachineSnapshot</urn:type><urn:pathSet>config.quiesced</urn:pathSet></urn:propSet>
+        <urn:objectSet><urn:obj type="VirtualMachineSnapshot">${snapshotMor}</urn:obj><urn:skip>false</urn:skip></urn:objectSet>
+      </urn:specSet>
+      <urn:options/>
+    </urn:RetrievePropertiesEx>
+  </soapenv:Body>
+</soapenv:Envelope>`
+  try {
+    const result = await soapRequest(session.baseUrl, body, session.cookie, session.insecureTLS)
+    return /<val[^>]*>true<\/val>/i.test(result.text)
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Remove a SPECIFIC snapshot by its MOR (not RemoveAllSnapshots). Used by the
+ * live migration path so we don't destroy pre-existing snapshots the user had
+ * on the source VM, only the one ProxCenter created for the NFC export.
+ * removeChildren=true consolidates any child snapshots into the parent.
+ */
+export async function soapRemoveSnapshot(session: SoapSession, snapshotMor: string, removeChildren = true): Promise<void> {
+  const body = `<?xml version="1.0" encoding="UTF-8"?>
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:urn="urn:vim25">
+  <soapenv:Body>
+    <urn:RemoveSnapshot_Task>
+      <urn:_this type="VirtualMachineSnapshot">${snapshotMor}</urn:_this>
+      <urn:removeChildren>${removeChildren}</urn:removeChildren>
+      <urn:consolidate>true</urn:consolidate>
+    </urn:RemoveSnapshot_Task>
+  </soapenv:Body>
+</soapenv:Envelope>`
+
+  const result = await soapRequest(session.baseUrl, body, session.cookie, session.insecureTLS)
+  if (result.text.includes("faultstring")) {
+    const fault = result.text.match(/<faultstring>([\s\S]*?)<\/faultstring>/)?.[1] || ""
+    throw new Error(`Failed to remove snapshot ${snapshotMor}: ${fault}`)
+  }
+
+  // Wait for task completion (up to 2 min: merging a large delta can be slow)
+  const taskMor = result.text.match(/<returnval type="Task">([^<]+)<\/returnval>/)?.[1]
+  if (!taskMor) return
+
+  for (let i = 0; i < 60; i++) {
+    await new Promise(r => setTimeout(r, 2000))
+    const statusBody = `<?xml version="1.0" encoding="UTF-8"?>
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:urn="urn:vim25">
+  <soapenv:Body>
+    <urn:RetrievePropertiesEx>
+      <urn:_this type="PropertyCollector">${session.propertyCollector}</urn:_this>
+      <urn:specSet>
+        <urn:propSet><urn:type>Task</urn:type><urn:pathSet>info.state</urn:pathSet></urn:propSet>
+        <urn:objectSet><urn:obj type="Task">${taskMor}</urn:obj><urn:skip>false</urn:skip></urn:objectSet>
+      </urn:specSet>
+      <urn:options/>
+    </urn:RetrievePropertiesEx>
+  </soapenv:Body>
+</soapenv:Envelope>`
+    const status = await soapRequest(session.baseUrl, statusBody, session.cookie, session.insecureTLS)
+    if (status.text.includes("success") || status.text.includes("error")) return
+  }
+}
+
 // ── HttpNfcLease (Export VM) — for downloading disks when snapshots are active ──
 
 export interface NfcLeaseDeviceUrl {
@@ -331,6 +418,33 @@ export async function soapExportVm(session: SoapSession, vmid: string): Promise<
   }
   const leaseMor = result.text.match(/<returnval type="HttpNfcLease">([^<]+)<\/returnval>/)?.[1]
   if (!leaseMor) throw new Error("ExportVm did not return an NFC lease")
+  return leaseMor
+}
+
+/**
+ * Initiate a snapshot export via HttpNfcLease. VirtualMachine.ExportVm() only
+ * works on powered-off VMs (InvalidPowerState on running VMs), so live
+ * migration paths must target the snapshot directly. The snapshot's VMDKs are
+ * immutable, so vCenter is fine serving them even while the parent VM writes
+ * to its delta. Returns the lease MOR (same shape as soapExportVm).
+ */
+export async function soapExportSnapshot(session: SoapSession, snapshotMor: string): Promise<string> {
+  const body = `<?xml version="1.0" encoding="UTF-8"?>
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:urn="urn:vim25">
+  <soapenv:Body>
+    <urn:ExportSnapshot>
+      <urn:_this type="VirtualMachineSnapshot">${snapshotMor}</urn:_this>
+    </urn:ExportSnapshot>
+  </soapenv:Body>
+</soapenv:Envelope>`
+
+  const result = await soapRequest(session.baseUrl, body, session.cookie, session.insecureTLS)
+  if (result.text.includes("faultstring")) {
+    const fault = result.text.match(/<faultstring>([\s\S]*?)<\/faultstring>/)?.[1] || result.text.substring(0, 500)
+    throw new Error(`ExportSnapshot failed: ${fault}`)
+  }
+  const leaseMor = result.text.match(/<returnval type="HttpNfcLease">([^<]+)<\/returnval>/)?.[1]
+  if (!leaseMor) throw new Error("ExportSnapshot did not return an NFC lease")
   return leaseMor
 }
 
@@ -474,11 +588,26 @@ export interface EsxiVmConfig {
   firmware: string // "bios" | "efi"
   uuid: string
   vmxVersion: string
+  /**
+   * VMX file path as stored by vSphere. Format: "[Datastore] folder/VmName.vmx".
+   * Used by the direct-ESXi virt-v2v pipeline (`-i vmx -it ssh`) to locate the
+   * VM's metadata file on the source host without guessing the folder layout.
+   */
+  vmPathName: string
   powerState: string
   committed: number
   disks: EsxiDiskInfo[]
   nics: EsxiNicInfo[]
   snapshotCount: number
+  /**
+   * VMware Tools status as reported by vCenter. Used to preflight live
+   * migrations of Windows guests: without running Tools, VSS can't quiesce
+   * the snapshot and virt-v2v will fail on a dirty NTFS.
+   * Possible values: "toolsOk", "toolsOld", "toolsNotRunning", "toolsNotInstalled".
+   */
+  toolsStatus?: string
+  /** "guestToolsRunning" | "guestToolsNotRunning" | "guestToolsExecutingScripts". */
+  toolsRunningStatus?: string
 }
 
 /** Parse full VM config from SOAP XML */
@@ -492,6 +621,7 @@ export function parseVmConfig(xml: string): EsxiVmConfig {
   const firmware = extractProp(xml, "config.firmware") || "bios"
   const uuid = extractProp(xml, "config.uuid")
   const vmxVersion = extractProp(xml, "config.version")
+  const vmPathName = extractProp(xml, "config.files.vmPathName")
   const powerState = extractProp(xml, "runtime.powerState")
 
   // Storage
@@ -568,9 +698,23 @@ export function parseVmConfig(xml: string): EsxiVmConfig {
 
   const sockets = numCPU > 0 && numCoresPerSocket > 0 ? Math.ceil(numCPU / numCoresPerSocket) : 1
 
+  // VMware Tools status. Empty string when vCenter hasn't populated the
+  // property (e.g. VM freshly created or tools never installed). Some vCenter
+  // versions populate the shortcut summary.guest.* path instead of the
+  // direct guest.* property, so fall back to the summary variant.
+  const toolsStatus =
+    extractProp(xml, "guest.toolsStatus") ||
+    extractProp(xml, "summary.guest.toolsStatus") ||
+    undefined
+  const toolsRunningStatus =
+    extractProp(xml, "guest.toolsRunningStatus") ||
+    extractProp(xml, "summary.guest.toolsRunningStatus") ||
+    undefined
+
   return {
     name, guestOS, guestId, numCPU, numCoresPerSocket, sockets, memoryMB,
-    firmware, uuid, vmxVersion, powerState, committed, disks, nics, snapshotCount,
+    firmware, uuid, vmxVersion, vmPathName, powerState, committed, disks, nics, snapshotCount,
+    toolsStatus, toolsRunningStatus,
   }
 }
 
@@ -608,6 +752,46 @@ export interface VmwareVmSummary {
   committedStorage: number
   uncommittedStorage: number
   template: boolean
+  /**
+   * vCenter only: ManagedObjectReference of the HostSystem currently running this VM.
+   * Empty string on standalone ESXi (no inventory hierarchy above the host).
+   * Used by soapResolveHostInventoryPaths() to compute the libvirt vpx URI for virt-v2v.
+   */
+  hostMor: string
+  /**
+   * VMware Tools install + running state, when reported by vCenter.
+   * Used by the migration modal to preflight Live migrations: VSS quiesce
+   * (required for a clean NTFS capture on Windows live snapshots) only
+   * works if Tools is installed AND running in the guest.
+   */
+  toolsStatus?: string
+  toolsRunningStatus?: string
+}
+
+/**
+ * Resolved inventory path for a single ESXi host inside a vCenter.
+ * Used to build the libvirt vpx URI: vpx://USER@VCENTER/{datacenter}/host[/cluster]/{host}
+ */
+export interface VmwareHostInventoryPath {
+  /** Datacenter name (vCenter inventory). */
+  datacenter: string
+  /** Cluster name when the host is part of a ClusterComputeResource; null for standalone hosts. */
+  cluster: string | null
+  /** ESX/ESXi hostname as registered in vCenter (typically the FQDN). */
+  host: string
+  /**
+   * Runtime health aggregate for the host, derived from its connectionState
+   * and powerState. Used by the UI to render a status pastille in the tree:
+   *   - "ok":   connected + poweredOn (normal operating state)
+   *   - "warn": notResponding, standby, or an unknown combination
+   *   - "crit": disconnected or poweredOff (host unreachable/halted)
+   * "unknown" is returned when vCenter didn't expose the fields.
+   */
+  status: "ok" | "warn" | "crit" | "unknown"
+  /** Raw connectionState from vCenter (connected, notResponding, disconnected). */
+  connectionState?: string
+  /** Raw powerState from vCenter (poweredOn, poweredOff, standby). */
+  powerState?: string
 }
 
 /**
@@ -655,6 +839,11 @@ export async function soapListVMs(
           <urn:pathSet>config.hardware.memoryMB</urn:pathSet>
           <urn:pathSet>config.template</urn:pathSet>
           <urn:pathSet>storage.perDatastoreUsage</urn:pathSet>
+          <urn:pathSet>runtime.host</urn:pathSet>
+          <urn:pathSet>guest.toolsStatus</urn:pathSet>
+          <urn:pathSet>guest.toolsRunningStatus</urn:pathSet>
+          <urn:pathSet>summary.guest.toolsStatus</urn:pathSet>
+          <urn:pathSet>summary.guest.toolsRunningStatus</urn:pathSet>
         </urn:propSet>
         <urn:objectSet>
           <urn:obj type="ContainerView">${viewRef}</urn:obj>
@@ -672,7 +861,16 @@ export async function soapListVMs(
   </soapenv:Body>
 </soapenv:Envelope>`
 
-  const propsResult = await soapRequest(session.baseUrl, retrieveBody, session.cookie, session.insecureTLS)
+  const sendReq = (body: string) =>
+    soapRequest(session.baseUrl, body, session.cookie, session.insecureTLS)
+
+  const responseText = await retrieveAllPropertiesEx(
+    sendReq,
+    retrieveBody,
+    session.propertyCollector,
+  )
+
+  const propsResult = { text: responseText }
 
   // Destroy the ContainerView (fire and forget)
   const destroyBody = `<?xml version="1.0" encoding="UTF-8"?>
@@ -704,6 +902,9 @@ export async function soapListVMs(
     let template = false
     let committedStorage = 0
     let uncommittedStorage = 0
+    let hostMor = ""
+    let toolsStatus = ""
+    let toolsRunningStatus = ""
 
     const propRegex = /<propSet>\s*<name>([^<]+)<\/name>\s*<val[^>]*>([\s\S]*?)<\/val>\s*<\/propSet>/g
     let propMatch: RegExpExecArray | null
@@ -727,6 +928,20 @@ export async function soapListVMs(
           if (u) uncommittedStorage += Number.parseInt(u[1], 10) || 0
           break
         }
+        case "runtime.host": {
+          // <val type="HostSystem">host-22</val>; the inner text IS the MOR id.
+          // Standalone ESXi sessions return an empty/"ha-host" value which we ignore later.
+          hostMor = propVal.trim()
+          break
+        }
+        case "guest.toolsStatus":
+        case "summary.guest.toolsStatus":
+          if (!toolsStatus) toolsStatus = propVal
+          break
+        case "guest.toolsRunningStatus":
+        case "summary.guest.toolsRunningStatus":
+          if (!toolsRunningStatus) toolsRunningStatus = propVal
+          break
       }
     }
 
@@ -741,8 +956,221 @@ export async function soapListVMs(
       committedStorage,
       uncommittedStorage,
       template,
+      hostMor,
+      toolsStatus: toolsStatus || undefined,
+      toolsRunningStatus: toolsRunningStatus || undefined,
     })
   }
 
   return vms
+}
+
+// -- vCenter inventory path resolution (HostSystem MOR -> {datacenter, cluster?, host}) --
+// Used to build virt-v2v's libvirt vpx URI: vpx://USER@VCENTER/{datacenter}/host[/cluster]/{host}
+
+/** XML-escape a value safely embedded in a SOAP body. */
+function xmlEscape(s: string): string {
+  return s.replace(/[<>&"']/g, c => (
+    c === "<" ? "&lt;" :
+    c === ">" ? "&gt;" :
+    c === "&" ? "&amp;" :
+    c === '"' ? "&quot;" :
+    "&apos;"
+  ))
+}
+
+interface PropValue {
+  /** Inner text of <val>...</val>, trimmed. */
+  value: string
+  /** The xsi:type-style attribute on the val element (present for ManagedObjectReference values). */
+  refType?: string
+}
+
+/**
+ * Bulk-fetch a fixed set of property paths for a list of MORs of the same base type.
+ *
+ * Uses PropertyCollector.RetrievePropertiesEx with one PropertyFilterSpec containing
+ * one propSet (the requested paths) and one objectSet per MOR. The base type drives
+ * which propSet applies; subtypes are honored automatically (e.g. requesting type
+ * "ComputeResource" returns ClusterComputeResource objects with the cluster name too).
+ */
+async function soapBatchProps(
+  session: SoapSession,
+  baseType: string,
+  mors: string[],
+  paths: string[],
+): Promise<Map<string, Record<string, PropValue>>> {
+  const out = new Map<string, Record<string, PropValue>>()
+  if (mors.length === 0) return out
+
+  const objSpecs = mors
+    .map(mor => `<urn:objectSet><urn:obj type="${xmlEscape(baseType)}">${xmlEscape(mor)}</urn:obj></urn:objectSet>`)
+    .join("")
+  const pathTags = paths.map(p => `<urn:pathSet>${xmlEscape(p)}</urn:pathSet>`).join("")
+
+  const body = `<?xml version="1.0" encoding="UTF-8"?>
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:urn="urn:vim25">
+  <soapenv:Body>
+    <urn:RetrievePropertiesEx>
+      <urn:_this type="PropertyCollector">${session.propertyCollector}</urn:_this>
+      <urn:specSet>
+        <urn:propSet>
+          <urn:type>${xmlEscape(baseType)}</urn:type>
+          ${pathTags}
+        </urn:propSet>
+        ${objSpecs}
+      </urn:specSet>
+      <urn:options/>
+    </urn:RetrievePropertiesEx>
+  </soapenv:Body>
+</soapenv:Envelope>`
+
+  const result = await soapRequest(session.baseUrl, body, session.cookie, session.insecureTLS)
+
+  // Parse <objects> blocks. We accept any actual subtype on the <obj> tag, since
+  // RetrievePropertiesEx returns objects with their concrete type even when the
+  // request specifies a base type (this is how we detect ClusterComputeResource).
+  for (const objBlock of result.text.matchAll(/<objects>([\s\S]*?)<\/objects>/g)) {
+    const block = objBlock[1]
+    const morMatch = block.match(/<obj\b[^>]*>([^<]+)<\/obj>/)
+    if (!morMatch) continue
+    const mor = morMatch[1].trim()
+
+    const props: Record<string, PropValue> = {}
+    for (const pm of block.matchAll(/<propSet>\s*<name>([^<]+)<\/name>\s*<val\b([^>]*)>([\s\S]*?)<\/val>\s*<\/propSet>/g)) {
+      const name = pm[1]
+      const attrs = pm[2] || ""
+      const value = pm[3].trim()
+      // ManagedObjectReference vals carry BOTH xsi:type="ManagedObjectReference"
+      // (the schema type) and type="HostSystem" (the MOR target type). We want the
+      // latter, so the lookbehind skips colon-prefixed attribute names like xsi:type.
+      const typeAttr = attrs.match(/(?<![\w:])type=(?:"([^"]*)"|'([^']*)')/)
+      props[name] = { value, refType: typeAttr ? (typeAttr[1] || typeAttr[2]) : undefined }
+    }
+    out.set(mor, props)
+  }
+  return out
+}
+
+/**
+ * Resolve a list of HostSystem MORs (from VirtualMachine.runtime.host) to their
+ * vCenter inventory path: datacenter name, cluster name (if any), host name.
+ *
+ * Returns an empty map for non-vCenter sessions or when the input list is empty.
+ * Hosts that cannot be fully resolved (orphaned, partial inventory, etc.) are
+ * silently omitted from the result; callers should treat a missing entry as
+ * "unknown, surface a manual-entry fallback to the user".
+ *
+ * Walks the inventory hierarchy in 4 batched calls (regardless of how many VMs
+ * share a given host), so cost is O(unique hosts), not O(VMs).
+ */
+export async function soapResolveHostInventoryPaths(
+  session: SoapSession,
+  hostMors: string[],
+): Promise<Map<string, VmwareHostInventoryPath>> {
+  const out = new Map<string, VmwareHostInventoryPath>()
+  if (!session.isVcenter) return out
+
+  const uniqueHosts = [...new Set(hostMors.filter(m => m && m !== "ha-host"))]
+  if (uniqueHosts.length === 0) return out
+
+  // Step 1: HostSystem -> { name, parent (CR or CCR), connectionState, powerState }.
+  // We also fetch the runtime state here so the UI can render a health pastille
+  // on each host row in the inventory tree without an additional SOAP round-trip.
+  const hostProps = await soapBatchProps(session, "HostSystem", uniqueHosts, [
+    "name",
+    "parent",
+    "runtime.connectionState",
+    "runtime.powerState",
+  ])
+  console.log(`[soapResolveHostInventoryPaths] step1 HostSystem (${uniqueHosts.length} unique hosts requested):`,
+    JSON.stringify([...hostProps.entries()].map(([k, v]) => [k, { name: v.name?.value, parent: v.parent }])))
+
+  // Step 2: deduplicate parent MORs and resolve their { name, parent (HostFolder) }.
+  // ClusterComputeResource extends ComputeResource, so a single query against the
+  // base type returns both kinds; the actual subtype lives on the <obj> element and
+  // is preserved in the parent PropValue.refType from step 1.
+  const parentByHost = new Map<string, { mor: string; type: string }>()
+  for (const [hostMor, props] of hostProps) {
+    const p = props["parent"]
+    if (p?.value && p.refType) parentByHost.set(hostMor, { mor: p.value, type: p.refType })
+  }
+  const uniqueParents = [...new Set([...parentByHost.values()].map(p => p.mor))]
+  const parentProps = await soapBatchProps(session, "ComputeResource", uniqueParents, ["name", "parent"])
+  console.log(`[soapResolveHostInventoryPaths] step2 ComputeResource (${uniqueParents.length} unique parents):`,
+    JSON.stringify([...parentProps.entries()].map(([k, v]) => [k, { name: v.name?.value, parent: v.parent }])))
+
+  // Step 3: deduplicate host-folder MORs and resolve their parent (Datacenter).
+  // We assume the folder's parent IS the datacenter; nested host folders are uncommon
+  // in practice. If we hit one we'll return a partial path and skip the host.
+  const folderByParent = new Map<string, string>()
+  for (const [parentMor, props] of parentProps) {
+    const p = props["parent"]
+    if (p?.value) folderByParent.set(parentMor, p.value)
+  }
+  const uniqueFolders = [...new Set(folderByParent.values())]
+  const folderProps = await soapBatchProps(session, "Folder", uniqueFolders, ["parent"])
+  console.log(`[soapResolveHostInventoryPaths] step3 Folder (${uniqueFolders.length} unique folders):`,
+    JSON.stringify([...folderProps.entries()].map(([k, v]) => [k, { parent: v.parent }])))
+
+  const dcByFolder = new Map<string, string>()
+  for (const [folderMor, props] of folderProps) {
+    const p = props["parent"]
+    if (p?.value && p.refType === "Datacenter") dcByFolder.set(folderMor, p.value)
+  }
+
+  // Step 4: resolve datacenter names.
+  const uniqueDcs = [...new Set(dcByFolder.values())]
+  const dcProps = await soapBatchProps(session, "Datacenter", uniqueDcs, ["name"])
+  console.log(`[soapResolveHostInventoryPaths] step4 Datacenter (${uniqueDcs.length} unique DCs):`,
+    JSON.stringify([...dcProps.entries()].map(([k, v]) => [k, { name: v.name?.value }])))
+
+  // Step 5: assemble the path for each requested host.
+  for (const hostMor of uniqueHosts) {
+    const hp = hostProps.get(hostMor)
+    const hostName = hp?.["name"]?.value
+    if (!hostName) continue
+
+    const parentInfo = parentByHost.get(hostMor)
+    if (!parentInfo) continue
+    const pp = parentProps.get(parentInfo.mor)
+    if (!pp) continue
+    const isCluster = parentInfo.type === "ClusterComputeResource"
+    const clusterName = pp["name"]?.value || null
+
+    const folderMor = folderByParent.get(parentInfo.mor)
+    if (!folderMor) continue
+    const dcMor = dcByFolder.get(folderMor)
+    if (!dcMor) continue
+    const dcName = dcProps.get(dcMor)?.["name"]?.value
+    if (!dcName) continue
+
+    // Derive an aggregate health status from vCenter's connection + power state.
+    // Both properties return simple enum strings on HostSystem.runtime; the
+    // values are documented in vSphere's vim API reference.
+    const connectionState = hp?.["runtime.connectionState"]?.value
+    const powerState = hp?.["runtime.powerState"]?.value
+    let status: "ok" | "warn" | "crit" | "unknown" = "unknown"
+    if (!connectionState && !powerState) {
+      status = "unknown"
+    } else if (connectionState === "disconnected" || powerState === "poweredOff") {
+      status = "crit"
+    } else if (connectionState === "connected" && powerState === "poweredOn") {
+      status = "ok"
+    } else {
+      // notResponding, standby, or any state mid-transition.
+      status = "warn"
+    }
+
+    out.set(hostMor, {
+      datacenter: dcName,
+      cluster: isCluster ? clusterName : null,
+      host: hostName,
+      status,
+      connectionState,
+      powerState,
+    })
+  }
+
+  return out
 }

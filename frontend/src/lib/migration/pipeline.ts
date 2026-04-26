@@ -37,6 +37,11 @@ interface MigrationConfig {
   startAfterMigration: boolean
   migrationType?: "cold" | "live" | "sshfs_boot"
   transferMode?: "https" | "sshfs" | "auto"
+  // User-selected temp directory on the PVE node for large intermediate files
+  // (SSHFS mount root, VMDK dumps, vmkfstools clone targets). Defaults to /tmp
+  // when unset, but /tmp is typically a tiny tmpfs on PVE so the user should
+  // pick a real filesystem with enough free space.
+  tempStorage?: string
 }
 
 interface LogEntry {
@@ -164,6 +169,10 @@ export async function runMigrationPipeline(jobId: string, config: MigrationConfi
   let soapSession: SoapSession | null = null
   let targetVmid: number | null = null
   let storageTempDir = ''
+  // Base directory for large intermediate files on the PVE node (SSHFS mount, VMDK dumps,
+  // vmkfstools clone targets). User-selectable; falls back to /tmp for backwards compat.
+  // /tmp is often a tiny tmpfs on Proxmox — a multi-GB disk transfer will saturate it.
+  const tempBase = (config.tempStorage && config.tempStorage.trim()) ? config.tempStorage.trim().replace(/\/+$/, '') : '/tmp'
 
   try {
     // ── STEP 0: Pre-flight ──
@@ -251,14 +260,20 @@ export async function runMigrationPipeline(jobId: string, config: MigrationConfi
       }
     }
 
-    // Check for vSAN datastores — only supported with SSHFS transfer mode
+    // Check for vSAN datastores. This pipeline is the direct-ESXi path (vCenter sources
+    // route through v2v-pipeline which uses NFC leases and handles vSAN natively). On vSAN:
+    //   - `vmkfstools -i` clone fails ("Function not implemented") — blocks Live mode
+    //   - `-flat.vmdk` does not exist as a POSIX file, only the descriptor which references
+    //     `vsan://` URIs that neither qemu-img nor HTTP /folder/ can resolve — blocks Cold mode
+    // The only reliable path for vSAN is NFC via vCenter, so we refuse the direct-ESXi flow
+    // and point the user at their vCenter connection.
     const vsanDisks = vmConfig.disks.filter(d => d.datastoreName.toLowerCase().includes('vsan'))
-    if (vsanDisks.length > 0 && config.transferMode !== 'sshfs' && config.transferMode !== 'auto') {
+    if (vsanDisks.length > 0) {
       const dsNames = [...new Set(vsanDisks.map(d => d.datastoreName))].join(', ')
       throw new Error(
-        `vSAN datastores require SSHFS transfer mode (found: ${dsNames}). ` +
-        `SSHFS mounts the ESXi datastore via SSH, which works transparently with vSAN. ` +
-        `Please select "SSHFS" or "Auto" transfer mode, or move the VM to a VMFS/NFS datastore.`
+        `Source VM has disks on vSAN (${dsNames}). vSAN datastores are not supported through a direct ESXi connection ` +
+        `because vSAN objects require the NFC protocol, which is only available via vCenter. ` +
+        `Please add a vCenter connection that manages this ESXi host and run the migration from there.`
       )
     }
 
@@ -272,6 +287,17 @@ export async function runMigrationPipeline(jobId: string, config: MigrationConfi
       throw new Error(`SSH to Proxmox node failed: ${sshTest.error}`)
     }
     await appendLog(jobId, "SSH connectivity OK", "success")
+
+    // Ensure the temp base dir exists on the PVE node. When the user picked a custom
+    // Temporary Storage path (tempStorage), this also validates it's writable before we
+    // start the migration and start writing multi-GB files into it.
+    if (tempBase !== '/tmp') {
+      const mkdirResult = await executeSSH(config.targetConnectionId, nodeIp,
+        `mkdir -p "${tempBase}" && test -w "${tempBase}" && echo OK || echo FAIL`)
+      if (!mkdirResult.output?.includes("OK")) {
+        throw new Error(`Temp storage "${tempBase}" is not writable on the target Proxmox node. Pick a different path or ensure the directory is writable by the SSH user.`)
+      }
+    }
 
     // Check sshpass on PVE node (needed when ESXi auth is password-based, for nested SSH)
     const esxiUsesPassword = esxiConn.sshAuthMethod !== "key" && esxiConn.sshPassEnc && !esxiConn.sshKeyEnc
@@ -287,13 +313,22 @@ export async function runMigrationPipeline(jobId: string, config: MigrationConfi
     // "sshfs" requires ESXi SSH and sshfs on PVE node
     // "sshfs_boot" always uses SSHFS
     // "https" uses VMware API (no SSHFS needed)
+    // "auto" uses SSHFS when available (required for vSAN — HTTPS can't serve vSAN objects)
     const requestedTransferMode = config.transferMode || "sshfs"
+    const hasVsanDisks = vmConfig.disks.some(d => d.datastoreName.toLowerCase().includes('vsan'))
     let useSSHFS = false
-    if (isSshfsBoot || requestedTransferMode === "sshfs") {
+    if (isSshfsBoot || requestedTransferMode === "sshfs" || (requestedTransferMode === "auto" && esxiSshAvailable)) {
       if (!esxiSshAvailable) {
         throw new Error("SSHFS transfer mode requires SSH to be configured on the ESXi connection. Please enable SSH in the connection settings.")
       }
       useSSHFS = true
+    }
+    // vSAN requires SSHFS — HTTPS /folder/ endpoint can't serve vSAN object-backed disks reliably
+    if (hasVsanDisks && !useSSHFS) {
+      throw new Error(
+        `vSAN datastores require SSHFS transfer mode but SSH is not available. ` +
+        `Please enable SSH on the ESXi connection and select "SSHFS" or "Auto" transfer mode.`
+      )
     }
 
     // Check sshfs binary on PVE node when SSHFS mode is active
@@ -303,8 +338,11 @@ export async function runMigrationPipeline(jobId: string, config: MigrationConfi
       if (!sshfsCheck.success || !sshfsCheck.output?.trim()) {
         throw new Error("sshfs is not installed on the Proxmox node. Install it with: apt install sshfs")
       }
-      sshfsMountPath = `/tmp/proxcenter-sshfs-${jobId}`
+      sshfsMountPath = `${tempBase}/proxcenter-sshfs-${jobId}`
       await appendLog(jobId, `Transfer mode: SSHFS (mount ESXi datastore on PVE node)`, "success")
+      if (tempBase === '/tmp') {
+        await appendLog(jobId, "Using /tmp as temp base — on most Proxmox hosts this is a small tmpfs. If the VM disk is large, pick a custom Temporary Storage in the dialog to avoid filling /tmp.", "warn")
+      }
     }
     if (!useSSHFS) {
       await appendLog(jobId, `Transfer mode: HTTPS (download via ESXi API)`, "info")
@@ -425,9 +463,11 @@ export async function runMigrationPipeline(jobId: string, config: MigrationConfi
       }
       let devicePath = pathResult.output.trim()
 
-      // RBD/Ceph: pvesm path returns "rbd:pool/image:conf=..." — not a block device
-      // We need to rbd map it to get a /dev/rbdN device
+      // RBD/Ceph — two path formats depending on the storage's `krbd` option:
+      //  - krbd 0 (librbd): pvesm path returns "rbd:pool/image:conf=..." — not a block device; map via `rbd map <pool>/<image>` → /dev/rbdN.
+      //  - krbd 1 (KRBD):   pvesm path returns "/dev/rbd-pve/<fsid>/<pool>/<image>" — the symlink only exists after `rbd device map <pool>/<image>`; devicePath stays put.
       let rbdMapped = false
+      const krbdMatch = devicePath.match(/^\/dev\/rbd-pve\/[^/]+\/([^/]+)\/([^/]+)$/)
       if (devicePath.startsWith('rbd:')) {
         const rbdSpec = devicePath.split(':')[1] // "CephStoragePool/vm-201-disk-0"
         if (!rbdSpec) throw new Error(`Cannot parse RBD path: ${devicePath}`)
@@ -439,6 +479,17 @@ export async function runMigrationPipeline(jobId: string, config: MigrationConfi
         devicePath = mapResult.output.trim() // e.g. /dev/rbd0
         rbdMapped = true
         await appendLog(jobId, `RBD mapped ${rbdSpec} → ${devicePath}`)
+      } else if (krbdMatch) {
+        const [, pool, image] = krbdMatch
+        const rbdSpec = `${pool}/${image}`
+        const mapResult = await executeSSH(config.targetConnectionId, nodeIp,
+          `rbd device map "${rbdSpec}" 2>&1`)
+        if (!mapResult.success) {
+          throw new Error(`Failed to rbd device map ${rbdSpec}: ${mapResult.error || mapResult.output}`)
+        }
+        // devicePath stays as /dev/rbd-pve/<fsid>/<pool>/<image> — the symlink now resolves.
+        rbdMapped = true
+        await appendLog(jobId, `RBD (KRBD) mapped ${rbdSpec} → ${devicePath}`)
       }
 
       const result = { volumeId, devicePath, rbdMapped }
@@ -449,7 +500,9 @@ export async function runMigrationPipeline(jobId: string, config: MigrationConfi
 
     // Attach a pre-allocated block volume to a SCSI slot
     async function attachBlockDisk(i: number, volumeId: string) {
-      const scsiSlot = `scsi${i}`
+      // Same EFI SATA rule as convertAndImportDisk — OVMF has no LSI driver, boot disk must
+      // land on a bus OVMF can enumerate (AHCI/SATA). Data disks stay on SCSI.
+      const scsiSlot = (pveParams.bios === "ovmf" && i === 0) ? "sata0" : `scsi${i}`
       const attachBody = new URLSearchParams({ [scsiSlot]: volumeId })
       try {
         await pveFetch<any>(
@@ -755,7 +808,7 @@ export async function runMigrationPipeline(jobId: string, config: MigrationConfi
       const diskSizeGB = (disk.capacityBytes / 1073741824).toFixed(1)
       await appendLog(jobId, `[Disk ${i + 1}/${vmConfig.disks.length}] Downloading "${disk.label}" (${diskSizeGB} GB, ${disk.thinProvisioned ? "thin" : "thick"})...`)
 
-      const tmpFile = storageTempDir ? `${storageTempDir}/proxcenter-mig-${jobId}-disk${i}` : `/tmp/proxcenter-mig-${jobId}-disk${i}`
+      const tmpFile = storageTempDir ? `${storageTempDir}/proxcenter-mig-${jobId}-disk${i}` : `${tempBase}/proxcenter-mig-${jobId}-disk${i}`
       const soapCookie = soapSession!.cookie
 
       // Strip double quotes from cookie value to avoid shell quoting issues
@@ -991,15 +1044,30 @@ export async function runMigrationPipeline(jobId: string, config: MigrationConfi
       // /vmfs/volumes/Datastore is a symlink to /vmfs/volumes/<UUID>, we need the real path
       let remotePath = `/vmfs/volumes/${datastoreName}`
       const { esxiHost: resolveHost, esxiSshPort: resolvePort, esxiSshUser: resolveUser, setupCmd: resolveSetup, sshPrefix: resolveSshPrefix, cleanupCmd: resolveCleanup } = buildEsxiSshPrefix(`/tmp/proxcenter-sshfs-resolve-${jobId}`)
-      const resolveCmd = `${resolveSetup ? resolveSetup + ' && ' : ''}${resolveSshPrefix} -p ${resolvePort} ${resolveUser}@${resolveHost} "readlink -f '/vmfs/volumes/${datastoreName.replace(/'/g, "'\\''")}'" 2>/dev/null${resolveCleanup ? ' ; ' + resolveCleanup : ''}`
+      const safeDsName = datastoreName.replace(/'/g, "'\\''")
+      const resolveCmd = `${resolveSetup ? resolveSetup + ' && ' : ''}${resolveSshPrefix} -p ${resolvePort} ${resolveUser}@${resolveHost} "readlink -f '/vmfs/volumes/${safeDsName}'" 2>/dev/null${resolveCleanup ? ' ; ' + resolveCleanup : ''}`
       const resolveResult = await executeSSH(config.targetConnectionId, nodeIp, resolveCmd)
       if (resolveResult.success && resolveResult.output?.trim().startsWith("/vmfs/")) {
         remotePath = resolveResult.output.trim()
         await appendLog(jobId, `Resolved datastore path: ${datastoreName} -> ${remotePath}`, "info")
       } else {
-        await appendLog(jobId, `Could not resolve datastore symlink, using name directly: ${remotePath}`, "warn")
+        // readlink failed — try fallback: ls -la to parse symlink target
+        await appendLog(jobId, `readlink failed for ${datastoreName}, trying ls -la fallback...`, "warn")
+        const fallbackCmd = `${resolveSetup ? resolveSetup + ' && ' : ''}${resolveSshPrefix} -p ${resolvePort} ${resolveUser}@${resolveHost} "ls -la '/vmfs/volumes/${safeDsName}'" 2>/dev/null${resolveCleanup ? ' ; ' + resolveCleanup : ''}`
+        const fallbackResult = await executeSSH(config.targetConnectionId, nodeIp, fallbackCmd)
+        // ls -la on a symlink: lrwxrwxrwx ... 3Par_DMZ1 -> 6508540b-49183378-c5fe-bc97e1ab7c50
+        const arrowMatch = fallbackResult.output?.match(/->\s*(\S+)/)
+        if (arrowMatch?.[1]) {
+          const resolvedUuid = arrowMatch[1]
+          remotePath = resolvedUuid.startsWith("/") ? resolvedUuid : `/vmfs/volumes/${resolvedUuid}`
+          await appendLog(jobId, `Resolved datastore via ls fallback: ${datastoreName} -> ${remotePath}`, "info")
+        } else {
+          // SFTP cannot follow symlinks — this will likely fail, warn clearly
+          await appendLog(jobId, `Could not resolve datastore symlink for "${datastoreName}". SSHFS/SFTP cannot follow symlinks — mount will likely fail. If it does, check SSH connectivity from the Proxmox node to the ESXi host.`, "error")
+        }
       }
       let mounted = false
+      const mountErrors: string[] = []
 
       if (esxiKey) {
         // Key-based auth
@@ -1012,14 +1080,16 @@ export async function runMigrationPipeline(jobId: string, config: MigrationConfi
           `cat > "${sshWrapperPath}" << 'SSHEOF'\n${sshWrapperKey}\nSSHEOF\nchmod +x "${sshWrapperPath}"`
         )
         // Try with perf options
-        const mountCmd = `mkdir -p "${mountPath}" && sshfs -o ${sshfsBaseOpts},ssh_command=${sshWrapperPath} ${esxiSshUser}@${esxiHost}:${remotePath} "${mountPath}"`
+        const mountCmd = `mkdir -p "${mountPath}" && sshfs -o ${sshfsBaseOpts},ssh_command=${sshWrapperPath} ${esxiSshUser}@${esxiHost}:${remotePath} "${mountPath}" 2>&1`
         const rc = await executeSSH(config.targetConnectionId, nodeIp, mountCmd)
         if (rc.success) mounted = true
+        else mountErrors.push(`attempt 1 (key+perf): ${(rc.error || rc.output || '').toString().trim().slice(0, 300)}`)
         if (!mounted) {
           // Fallback: minimal
-          const mountCmd2 = `mkdir -p "${mountPath}" && sshfs -o StrictHostKeyChecking=no,UserKnownHostsFile=/dev/null,allow_other,reconnect,ssh_command=${sshWrapperPath} ${esxiSshUser}@${esxiHost}:${remotePath} "${mountPath}"`
+          const mountCmd2 = `mkdir -p "${mountPath}" && sshfs -o StrictHostKeyChecking=no,UserKnownHostsFile=/dev/null,allow_other,reconnect,ssh_command=${sshWrapperPath} ${esxiSshUser}@${esxiHost}:${remotePath} "${mountPath}" 2>&1`
           const rc2 = await executeSSH(config.targetConnectionId, nodeIp, mountCmd2)
           if (rc2.success) mounted = true
+          else mountErrors.push(`attempt 2 (key+minimal): ${(rc2.error || rc2.output || '').toString().trim().slice(0, 300)}`)
         }
       } else if (esxiPass) {
         // Password-based auth via password_stdin + ssh wrapper script
@@ -1028,27 +1098,44 @@ export async function runMigrationPipeline(jobId: string, config: MigrationConfi
           `cat > "${sshWrapperPath}" << 'SSHEOF'\n${sshWrapperContent}\nSSHEOF\nchmod +x "${sshWrapperPath}"`
         )
         // Try with perf options + algo wrapper
-        const mountCmd = `mkdir -p "${mountPath}" && printf '%s' '${safePass}' | sshfs -o password_stdin,${sshfsBaseOpts},ssh_command=${sshWrapperPath} ${esxiSshUser}@${esxiHost}:${remotePath} "${mountPath}"`
+        const mountCmd = `mkdir -p "${mountPath}" && printf '%s' '${safePass}' | sshfs -o password_stdin,${sshfsBaseOpts},ssh_command=${sshWrapperPath} ${esxiSshUser}@${esxiHost}:${remotePath} "${mountPath}" 2>&1`
         const rc = await executeSSH(config.targetConnectionId, nodeIp, mountCmd)
         if (rc.success) mounted = true
+        else mountErrors.push(`attempt 1 (perf+algo): ${(rc.error || rc.output || '').toString().trim().slice(0, 300)}`)
         if (!mounted) {
           // Fallback: no algo wrapper (let ssh negotiate)
-          const mountCmd2 = `mkdir -p "${mountPath}" && printf '%s' '${safePass}' | sshfs -o password_stdin,StrictHostKeyChecking=no,UserKnownHostsFile=/dev/null,allow_other,reconnect,ServerAliveInterval=15,cache=yes,entry_timeout=3600,attr_timeout=3600 ${esxiSshUser}@${esxiHost}:${remotePath} "${mountPath}"`
+          const mountCmd2 = `mkdir -p "${mountPath}" && printf '%s' '${safePass}' | sshfs -o password_stdin,StrictHostKeyChecking=no,UserKnownHostsFile=/dev/null,allow_other,reconnect,ServerAliveInterval=15,cache=yes,entry_timeout=3600,attr_timeout=3600 ${esxiSshUser}@${esxiHost}:${remotePath} "${mountPath}" 2>&1`
           const rc2 = await executeSSH(config.targetConnectionId, nodeIp, mountCmd2)
           if (rc2.success) mounted = true
+          else mountErrors.push(`attempt 2 (negotiate): ${(rc2.error || rc2.output || '').toString().trim().slice(0, 300)}`)
         }
         if (!mounted) {
           // Fallback: absolute minimal
-          const mountCmd3 = `mkdir -p "${mountPath}" && printf '%s' '${safePass}' | sshfs -o password_stdin,StrictHostKeyChecking=no,UserKnownHostsFile=/dev/null,allow_other,reconnect,cache=yes ${esxiSshUser}@${esxiHost}:${remotePath} "${mountPath}"`
+          const mountCmd3 = `mkdir -p "${mountPath}" && printf '%s' '${safePass}' | sshfs -o password_stdin,StrictHostKeyChecking=no,UserKnownHostsFile=/dev/null,allow_other,reconnect,cache=yes ${esxiSshUser}@${esxiHost}:${remotePath} "${mountPath}" 2>&1`
           const rc3 = await executeSSH(config.targetConnectionId, nodeIp, mountCmd3)
           if (rc3.success) mounted = true
+          else mountErrors.push(`attempt 3 (minimal): ${(rc3.error || rc3.output || '').toString().trim().slice(0, 300)}`)
         }
       }
 
       if (!mounted) {
         // Cleanup wrapper script
         await executeSSH(config.targetConnectionId, nodeIp, `rm -f "${sshWrapperPath}" "${mountPath}.esxi-key"`).catch(() => {})
-        throw new Error(`Failed to mount ESXi datastore via SSHFS. Ensure SSH is accessible on ${esxiHost}:${esxiSshPort}`)
+        // Surface the actual SSH/sshfs error so the user can diagnose. Common causes:
+        //   - "Connection refused": SSH not enabled on the ESXi (vSphere -> Configure -> Services -> SSH)
+        //   - "Permission denied": wrong password, or root login disabled
+        //   - "subsystem request failed" / "Connection reset": SFTP subsystem disabled on ESXi
+        //   - "no matching host key type": ESXi's old SSH algos need the wrapper (already attempted)
+        const errSummary = mountErrors.length
+          ? mountErrors.join(" | ")
+          : "no SSH/sshfs output captured (check authentication method and ESXi SSH availability)"
+        throw new Error(
+          `Failed to mount ESXi datastore via SSHFS on ${esxiHost}:${esxiSshPort}. ` +
+          `Underlying errors: ${errSummary}. ` +
+          `Verify: (1) SSH enabled on ESXi (vSphere Client > Configure > Services > SSH > Start), ` +
+          `(2) credentials valid (try 'ssh ${esxiSshUser}@${esxiHost}' from the Proxmox node), ` +
+          `(3) SFTP subsystem available on ESXi (try 'sftp ${esxiSshUser}@${esxiHost}').`
+        )
       }
 
       // Verify mount by listing files
@@ -1081,27 +1168,28 @@ export async function runMigrationPipeline(jobId: string, config: MigrationConfi
       // qemu-img needs the flat file for direct raw access
       const flatPath = disk.relativePath.replace(/\.vmdk$/, "-flat.vmdk")
       const sshfsDiskPath = `${sshfsMountPath}/${flatPath}`
-      const tmpFile = storageTempDir ? `${storageTempDir}/proxcenter-mig-${jobId}-disk${i}` : `/tmp/proxcenter-mig-${jobId}-disk${i}`
+      const tmpFile = storageTempDir ? `${storageTempDir}/proxcenter-mig-${jobId}-disk${i}` : `${tempBase}/proxcenter-mig-${jobId}-disk${i}`
 
       // Verify the disk file is accessible via SSHFS
       const checkFile = await executeSSH(config.targetConnectionId, nodeIp, `test -f "${sshfsDiskPath}" && echo EXISTS || echo MISSING`)
       if (checkFile.output?.trim() !== "EXISTS") {
-        // Try without -flat suffix (some storage types use different naming)
+        // -flat.vmdk not found (common on vSAN where data is object-backed)
+        // Fall back to VMDK descriptor - qemu-img -f vmdk can read it and follow references
         const altPath = `${sshfsMountPath}/${disk.relativePath}`
         const checkAlt = await executeSSH(config.targetConnectionId, nodeIp, `test -f "${altPath}" && echo EXISTS || echo MISSING`)
         if (checkAlt.output?.trim() === "EXISTS") {
-          await appendLog(jobId, `Using descriptor VMDK path (no -flat suffix): ${altPath}`, "info")
-          // qemu-img can read VMDK descriptors and resolve the flat file automatically
-          return await sshfsConvertAndImport(i, disk, altPath, tmpFile)
+          await appendLog(jobId, `Using VMDK descriptor (vSAN/object storage): qemu-img will read via descriptor`, "info")
+          return await sshfsConvertAndImport(i, disk, altPath, tmpFile, "vmdk")
         }
-        throw new Error(`Disk file not found via SSHFS: ${sshfsDiskPath}`)
+        throw new Error(`Disk file not found via SSHFS: ${sshfsDiskPath} (also tried descriptor: ${altPath})`)
       }
 
-      await sshfsConvertAndImport(i, disk, sshfsDiskPath, tmpFile)
+      await sshfsConvertAndImport(i, disk, sshfsDiskPath, tmpFile, "raw")
     }
 
     // Core convert+import from an SSHFS path for file-based storage
-    async function sshfsConvertAndImport(i: number, disk: EsxiDiskInfo, sourcePath: string, tmpFile: string) {
+    // inputFormat: "raw" for flat VMDKs (direct raw data), "vmdk" for VMDK descriptors (vSAN/object storage)
+    async function sshfsConvertAndImport(i: number, disk: EsxiDiskInfo, sourcePath: string, tmpFile: string, inputFormat: "raw" | "vmdk" = "raw") {
       const diskSizeGB = (disk.capacityBytes / 1073741824).toFixed(1)
       const scsiSlot = `scsi${i}`
 
@@ -1122,8 +1210,10 @@ export async function runMigrationPipeline(jobId: string, config: MigrationConfi
       const outputFile = `${tmpFile}.${importFormat}`
 
       // Use qemu-img convert with progress output
+      // inputFormat=vmdk: reads VMDK descriptor and follows references (required for vSAN)
+      // inputFormat=raw: reads flat VMDK as raw data (standard VMFS)
       await executeSSH(config.targetConnectionId, nodeIp,
-        `cat > "${convertScript}" << 'CONVEOF'\nqemu-img convert -p -f raw -O ${importFormat} "${sourcePath}" "${outputFile}" 2>"${progressFile}"\necho $? > "${exitFile}"\nCONVEOF`
+        `cat > "${convertScript}" << 'CONVEOF'\nqemu-img convert -p -f ${inputFormat} -O ${importFormat} "${sourcePath}" "${outputFile}" 2>"${progressFile}"\necho $? > "${exitFile}"\nCONVEOF`
       )
 
       const startConvert = await executeSSH(config.targetConnectionId, nodeIp,
@@ -1164,10 +1254,30 @@ export async function runMigrationPipeline(jobId: string, config: MigrationConfi
         const exitCheck = await executeSSH(config.targetConnectionId, nodeIp, `cat "${exitFile}" 2>/dev/null || echo RUNNING`)
         if (exitCheck.output?.trim() !== "RUNNING") {
           const exitCode = Number.parseInt(exitCheck.output?.trim() || "1", 10)
+          // Capture the FULL stderr from qemu-img BEFORE deleting the progress file.
+          // qemu-img writes both progress lines (carriage-return separated) and error
+          // messages to stderr; on failure the last lines are usually the actual error.
+          // Without this we'd surface the useless "exit 1" generic, hiding the root cause
+          // (locked file, bad descriptor, permission denied, broken vmdk chain, etc.).
+          let stderrTail = ""
+          if (exitCode !== 0) {
+            const stderrCapture = await executeSSH(
+              config.targetConnectionId,
+              nodeIp,
+              `tail -c 2000 "${progressFile}" 2>/dev/null | tr '\\r' '\\n' | grep -v '/100%' | tail -10`,
+            )
+            stderrTail = (stderrCapture.output || "").trim()
+          }
           await executeSSH(config.targetConnectionId, nodeIp, `rm -f "${convertScript}" "${pidFile}" "${exitFile}" "${progressFile}"`)
           if (exitCode !== 0) {
             await executeSSH(config.targetConnectionId, nodeIp, `rm -f "${outputFile}"`)
-            throw new Error(`qemu-img convert failed (exit ${exitCode})`)
+            throw new Error(
+              `qemu-img convert failed (exit ${exitCode}) on ${sourcePath}. ` +
+              `Source format: ${inputFormat}, target format: ${importFormat}. ` +
+              (stderrTail
+                ? `qemu-img stderr (last lines): ${stderrTail}`
+                : `No stderr captured. Common causes: VMDK descriptor references missing -flat file (vSAN object access issue), VMDK locked by running VM (power off and retry), or sparse VMDK with broken extent map.`),
+            )
           }
           break
         }
@@ -1223,24 +1333,28 @@ export async function runMigrationPipeline(jobId: string, config: MigrationConfi
       }
     }
 
-    // Stream disk via SSHFS for block storage (dd from mounted flat VMDK to pre-allocated device)
+    // Stream disk via SSHFS for block storage (dd or qemu-img convert to pre-allocated device)
     async function streamDiskViaSshfsToBlock(i: number, disk: EsxiDiskInfo, devicePath: string) {
       const diskSizeGB = (disk.capacityBytes / 1073741824).toFixed(1)
       await appendLog(jobId, `[Disk ${i + 1}/${vmConfig.disks.length}] Streaming "${disk.label}" via SSHFS to block device (${diskSizeGB} GB)...`)
 
       const flatPath = disk.relativePath.replace(/\.vmdk$/, "-flat.vmdk")
       let sshfsDiskPath = `${sshfsMountPath}/${flatPath}`
+      let useVmdkDescriptor = false
 
       // Verify file exists
       const checkFile = await executeSSH(config.targetConnectionId, nodeIp, `test -f "${sshfsDiskPath}" && echo EXISTS || echo MISSING`)
       if (checkFile.output?.trim() !== "EXISTS") {
-        // Try descriptor path as fallback
+        // -flat.vmdk not found (common on vSAN where data is object-backed)
+        // Fall back to VMDK descriptor - qemu-img can read it and follow references to actual data
         const altPath = `${sshfsMountPath}/${disk.relativePath}`
         const checkAlt = await executeSSH(config.targetConnectionId, nodeIp, `test -f "${altPath}" && echo EXISTS || echo MISSING`)
         if (checkAlt.output?.trim() === "EXISTS") {
           sshfsDiskPath = altPath
+          useVmdkDescriptor = true
+          await appendLog(jobId, `Using VMDK descriptor (vSAN/object storage): qemu-img convert will read disk data via descriptor`, "info")
         } else {
-          throw new Error(`Disk file not found via SSHFS: ${sshfsDiskPath}`)
+          throw new Error(`Disk file not found via SSHFS: ${sshfsDiskPath} (also tried descriptor: ${altPath})`)
         }
       }
 
@@ -1251,23 +1365,31 @@ export async function runMigrationPipeline(jobId: string, config: MigrationConfi
         totalBytes: BigInt(disk.capacityBytes),
       })
 
-      // dd from SSHFS mount directly to block device
       const ctrlPrefix = `/tmp/proxcenter-mig-${jobId}-sshfsblk${i}`
       const progressFile = `${ctrlPrefix}.progress`
       const pidFile = `${ctrlPrefix}.pid`
       const exitFile = `${ctrlPrefix}.exit`
-      const ddScript = `${ctrlPrefix}.sh`
+      const transferScript = `${ctrlPrefix}.sh`
 
-      await executeSSH(config.targetConnectionId, nodeIp,
-        `cat > "${ddScript}" << 'DDEOF'\ndd if="${sshfsDiskPath}" of="${devicePath}" bs=4M status=progress 2>"${progressFile}"\necho $? > "${exitFile}"\nDDEOF`
-      )
-
-      const startDd = await executeSSH(config.targetConnectionId, nodeIp,
-        `nohup bash "${ddScript}" > /dev/null 2>&1 & echo $!`)
-      if (!startDd.success || !startDd.output?.trim()) {
-        throw new Error(`Failed to start dd: ${startDd.error}`)
+      if (useVmdkDescriptor) {
+        // vSAN / object storage: use qemu-img convert to read VMDK descriptor and write raw to block device
+        // qemu-img understands VMDK format and follows descriptor references to the actual data objects
+        await executeSSH(config.targetConnectionId, nodeIp,
+          `cat > "${transferScript}" << 'XFEREOF'\nqemu-img convert -p -f vmdk -O raw "${sshfsDiskPath}" "${devicePath}" 2>"${progressFile}"\necho $? > "${exitFile}"\nXFEREOF`
+        )
+      } else {
+        // VMFS / standard: flat VMDK is raw data, dd directly to block device (faster, no conversion overhead)
+        await executeSSH(config.targetConnectionId, nodeIp,
+          `cat > "${transferScript}" << 'XFEREOF'\ndd if="${sshfsDiskPath}" of="${devicePath}" bs=4M status=progress 2>"${progressFile}"\necho $? > "${exitFile}"\nXFEREOF`
+        )
       }
-      const pid = startDd.output.trim()
+
+      const startCmd = await executeSSH(config.targetConnectionId, nodeIp,
+        `nohup bash "${transferScript}" > /dev/null 2>&1 & echo $!`)
+      if (!startCmd.success || !startCmd.output?.trim()) {
+        throw new Error(`Failed to start ${useVmdkDescriptor ? 'qemu-img convert' : 'dd'}: ${startCmd.error}`)
+      }
+      const pid = startCmd.output.trim()
       await executeSSH(config.targetConnectionId, nodeIp, `echo ${pid} > "${pidFile}"`)
 
       const totalBytes = disk.capacityBytes
@@ -1276,15 +1398,23 @@ export async function runMigrationPipeline(jobId: string, config: MigrationConfi
 
       while (true) {
         if (isCancelled(jobId)) {
-          await executeSSH(config.targetConnectionId, nodeIp, `kill ${pid} 2>/dev/null; rm -f "${ddScript}" "${pidFile}" "${exitFile}" "${progressFile}"`)
+          await executeSSH(config.targetConnectionId, nodeIp, `kill ${pid} 2>/dev/null; rm -f "${transferScript}" "${pidFile}" "${exitFile}" "${progressFile}"`)
           throw new Error("Migration cancelled")
         }
         await new Promise(r => setTimeout(r, 3000))
 
-        // Parse dd progress: "123456789 bytes ..."
-        const progressResult = await executeSSH(config.targetConnectionId, nodeIp,
-          `tail -c 200 "${progressFile}" 2>/dev/null | tr '\\r' '\\n' | grep -oP '^\\d+' | tail -1 || echo 0`)
-        transferredBytes = Number.parseInt(progressResult.output?.trim() || "0", 10) || 0
+        if (useVmdkDescriptor) {
+          // Parse qemu-img progress: outputs lines like "(12.34/100%)"
+          const progressResult = await executeSSH(config.targetConnectionId, nodeIp,
+            `tail -c 100 "${progressFile}" 2>/dev/null | tr '\\r' '\\n' | grep -oP '[\\d.]+(?=/100%)' | tail -1 || echo 0`)
+          const pct = Number.parseFloat(progressResult.output?.trim() || "0") || 0
+          transferredBytes = Math.round((pct / 100) * totalBytes)
+        } else {
+          // Parse dd progress: "123456789 bytes ..."
+          const progressResult = await executeSSH(config.targetConnectionId, nodeIp,
+            `tail -c 200 "${progressFile}" 2>/dev/null | tr '\\r' '\\n' | grep -oP '^\\d+' | tail -1 || echo 0`)
+          transferredBytes = Number.parseInt(progressResult.output?.trim() || "0", 10) || 0
+        }
 
         const elapsed = (Date.now() - startTime) / 1000
         const speedBps = elapsed > 0 ? transferredBytes / elapsed : 0
@@ -1302,9 +1432,25 @@ export async function runMigrationPipeline(jobId: string, config: MigrationConfi
         const exitCheck = await executeSSH(config.targetConnectionId, nodeIp, `cat "${exitFile}" 2>/dev/null || echo RUNNING`)
         if (exitCheck.output?.trim() !== "RUNNING") {
           const exitCode = Number.parseInt(exitCheck.output?.trim() || "1", 10)
-          await executeSSH(config.targetConnectionId, nodeIp, `rm -f "${ddScript}" "${pidFile}" "${exitFile}" "${progressFile}"`)
+          // Capture stderr tail BEFORE deleting progressFile (same bug as transferDiskViaSshfs).
+          let stderrTail = ""
           if (exitCode !== 0) {
-            throw new Error(`dd streaming failed (exit ${exitCode})`)
+            const stderrCapture = await executeSSH(
+              config.targetConnectionId,
+              nodeIp,
+              `tail -c 2000 "${progressFile}" 2>/dev/null | tr '\\r' '\\n' | grep -v '/100%' | tail -10`,
+            )
+            stderrTail = (stderrCapture.output || "").trim()
+          }
+          await executeSSH(config.targetConnectionId, nodeIp, `rm -f "${transferScript}" "${pidFile}" "${exitFile}" "${progressFile}"`)
+          if (exitCode !== 0) {
+            const tool = useVmdkDescriptor ? 'qemu-img convert' : 'dd'
+            throw new Error(
+              `${tool} failed (exit ${exitCode}) on ${sshfsDiskPath} -> ${devicePath}. ` +
+              (stderrTail
+                ? `${tool} stderr (last lines): ${stderrTail}`
+                : `No stderr captured. For vSAN: descriptor may reference unreachable -flat object. For block storage: target device may be in use or wrong size.`),
+            )
           }
           break
         }
@@ -1328,7 +1474,7 @@ export async function runMigrationPipeline(jobId: string, config: MigrationConfi
     //       3) Cleanup clone on ESXi
     async function downloadDiskViaSsh(i: number, disk: EsxiDiskInfo, needsClone = false) {
       const diskSizeGB = (disk.capacityBytes / 1073741824).toFixed(1)
-      const tmpFile = storageTempDir ? `${storageTempDir}/proxcenter-mig-${jobId}-disk${i}` : `/tmp/proxcenter-mig-${jobId}-disk${i}`
+      const tmpFile = storageTempDir ? `${storageTempDir}/proxcenter-mig-${jobId}-disk${i}` : `${tempBase}/proxcenter-mig-${jobId}-disk${i}`
       const { esxiHost, esxiSshPort, esxiSshUser, setupCmd, sshPrefix, cleanupCmd } = buildEsxiSshPrefix(tmpFile)
 
       // Build the VMFS path
@@ -1547,8 +1693,12 @@ export async function runMigrationPipeline(jobId: string, config: MigrationConfi
 
     // Helper: convert + import + attach a single disk
     async function convertAndImportDisk(i: number) {
-      const tmpFile = storageTempDir ? `${storageTempDir}/proxcenter-mig-${jobId}-disk${i}` : `/tmp/proxcenter-mig-${jobId}-disk${i}`
-      const scsiSlot = `scsi${i}`
+      const tmpFile = storageTempDir ? `${storageTempDir}/proxcenter-mig-${jobId}-disk${i}` : `${tempBase}/proxcenter-mig-${jobId}-disk${i}`
+      // For EFI guests, attach the boot disk (i=0) as SATA: OVMF ships AHCI/VirtIO/NVMe/USB
+      // drivers but not LSI, so a disk attached to the default `scsihw: lsi` controller is
+      // invisible to the firmware. Windows has AHCI built-in, so this works without driver
+      // injection. Data disks (i>=1) stay on SCSI for performance.
+      const scsiSlot = (pveParams.bios === "ovmf" && i === 0) ? "sata0" : `scsi${i}`
 
       // Convert VMDK to target format
       await appendLog(jobId, `[Disk ${i + 1}/${vmConfig.disks.length}] Converting to ${importFormat} format...`)
@@ -1729,8 +1879,32 @@ export async function runMigrationPipeline(jobId: string, config: MigrationConfi
       let bootMethod: "qemu-ssh" | "sshfs" | "nbd" | null = null
       const diskBus = vmConfig.disks[0]?.controllerType?.toLowerCase()?.includes("scsi") ? "scsi" : "sata"
       const firstDisk = vmConfig.disks[0]
+
+      // Detect vSAN: -flat.vmdk doesn't exist as a separate POSIX file on vSAN
+      // We need to check via SSHFS whether the flat file or the descriptor should be used
       const firstFlatPath = firstDisk.relativePath.replace(/\.vmdk$/, "-flat.vmdk")
-      const firstEsxiPath = `/vmfs/volumes/${firstDisk.datastoreName}/${firstFlatPath}`
+      const firstDescriptorPath = firstDisk.relativePath
+      let useVmdkFormat = false // true when we must use VMDK descriptor instead of flat raw
+
+      // Check if -flat.vmdk exists (won't on vSAN)
+      if (useSSHFS) {
+        const firstMountPath = sshfsMountedDatastores.get(firstDisk.datastoreName) || sshfsMountPath
+        const flatCheck = await executeSSH(config.targetConnectionId, nodeIp,
+          `test -f "${firstMountPath}/${firstFlatPath}" && echo EXISTS || echo MISSING`)
+        if (flatCheck.output?.trim() !== "EXISTS") {
+          const descCheck = await executeSSH(config.targetConnectionId, nodeIp,
+            `test -f "${firstMountPath}/${firstDescriptorPath}" && echo EXISTS || echo MISSING`)
+          if (descCheck.output?.trim() === "EXISTS") {
+            useVmdkFormat = true
+            await appendLog(jobId, "vSAN detected: -flat.vmdk not found, using VMDK descriptor with format=vmdk", "info")
+          }
+        }
+      }
+
+      // Resolve disk path and format based on vSAN detection
+      const bootDiskFile = useVmdkFormat ? firstDescriptorPath : firstFlatPath
+      const bootDiskFormat = useVmdkFormat ? "vmdk" : "raw"
+      const firstEsxiPath = `/vmfs/volumes/${firstDisk.datastoreName}/${bootDiskFile}`
 
       if (qemuSshKeyPath) {
         await appendLog(jobId, "Testing QEMU SSH driver connectivity...", "info")
@@ -1739,7 +1913,7 @@ export async function runMigrationPipeline(jobId: string, config: MigrationConfi
 
         if (qemuTestResult.output?.includes("virtual size") || qemuTestResult.output?.includes("file format")) {
           bootMethod = "qemu-ssh"
-          await appendLog(jobId, "QEMU SSH driver: connection OK", "success")
+          await appendLog(jobId, `QEMU SSH driver: connection OK (format=${bootDiskFormat})`, "success")
         } else {
           await appendLog(jobId, `QEMU SSH driver test failed: ${qemuTestResult.output?.substring(0, 200)}`, "warn")
         }
@@ -1749,10 +1923,10 @@ export async function runMigrationPipeline(jobId: string, config: MigrationConfi
       if (!bootMethod) {
         await appendLog(jobId, "Trying SSHFS/FUSE boot (QEMU reads from SSHFS mount)...", "info")
         const firstMountPath = sshfsMountedDatastores.get(firstDisk.datastoreName) || sshfsMountPath
-        const firstFusePath = `${firstMountPath}/${firstFlatPath}`
+        const firstFusePath = `${firstMountPath}/${bootDiskFile}`
 
         const fuseTestResult = await executeSSH(config.targetConnectionId, nodeIp,
-          `timeout 10 qemu-img info '${firstFusePath}' 2>&1`)
+          `timeout 10 qemu-img info ${useVmdkFormat ? "-f vmdk " : ""}'${firstFusePath}' 2>&1`)
         if (fuseTestResult.output?.includes("virtual size") || fuseTestResult.output?.includes("file format")) {
           useSshfsForBoot = true
 
@@ -1780,16 +1954,16 @@ export async function runMigrationPipeline(jobId: string, config: MigrationConfi
           let nbdOk = true
           for (let di = 0; di < vmConfig.disks.length; di++) {
             const disk = vmConfig.disks[di]
-            const flatP = disk.relativePath.replace(/\.vmdk$/, "-flat.vmdk")
+            const diskFile = useVmdkFormat ? disk.relativePath : disk.relativePath.replace(/\.vmdk$/, "-flat.vmdk")
             const mp = sshfsMountedDatastores.get(disk.datastoreName) || sshfsMountPath
-            const fusePath = `${mp}/${flatP}`
+            const fusePath = `${mp}/${diskFile}`
             const sockPath = `/tmp/proxcenter-nbd-${jobId}-${di}.sock`
 
             await executeSSH(config.targetConnectionId, nodeIp,
               `fuser -k "${sockPath}" 2>/dev/null; rm -f "${sockPath}"`)
 
             const nbdStart = await executeSSH(config.targetConnectionId, nodeIp,
-              `qemu-nbd --fork --persistent --socket="${sockPath}" --format=raw --cache=writeback --aio=threads '${fusePath}' 2>&1`)
+              `qemu-nbd --fork --persistent --socket="${sockPath}" --format=${bootDiskFormat} --cache=writeback --aio=threads '${fusePath}' 2>&1`)
 
             await new Promise(r => setTimeout(r, 1000))
             const sockCheck = await executeSSH(config.targetConnectionId, nodeIp, `test -S "${sockPath}" && echo EXISTS`)
@@ -1834,6 +2008,20 @@ export async function runMigrationPipeline(jobId: string, config: MigrationConfi
         await appendLog(jobId, `Boot method: ${bootMethod} - allocating local target volumes (${isFileBased ? 'file-based' : 'block'})...`, "info")
         const localVolumes: { volumeId: string, devicePath: string, isFileVol?: boolean }[] = []
 
+        // Seed used disk numbers from current VM config so efidisk0 (which occupies
+        // vm-<vmid>-disk-0.raw after `qm create --bios ovmf`) does not collide with data disks.
+        const fileBasedUsedNums = new Set<number>()
+        if (isFileBased) {
+          const vmConfForAlloc = await pveFetch<Record<string, any>>(pveConn,
+            `/nodes/${encodeURIComponent(config.targetNode)}/qemu/${targetVmid}/config`)
+          for (const val of Object.values(vmConfForAlloc || {})) {
+            if (typeof val === 'string') {
+              const m = val.match(/vm-\d+-disk-(\d+)/)
+              if (m) fileBasedUsedNums.add(Number.parseInt(m[1]))
+            }
+          }
+        }
+
         for (let di = 0; di < vmConfig.disks.length; di++) {
           const diskSizeBytes = vmConfig.disks[di].capacityBytes
           if (isFileBased) {
@@ -1841,14 +2029,20 @@ export async function runMigrationPipeline(jobId: string, config: MigrationConfi
             const storagePath = storageConfig?.path || '/var/lib/vz'
             const imgDir = `${storagePath}/images/${targetVmid}`
             await executeSSH(config.targetConnectionId, nodeIp, `mkdir -p "${imgDir}"`)
-            const imgPath = `${imgDir}/vm-${targetVmid}-disk-${di}.raw`
+
+            // Pick next free disk number, skipping slots already taken (efidisk0, tpmstate0, ...).
+            let diskNum = 0
+            while (fileBasedUsedNums.has(diskNum)) diskNum++
+            fileBasedUsedNums.add(diskNum)
+
+            const imgPath = `${imgDir}/vm-${targetVmid}-disk-${diskNum}.raw`
             const sizeGB = Math.ceil(diskSizeBytes / 1073741824)
             const createResult = await executeSSH(config.targetConnectionId, nodeIp,
               `qemu-img create -f raw "${imgPath}" ${sizeGB}G 2>&1`)
             if (!createResult.success) {
               throw new Error(`Failed to create disk image: ${createResult.error || createResult.output}`)
             }
-            localVolumes.push({ volumeId: `${config.targetStorage}:${targetVmid}/vm-${targetVmid}-disk-${di}.raw`, devicePath: imgPath, isFileVol: true })
+            localVolumes.push({ volumeId: `${config.targetStorage}:${targetVmid}/vm-${targetVmid}-disk-${diskNum}.raw`, devicePath: imgPath, isFileVol: true })
             await appendLog(jobId, `Disk ${di}: ${imgPath} (${sizeGB} GB raw image)`, "info")
           } else {
             // Block storage (LVM, ZFS, RBD): pre-allocate volume
@@ -1884,19 +2078,20 @@ export async function runMigrationPipeline(jobId: string, config: MigrationConfi
         const argsParts: string[] = []
         for (let di = 0; di < vmConfig.disks.length; di++) {
           const disk = vmConfig.disks[di]
-          const flatFile = disk.relativePath.replace(/\.vmdk$/, "-flat.vmdk")
+          const diskFile = useVmdkFormat ? disk.relativePath : disk.relativePath.replace(/\.vmdk$/, "-flat.vmdk")
           const driveId = `sshfs-disk${di}`
 
           let driveSpec = ""
           if (bootMethod === "qemu-ssh") {
-            const esxiPath = `/vmfs/volumes/${disk.datastoreName}/${flatFile}`
-            driveSpec = `file.driver=ssh,file.host=${esxiHost},file.port=${esxiSshPort},file.path=${esxiPath},file.user=${esxiSshUser},file.host-key-check.mode=none${sshKeyOpt},format=raw,if=none,id=${driveId},cache=writeback,aio=threads`
+            const esxiPath = `/vmfs/volumes/${disk.datastoreName}/${diskFile}`
+            driveSpec = `file.driver=ssh,file.host=${esxiHost},file.port=${esxiSshPort},file.path=${esxiPath},file.user=${esxiSshUser},file.host-key-check.mode=none${sshKeyOpt},format=${bootDiskFormat},if=none,id=${driveId},cache=writeback,aio=threads`
           } else if (bootMethod === "sshfs") {
             const mp = sshfsMountedDatastores.get(disk.datastoreName) || sshfsMountPath
-            const fusePath = `${mp}/${flatFile}`
-            driveSpec = `file=${fusePath},format=raw,if=none,id=${driveId},cache=writeback,aio=threads,detect-zeroes=on`
+            const fusePath = `${mp}/${diskFile}`
+            driveSpec = `file=${fusePath},format=${bootDiskFormat},if=none,id=${driveId},cache=writeback,aio=threads,detect-zeroes=on`
           } else if (bootMethod === "nbd") {
             const sockPath = ndbSocketPaths[di]
+            // NBD exports raw blocks regardless of source format (qemu-nbd handles conversion)
             driveSpec = `file.driver=nbd,file.path=${sockPath},format=raw,if=none,id=${driveId},cache=writeback,aio=threads`
           }
 
@@ -1967,14 +2162,14 @@ export async function runMigrationPipeline(jobId: string, config: MigrationConfi
             const nbdFallbackParts: string[] = []
             for (let di = 0; di < vmConfig.disks.length; di++) {
               const disk = vmConfig.disks[di]
-              const flatP = disk.relativePath.replace(/\.vmdk$/, "-flat.vmdk")
+              const diskP = useVmdkFormat ? disk.relativePath : disk.relativePath.replace(/\.vmdk$/, "-flat.vmdk")
               const mp = sshfsMountedDatastores.get(disk.datastoreName) || sshfsMountPath
-              const fusePath = `${mp}/${flatP}`
+              const fusePath = `${mp}/${diskP}`
               const sockPath = `/tmp/proxcenter-nbd-${jobId}-${di}.sock`
 
               await executeSSH(config.targetConnectionId, nodeIp, `fuser -k "${sockPath}" 2>/dev/null; rm -f "${sockPath}"`)
               const nbdStartResult = await executeSSH(config.targetConnectionId, nodeIp,
-                `qemu-nbd --fork --persistent --socket="${sockPath}" --format=raw --cache=writeback --aio=threads '${fusePath}' 2>&1`)
+                `qemu-nbd --fork --persistent --socket="${sockPath}" --format=${bootDiskFormat} --cache=writeback --aio=threads '${fusePath}' 2>&1`)
               await new Promise(r => setTimeout(r, 1000))
               const sockExists = await executeSSH(config.targetConnectionId, nodeIp, `test -S "${sockPath}" && echo EXISTS`)
               if (nbdStartResult.success && sockExists.output?.includes("EXISTS")) {
@@ -2305,24 +2500,109 @@ export async function runMigrationPipeline(jobId: string, config: MigrationConfi
           if (st?.status === "stopped") break
         }
 
-        // Remove args: line and add proper scsiN:/sataN: disk references
+        // ── UEFI fallback bootloader injection ──
+        // Fresh efidisk0 has no NVRAM boot entries, so OVMF only finds the bootloader if
+        // it lives at the UEFI removable/fallback path \EFI\Boot\bootx64.efi. Windows stores
+        // bootmgfw.efi under \EFI\Microsoft\Boot\ and doesn't always create the fallback copy.
+        // Copy it now (while VM is stopped) so the guest boots without needing NVRAM.
+        if (pveParams.bios === "ovmf" && isFileBased && localVolumes[0]) {
+          await appendLog(jobId, "Ensuring UEFI fallback bootloader is present on EFI partition...", "info")
+          const bootDiskPath = localVolumes[0].devicePath
+          const injectScript = [
+            'set +e',
+            'modprobe nbd max_part=16 2>/dev/null',
+            // Find a free nbd device (no pid file means unused)
+            'NBD=""',
+            'for i in 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do',
+            '  if [ ! -s /sys/block/nbd$i/pid ] 2>/dev/null; then NBD=/dev/nbd$i; break; fi',
+            'done',
+            '[ -z "$NBD" ] && { echo "INJECT_RESULT=NO_FREE_NBD"; exit 0; }',
+            `qemu-nbd --connect="$NBD" --format=raw "${bootDiskPath}" 2>/dev/null || { echo "INJECT_RESULT=NBD_FAIL"; exit 0; }`,
+            'sleep 1',
+            'partprobe "$NBD" 2>/dev/null',
+            'sleep 1',
+            // Find EFI System Partition by GUID
+            `EFI_PART=$(lsblk -nr -o NAME,PARTTYPE "$NBD" 2>/dev/null | awk 'tolower($2)=="c12a7328-f81f-11d2-ba4b-00a0c93ec93b" {print "/dev/"$1; exit}')`,
+            // Fallback: look for any FAT partition on the disk
+            'if [ -z "$EFI_PART" ]; then',
+            '  for p in ${NBD}p*; do',
+            '    [ -e "$p" ] && blkid -s TYPE -o value "$p" 2>/dev/null | grep -qi vfat && EFI_PART="$p" && break',
+            '  done',
+            'fi',
+            'if [ -z "$EFI_PART" ]; then',
+            '  qemu-nbd --disconnect "$NBD" >/dev/null 2>&1',
+            '  echo "INJECT_RESULT=NO_EFI_PART"; exit 0',
+            'fi',
+            'MNT=$(mktemp -d /tmp/efi-inject-XXXXXX)',
+            'if ! mount -t vfat -o rw "$EFI_PART" "$MNT" 2>/dev/null; then',
+            '  qemu-nbd --disconnect "$NBD" >/dev/null 2>&1; rmdir "$MNT"',
+            '  echo "INJECT_RESULT=MOUNT_FAIL"; exit 0',
+            'fi',
+            'RESULT=NO_BOOTLOADER',
+            // Windows: copy bootmgfw.efi to \EFI\Boot\bootx64.efi if missing
+            'if [ -f "$MNT/EFI/Microsoft/Boot/bootmgfw.efi" ]; then',
+            '  if [ -f "$MNT/EFI/Boot/bootx64.efi" ] || [ -f "$MNT/EFI/BOOT/BOOTX64.EFI" ]; then',
+            '    RESULT=ALREADY_PRESENT',
+            '  else',
+            '    mkdir -p "$MNT/EFI/Boot" && cp "$MNT/EFI/Microsoft/Boot/bootmgfw.efi" "$MNT/EFI/Boot/bootx64.efi" && RESULT=WINDOWS_INJECTED',
+            '  fi',
+            'elif [ -f "$MNT/EFI/Boot/bootx64.efi" ] || [ -f "$MNT/EFI/BOOT/BOOTX64.EFI" ]; then',
+            '  RESULT=ALREADY_PRESENT',
+            'fi',
+            'sync; umount "$MNT"; rmdir "$MNT"',
+            'qemu-nbd --disconnect "$NBD" >/dev/null 2>&1',
+            'echo "INJECT_RESULT=$RESULT"',
+          ].join('\n')
+          const injectResult = await executeSSH(config.targetConnectionId, nodeIp, injectScript)
+          const out = injectResult.output || ""
+          if (out.includes("INJECT_RESULT=WINDOWS_INJECTED")) {
+            await appendLog(jobId, "Windows UEFI fallback bootloader installed (\\EFI\\Boot\\bootx64.efi)", "success")
+          } else if (out.includes("INJECT_RESULT=ALREADY_PRESENT")) {
+            await appendLog(jobId, "UEFI fallback bootloader already present, no injection needed", "info")
+          } else if (out.includes("INJECT_RESULT=NO_BOOTLOADER")) {
+            await appendLog(jobId, "⚠ No recognized bootloader found on EFI partition — VM may not boot", "warn")
+          } else if (out.includes("INJECT_RESULT=NO_EFI_PART")) {
+            await appendLog(jobId, "⚠ No EFI system partition found on disk 0 — VM may not boot if it expects one", "warn")
+          } else {
+            await appendLog(jobId, `⚠ UEFI bootloader injection skipped: ${out.split('\n').find(l => l.startsWith('INJECT_RESULT=')) || out.substring(0, 150)}`, "warn")
+          }
+        }
+
+        // Remove args: via direct config edit — PVE API forbids non-root tokens from setting/deleting 'args'.
         await executeSSH(config.targetConnectionId, nodeIp,
           `sed -i '/^args:/d' "${confPath}"`)
 
+        // For EFI guests with a SCSI source controller, attach the boot disk as SATA.
+        // OVMF ships AHCI/VirtIO/NVMe/USB drivers but NOT an LSI SCSI driver, so it cannot
+        // enumerate (and therefore cannot boot) a disk attached via scsihw=lsi. Windows has
+        // AHCI in its built-in driver set, so moving the boot disk to SATA works without
+        // guest driver injection. Data disks stay on SCSI for performance.
+        const forceEfiSataForBoot = pveParams.bios === "ovmf" && diskBus === "scsi"
+        if (forceEfiSataForBoot) {
+          await appendLog(jobId, "EFI guest: attaching boot disk as SATA (OVMF lacks LSI SCSI driver)", "info")
+        }
+        const slotPerDisk: string[] = []
         for (let di = 0; di < localVolumes.length; di++) {
-          const scsiSlot = diskBus === "scsi" ? `scsi${di}` : `sata${di}`
-          const diskOpts = isFileBased ? ",discard=on" : ""
-          const attachBody = new URLSearchParams({ [scsiSlot]: `${localVolumes[di].volumeId}${diskOpts}` })
-          await pveFetch<any>(pveConn,
-            `/nodes/${encodeURIComponent(config.targetNode)}/qemu/${targetVmid}/config`,
-            { method: "PUT", body: attachBody })
-          await appendLog(jobId, `Disk ${di} attached as ${scsiSlot} (${localVolumes[di].volumeId})`, "success")
+          let slot: string
+          if (forceEfiSataForBoot && di === 0) slot = "sata0"
+          else if (forceEfiSataForBoot) slot = `scsi${di - 1}`
+          else slot = diskBus === "scsi" ? `scsi${di}` : `sata${di}`
+          slotPerDisk.push(slot)
         }
 
-        // Set boot order
+        // Attach all disks + boot order atomically in a single PVE API PUT (replaces previous per-disk PUTs).
+        const reconfigBody = new URLSearchParams()
+        const diskOpts = isFileBased ? ",discard=on" : ""
+        for (let di = 0; di < localVolumes.length; di++) {
+          reconfigBody.set(slotPerDisk[di], `${localVolumes[di].volumeId}${diskOpts}`)
+        }
+        reconfigBody.set('boot', `order=${slotPerDisk[0]}`)
         await pveFetch<any>(pveConn,
           `/nodes/${encodeURIComponent(config.targetNode)}/qemu/${targetVmid}/config`,
-          { method: "PUT", body: new URLSearchParams({ boot: `order=${diskBus === "scsi" ? "scsi0" : "sata0"}` }) })
+          { method: "PUT", body: reconfigBody })
+        for (let di = 0; di < localVolumes.length; di++) {
+          await appendLog(jobId, `Disk ${di} attached as ${slotPerDisk[di]} (${localVolumes[di].volumeId})`, "success")
+        }
 
         // Restart VM — always restart for SSHFS Boot (VM was running before reconfiguration)
         await appendLog(jobId, "Restarting VM with local disks...", "info")
@@ -2515,16 +2795,22 @@ export async function runMigrationPipeline(jobId: string, config: MigrationConfi
       await updateJob(jobId, "configuring", { progress: 90 })
       await appendLog(jobId, "Configuring VM (boot order, agent)...")
 
-      // Set boot order
+      // Set boot order — honour the EFI SATA rule applied in convertAndImportDisk/attachBlockDisk.
+      const finalBootSlot = pveParams.bios === "ovmf" ? "sata0" : "scsi0"
       await pveFetch<any>(
         pveConn,
         `/nodes/${encodeURIComponent(config.targetNode)}/qemu/${targetVmid}/config`,
-        { method: "PUT", body: new URLSearchParams({ boot: "order=scsi0" }) }
+        { method: "PUT", body: new URLSearchParams({ boot: `order=${finalBootSlot}` }) }
       )
 
-      // For Windows VMs: add VirtIO ISO hint
+      // For Windows VMs: advise on post-migration driver work. The boot chain is correct
+      // out of the box (EFI guests get their boot disk on SATA — OVMF can boot it; BIOS
+      // guests stay on LSI SCSI which SeaBIOS reads natively) and the e1000 NIC uses
+      // Windows' built-in driver, so the VM comes up. Installing VirtIO afterwards gives
+      // better disk and network performance but is optional.
       if (isWindowsVm(vmConfig)) {
-        await appendLog(jobId, "Windows VM detected - using LSI SCSI + e1000 NIC for initial boot compatibility. Install VirtIO drivers from ISO for best performance.", "warn")
+        const bootBusLabel = pveParams.bios === "ovmf" ? "SATA (OVMF-compatible)" : "LSI SCSI"
+        await appendLog(jobId, `Windows VM detected - boot disk on ${bootBusLabel} + e1000 NIC (built-in Windows drivers). Install VirtIO drivers from the virtio-win ISO afterwards for better disk/network performance.`, "warn")
       }
 
       await appendLog(jobId, "VM configuration complete", "success")

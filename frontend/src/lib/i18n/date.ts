@@ -1,6 +1,8 @@
 const localeMap: Record<string, string> = {
   fr: 'fr-FR',
   en: 'en-US',
+  de: 'de-DE',
+  'zh-CN': 'zh-CN',
 }
 
 export function getDateLocale(locale: string): string {

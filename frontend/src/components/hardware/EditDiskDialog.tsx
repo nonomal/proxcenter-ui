@@ -1,12 +1,13 @@
 'use client'
 
-import React, { useState, useEffect, useMemo } from 'react'
+import React, { useState, useEffect, useMemo, useCallback } from 'react'
 import { useTranslations } from 'next-intl'
 
 import {
   Dialog,
   DialogContent,
   DialogActions,
+  DialogTitle,
   Button,
   TextField,
   FormControl,
@@ -20,6 +21,7 @@ import {
   Stack,
   Alert,
   CircularProgress,
+  LinearProgress,
   Tabs,
   Tab,
   Chip,
@@ -29,6 +31,7 @@ import {
 
 import { formatBytes } from '@/utils/format'
 import AppDialogTitle from '@/components/ui/AppDialogTitle'
+import { DetachConfirmDialog } from './DetachConfirmDialog'
 
 // Storage types that support multiple disk image formats (file-based storages)
 // Block-based storages (lvm, lvmthin, rbd, zfspool, iscsi, iscsidirect) only support raw
@@ -75,12 +78,17 @@ type EditDiskDialogProps = {
     rawValue?: string
   } | null
   existingDisks?: string[]
-  availableStorages?: Array<{ storage: string; type: string; avail?: number; total?: number }>
+  availableStorages?: Array<{ storage: string; type: string; avail?: number; total?: number; used?: number }>
+  initialTab?: number
 }
 
-export function EditDiskDialog({ open, onClose, onSave, onDelete, onResize, onMoveStorage, connId, node, disk, existingDisks, availableStorages }: EditDiskDialogProps) {
+export function EditDiskDialog({ open, onClose, onSave, onDelete, onResize, onMoveStorage, connId, node, disk, existingDisks, availableStorages, initialTab }: EditDiskDialogProps) {
   const t = useTranslations()
-  const [tab, setTab] = useState(0)
+  const [tab, setTab] = useState(initialTab ?? 0)
+
+  useEffect(() => {
+    if (open) setTab(initialTab ?? 0)
+  }, [open, initialTab])
   const [saving, setSaving] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [resizing, setResizing] = useState(false)
@@ -95,7 +103,7 @@ export function EditDiskDialog({ open, onClose, onSave, onDelete, onResize, onMo
   const [targetStorage, setTargetStorage] = useState('')
   const [deleteSource, setDeleteSource] = useState(true)
   const [targetFormat, setTargetFormat] = useState('')
-  const [storages, setStorages] = useState<Array<{ storage: string; type: string; avail?: number; total?: number }>>([])
+  const [storages, setStorages] = useState<Array<{ storage: string; type: string; avail?: number; total?: number; used?: number }>>([])
   const [storagesLoading, setStoragesLoading] = useState(false)
 
   // Disk config (éditable)
@@ -211,9 +219,9 @@ export function EditDiskDialog({ open, onClose, onSave, onDelete, onResize, onMo
       setDeleteSource(true)
       setTargetFormat('')
       setError(null)
-      setTab(0)
+      setTab(initialTab ?? 0)
     }
-  }, [open, disk])
+  }, [open, disk, initialTab])
 
   // Load ISO storages for CDROM
   useEffect(() => {
@@ -428,8 +436,21 @@ return
     setError(null)
     try {
       const targetId = reassignBus === 'virtio' ? `virtio${reassignIndex}` : `${reassignBus}${reassignIndex}`
-      // Send the volume ID as the value for the target bus slot
-      await onSave({ [targetId]: disk.rawValue, delete: disk.id })
+      // Two-step to avoid orphaning the volume: if we send both assignment
+      // and `delete: unusedN` in a single PUT and PVE fails mid-way (e.g.
+      // volume not found on storage), the unused entry is already gone AND
+      // the new assignment never lands — volume becomes orphaned on disk.
+      // Step 1: assign to the new bus. On success, PVE auto-removes the
+      // unused entry in most cases. On failure, unused stays intact so
+      // the user can retry.
+      await onSave({ [targetId]: disk.rawValue })
+      // Step 2: best-effort cleanup. If PVE already removed the unused
+      // entry, this errors harmlessly.
+      try {
+        await onSave({ delete: disk.id })
+      } catch {
+        // non-fatal: volume is already assigned to the new bus
+      }
       onClose()
     } catch (e: any) {
       setError(e.message || 'Error')
@@ -438,10 +459,16 @@ return
     }
   }
 
-  const handleDelete = async () => {
-    if (!disk) return
-    if (!confirm(t('hardware.confirmDeleteDisk', { id: disk.id }))) return
+  const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false)
+  const [confirmDetachOpen, setConfirmDetachOpen] = useState(false)
 
+  const handleDeleteClick = useCallback(() => {
+    if (!disk) return
+    setConfirmDeleteOpen(true)
+  }, [disk])
+
+  const handleDeleteConfirm = useCallback(async () => {
+    setConfirmDeleteOpen(false)
     setDeleting(true)
     setError(null)
 
@@ -453,16 +480,70 @@ return
     } finally {
       setDeleting(false)
     }
-  }
+  }, [onDelete, onClose, t])
+
+  // Replaces the native confirm() that was here before. Using a MUI Dialog
+  // is required by our codebase conventions (feedback_modals_mui.md) and also
+  // looks consistent with the rest of the app.
+  const handleDelete = handleDeleteClick
 
   if (!disk) return null
 
   const isWorking = saving || deleting || resizing || moving || cdromSaving || reassigning
 
+  const detachConfirmDialog = disk ? (
+    <DetachConfirmDialog
+      open={confirmDetachOpen}
+      diskId={disk.id}
+      onClose={() => setConfirmDetachOpen(false)}
+      onConfirm={async () => { await onDelete() }}
+    />
+  ) : null
+
+  // MUI confirmation dialog for disk deletion (replaces native confirm()).
+  // Rendered as a sibling to every main dialog variant below via a Fragment.
+  const deleteConfirmDialog = (
+    <Dialog
+      open={confirmDeleteOpen}
+      onClose={() => setConfirmDeleteOpen(false)}
+      maxWidth="xs"
+      fullWidth
+    >
+      <DialogTitle sx={{ display: 'flex', alignItems: 'center', gap: 1.5, pb: 1 }}>
+        <Box sx={{ width: 36, height: 36, borderRadius: 1, bgcolor: 'error.main', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <i className="ri-delete-bin-line" style={{ fontSize: 20, color: '#fff' }} />
+        </Box>
+        {t('hardware.confirmDeleteTitle', { defaultMessage: 'Delete disk' })}
+      </DialogTitle>
+      <DialogContent>
+        <Typography variant="body2">
+          {t('hardware.confirmDeleteDisk', { id: disk.id })}
+        </Typography>
+        {disk.isCdrom && (
+          <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
+            {t('hardware.confirmDeleteCdromHint', { defaultMessage: 'The CD/DVD drive and its ISO mapping will be removed from the VM configuration.' })}
+          </Typography>
+        )}
+      </DialogContent>
+      <DialogActions sx={{ px: 3, pb: 2 }}>
+        <Button onClick={() => setConfirmDeleteOpen(false)}>{t('common.cancel')}</Button>
+        <Button
+          variant="contained"
+          color="error"
+          onClick={handleDeleteConfirm}
+          startIcon={deleting ? <CircularProgress size={16} color="inherit" /> : <i className="ri-delete-bin-line" />}
+          disabled={deleting}
+        >
+          {t('common.delete')}
+        </Button>
+      </DialogActions>
+    </Dialog>
+  )
+
   // ── CDROM Dialog ──────────────────────────────────────────
   if (disk.isCdrom) {
     return (
-      <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth>
+      <>{deleteConfirmDialog}<Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth>
         <AppDialogTitle onClose={onClose} icon={<i className="ri-disc-line" style={{ fontSize: 24 }} />}>
           {disk.id} (CD/DVD)
         </AppDialogTitle>
@@ -543,13 +624,14 @@ return
             </Button>
           </Box>
         </DialogActions>
-      </Dialog>
+      </Dialog></>
     )
   }
 
   // ── Unused disk Dialog ───────────────────────────────────
   if (disk.isUnused) {
     return (
+      <>{deleteConfirmDialog}
       <Dialog open={open} onClose={onClose} maxWidth="xs" fullWidth>
         <AppDialogTitle onClose={onClose} icon={<i className="ri-hard-drive-2-line" style={{ fontSize: 24, color: 'var(--mui-palette-warning-main)' }} />}>
           {disk.id} — {t('inventory.unused')}
@@ -613,13 +695,13 @@ return
             </Button>
           </Box>
         </DialogActions>
-      </Dialog>
+      </Dialog></>
     )
   }
 
   // ── Regular disk Dialog ───────────────────────────────────
   return (
-    <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth>
+    <>{detachConfirmDialog}<Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth>
       <AppDialogTitle onClose={onClose} icon={<i className="ri-hard-drive-2-line" style={{ fontSize: 24 }} />}>
         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <span>{t('common.edit')}: {disk.id}</span>
@@ -779,10 +861,6 @@ return
         {/* Tab Move Storage */}
         {tab === 3 && onMoveStorage && (
           <Stack spacing={2} sx={{ mt: 1 }}>
-            <Alert severity="info" icon={<i className="ri-information-line" />}>
-              {t.rich('hardware.moveDiskTo', { storage: disk.storage, strong: (chunks) => <strong>{chunks}</strong> })}
-            </Alert>
-
             {storagesLoading ? (
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, py: 2 }}>
                 <CircularProgress size={20} />
@@ -799,24 +877,38 @@ return
                   >
                     {storages
                       .filter(s => s.storage !== disk.storage)
-                      .map(s => (
-                        <MenuItem key={s.storage} value={s.storage}>
-                          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
-                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                              <i className="ri-hard-drive-2-line" style={{ fontSize: 16, opacity: 0.7 }} />
-                              <span>{s.storage}</span>
-                            </Box>
-                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                              <Chip label={s.type} size="small" variant="outlined" sx={{ height: 18, fontSize: '0.65rem' }} />
-                              {s.avail !== undefined && (
-                                <Typography variant="caption" color="text.secondary">
-                                  {formatBytes(s.avail)} free
-                                </Typography>
+                      .map(s => {
+                        const total = (s.total || 0)
+                        const used = (s.used || 0)
+                        const avail = s.avail ?? (total - used)
+                        const usagePct = total > 0 ? Math.round((used / total) * 100) : 0
+                        const usageColor = usagePct > 90 ? 'error' : usagePct > 75 ? 'warning' : 'primary'
+                        return (
+                          <MenuItem key={s.storage} value={s.storage}>
+                            <Box sx={{ width: '100%' }}>
+                              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 0.25 }}>
+                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                  <i className="ri-hard-drive-2-line" style={{ fontSize: 16, opacity: 0.7 }} />
+                                  <Typography variant="body2" fontWeight={500}>{s.storage}</Typography>
+                                </Box>
+                                {total > 0 && (
+                                  <Typography variant="caption" color="text.secondary">
+                                    {formatBytes(avail)} free / {formatBytes(total)}
+                                  </Typography>
+                                )}
+                              </Box>
+                              {total > 0 && (
+                                <LinearProgress
+                                  variant="determinate"
+                                  value={usagePct}
+                                  color={usageColor as any}
+                                  sx={{ height: 4, borderRadius: 1 }}
+                                />
                               )}
                             </Box>
-                          </Box>
-                        </MenuItem>
-                      ))}
+                          </MenuItem>
+                        )
+                      })}
                   </Select>
                 </FormControl>
 
@@ -874,12 +966,12 @@ return
 
       <DialogActions sx={{ px: 3, pb: 2, justifyContent: 'space-between' }}>
         <Button
-          color="error"
-          onClick={handleDelete}
+          color="warning"
+          onClick={() => setConfirmDetachOpen(true)}
           disabled={isWorking}
-          startIcon={deleting ? <CircularProgress size={16} /> : <i className="ri-delete-bin-line" />}
+          startIcon={deleting ? <CircularProgress size={16} /> : <i className="ri-link-unlink" />}
         >
-          {t('common.delete')}
+          {t('hardware.detach')}
         </Button>
         <Box>
           <Button onClick={onClose} disabled={isWorking} sx={{ mr: 1 }}>{t('common.cancel')}</Button>
@@ -890,6 +982,6 @@ return
           )}
         </Box>
       </DialogActions>
-    </Dialog>
+    </Dialog></>
   )
 }

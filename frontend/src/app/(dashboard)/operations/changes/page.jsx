@@ -28,7 +28,8 @@ import {
   Tooltip,
   Typography
 } from '@mui/material'
-import { PieChart, Pie, Cell, ResponsiveContainer } from 'recharts'
+import { PieChart, Pie, Cell } from 'recharts'
+import ChartContainer from '@/components/ChartContainer'
 
 import { usePageTitle } from '@/contexts/PageTitleContext'
 import { Features, useLicense } from '@/contexts/LicenseContext'
@@ -125,7 +126,7 @@ function DonutStatCard({ title, value, total, color }) {
     <Card variant='outlined'>
       <CardContent sx={{ py: 1.5, px: 2, display: 'flex', alignItems: 'center', gap: 1.5 }}>
         <Box sx={{ width: 52, height: 52, flexShrink: 0 }}>
-          <ResponsiveContainer width='100%' height='100%' minWidth={0}>
+          <ChartContainer>
             <PieChart>
               <Pie
                 data={[{ value: value || 0 }, { value: remainder || 1 }]}
@@ -139,7 +140,7 @@ function DonutStatCard({ title, value, total, color }) {
                 <Cell fill='var(--mui-palette-action-hover)' />
               </Pie>
             </PieChart>
-          </ResponsiveContainer>
+          </ChartContainer>
         </Box>
         <Box>
           <Typography variant='caption' sx={{ opacity: 0.6 }}>{title}</Typography>
@@ -159,7 +160,7 @@ function DonutTotalCard({ title, value, segments }) {
     <Card variant='outlined'>
       <CardContent sx={{ py: 1.5, px: 2, display: 'flex', alignItems: 'center', gap: 1.5 }}>
         <Box sx={{ width: 52, height: 52, flexShrink: 0 }}>
-          <ResponsiveContainer width='100%' height='100%' minWidth={0}>
+          <ChartContainer>
             <PieChart>
               <Pie
                 data={data}
@@ -172,7 +173,7 @@ function DonutTotalCard({ title, value, segments }) {
                 {data.map((s, i) => <Cell key={i} fill={s.color} />)}
               </Pie>
             </PieChart>
-          </ResponsiveContainer>
+          </ChartContainer>
         </Box>
         <Box>
           <Typography variant='caption' sx={{ opacity: 0.6 }}>{title}</Typography>
@@ -641,7 +642,7 @@ export default function ChangesPage() {
             page={page}
             onPageChange={(_, newPage) => setPage(newPage)}
             rowsPerPage={rowsPerPage}
-            onRowsPerPageChange={(e) => { setRowsPerPage(parseInt(e.target.value, 10)); setPage(0) }}
+            onRowsPerPageChange={(e) => { setRowsPerPage(Number.parseInt(e.target.value, 10)); setPage(0) }}
             rowsPerPageOptions={[25, 50, 100]}
             labelRowsPerPage={t('common.rowsPerPage')}
             sx={{ borderTop: '1px solid', borderColor: 'divider' }}

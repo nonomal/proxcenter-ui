@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import { useTranslations, useLocale } from 'next-intl'
 import dynamic from 'next/dynamic'
 import DOMPurify from 'dompurify'
@@ -20,6 +20,7 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
+  Divider,
   FormControl,
   FormControlLabel,
   IconButton,
@@ -55,7 +56,8 @@ import {
   alpha,
   useTheme,
 } from '@mui/material'
-import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip } from 'recharts'
+import { AreaChart, Area, XAxis, YAxis, Tooltip } from 'recharts'
+import ChartContainer from '@/components/ChartContainer'
 
 import { formatBytes } from '@/utils/format'
 import { formatDateTime } from '@/lib/i18n/date'
@@ -68,6 +70,8 @@ const AddNetworkDialog = dynamic(() => import('@/components/HardwareModals').the
 const EditDiskDialog = dynamic(() => import('@/components/HardwareModals').then(mod => ({ default: mod.EditDiskDialog })), { ssr: false })
 const EditNetworkDialog = dynamic(() => import('@/components/HardwareModals').then(mod => ({ default: mod.EditNetworkDialog })), { ssr: false })
 const EditScsiControllerDialog = dynamic(() => import('@/components/HardwareModals').then(mod => ({ default: mod.EditScsiControllerDialog })), { ssr: false })
+const DetachConfirmDialog = dynamic(() => import('@/components/hardware/DetachConfirmDialog').then(mod => ({ default: mod.DetachConfirmDialog })), { ssr: false })
+const DeleteUnusedDiskDialog = dynamic(() => import('@/components/hardware/DeleteUnusedDiskDialog').then(mod => ({ default: mod.DeleteUnusedDiskDialog })), { ssr: false })
 
 import type { InventorySelection, DetailsPayload, RrdTimeframe, SeriesPoint, Status } from '../types'
 import { formatBps, formatOsType, formatTime, formatUptime, parseMarkdown, markdownSx, parseNodeId, parseVmId, cpuPct, pct, buildSeriesFromRrd, fetchRrd } from '../helpers'
@@ -75,6 +79,60 @@ import { useTagColors } from '@/contexts/TagColorContext'
 import { AreaPctChart, AreaBpsChart2 } from '../components/RrdCharts'
 import InventorySummary from '../components/InventorySummary'
 import { SaveIcon, AddIcon, CloseIcon } from '../components/IconWrappers'
+
+function BufferedNumberField({
+  value,
+  onCommit,
+  display,
+  parse,
+  fallback,
+  ...rest
+}: Omit<React.ComponentProps<typeof TextField>, 'value' | 'onChange'> & {
+  value: number
+  onCommit: (n: number) => void
+  display?: (n: number) => string
+  parse?: (s: string) => number
+  fallback: number
+}) {
+  const fmt = display || ((n: number) => String(n))
+  const prs = parse || ((s: string) => Number(s))
+  const [raw, setRaw] = useState<string>(fmt(value))
+
+  useEffect(() => {
+    setRaw(fmt(value))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value])
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const text = e.target.value
+
+    setRaw(text)
+
+    if (text === '' || text === '-' || text === '.') return
+
+    const n = prs(text)
+
+    if (Number.isFinite(n)) onCommit(n)
+  }
+
+  const handleBlur = () => {
+    if (raw === '' || raw === '-' || raw === '.') {
+      onCommit(fallback)
+      setRaw(fmt(fallback))
+
+      return
+    }
+
+    const n = prs(raw)
+
+    if (!Number.isFinite(n)) {
+      onCommit(fallback)
+      setRaw(fmt(fallback))
+    }
+  }
+
+  return <TextField value={raw} onChange={handleChange} onBlur={handleBlur} {...rest} />
+}
 
 export default function VmDetailTabs(props: any) {
   const t = useTranslations()
@@ -208,6 +266,8 @@ export default function VmDetailTabs(props: any) {
     setAddDiskDialogOpen,
     setAddNetworkDialogOpen,
     setAddOtherHardwareDialogOpen,
+    setEditOtherHardwareDialogOpen,
+    setSelectedOtherHardware,
     setAddReplicationDialogOpen,
     setBackupCompress,
     setBackupMode,
@@ -228,6 +288,8 @@ export default function VmDetailTabs(props: any) {
     setDeleteReplicationId,
     setDetailTab,
     setEditDiskDialogOpen,
+    setEditDiskInitialTab,
+    handleDetachDisk,
     setEditNetworkDialogOpen,
     setEditOptionDialog,
     setEditScsiControllerDialogOpen,
@@ -255,6 +317,7 @@ export default function VmDetailTabs(props: any) {
     setReplicationTargetNode,
     setSavingReplication,
     setSelectedBackup,
+    selectedDisk,
     setSelectedCephCluster,
     setSelectedDisk,
     setSelectedNetwork,
@@ -281,6 +344,11 @@ export default function VmDetailTabs(props: any) {
 
   const { hasFeature } = useLicense()
   const changeTrackingAvailable = hasFeature(Features.CHANGE_TRACKING)
+
+  const [diskMenuAnchor, setDiskMenuAnchor] = useState<HTMLElement | null>(null)
+  const [diskMenuTarget, setDiskMenuTarget] = useState<any | null>(null)
+  const [detachConfirmOpen, setDetachConfirmOpen] = useState(false)
+  const [deleteUnusedTarget, setDeleteUnusedTarget] = useState<any | null>(null)
 
   return (
     <>
@@ -472,7 +540,7 @@ export default function VmDetailTabs(props: any) {
                         <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '1fr 1fr' }, gap: 2 }}>
                           {/* CPU Usage */}
                           <ExpandableChart title={t('inventory.cpuUsage')} height={185}>
-                            <ResponsiveContainer width="100%" height="100%" minWidth={0}>
+                            <ChartContainer>
                               <AreaChart data={series} margin={{ top: 2, right: 4, bottom: 0, left: 4 }}>
                                 <defs>
                                   <linearGradient id="gradCpu" x1="0" y1="0" x2="0" y2="1">
@@ -505,12 +573,12 @@ export default function VmDetailTabs(props: any) {
                                 }} />
                                 <Area type="monotone" dataKey="cpuPct" stroke="#2196f3" fill="url(#gradCpu)" strokeWidth={1.5} isAnimationActive={false} />
                               </AreaChart>
-                            </ResponsiveContainer>
+                            </ChartContainer>
                           </ExpandableChart>
 
                           {/* Memory Usage */}
                           <ExpandableChart title={t('inventory.memoryUsage')} height={185}>
-                            <ResponsiveContainer width="100%" height="100%" minWidth={0}>
+                            <ChartContainer>
                               <AreaChart data={series} margin={{ top: 2, right: 4, bottom: 0, left: 4 }}>
                                 <defs>
                                   <linearGradient id="gradRam" x1="0" y1="0" x2="0" y2="1">
@@ -543,12 +611,12 @@ export default function VmDetailTabs(props: any) {
                                 }} />
                                 <Area type="monotone" dataKey="ramPct" stroke="#10b981" fill="url(#gradRam)" strokeWidth={1.5} isAnimationActive={false} />
                               </AreaChart>
-                            </ResponsiveContainer>
+                            </ChartContainer>
                           </ExpandableChart>
 
                           {/* Network Traffic */}
                           <ExpandableChart title={t('inventoryPage.networkTraffic')} height={185}>
-                            <ResponsiveContainer width="100%" height="100%" minWidth={0}>
+                            <ChartContainer>
                               <AreaChart data={series} margin={{ top: 2, right: 4, bottom: 0, left: 4 }}>
                                 <defs>
                                   <linearGradient id="gradNetIn" x1="0" y1="0" x2="0" y2="1">
@@ -586,12 +654,12 @@ export default function VmDetailTabs(props: any) {
                                 <Area type="monotone" dataKey="netInBps" stroke="#06b6d4" fill="url(#gradNetIn)" strokeWidth={1.5} isAnimationActive={false} name="netInBps" connectNulls />
                                 <Area type="monotone" dataKey="netOutBps" stroke="#67e8f9" fill="url(#gradNetOut)" strokeWidth={1.5} isAnimationActive={false} name="netOutBps" connectNulls />
                               </AreaChart>
-                            </ResponsiveContainer>
+                            </ChartContainer>
                           </ExpandableChart>
 
                           {/* Disk I/O (VMs) */}
                           <ExpandableChart title={t('inventory.diskIo')} height={185}>
-                            <ResponsiveContainer width="100%" height="100%" minWidth={0}>
+                            <ChartContainer>
                               <AreaChart data={series} margin={{ top: 2, right: 4, bottom: 0, left: 4 }}>
                                 <defs>
                                   <linearGradient id="gradDiskRead" x1="0" y1="0" x2="0" y2="1">
@@ -629,7 +697,7 @@ export default function VmDetailTabs(props: any) {
                                 <Area type="monotone" dataKey="diskReadBps" stroke="#ef4444" fill="url(#gradDiskRead)" strokeWidth={1.5} isAnimationActive={false} name="diskReadBps" connectNulls />
                                 <Area type="monotone" dataKey="diskWriteBps" stroke="#fca5a5" fill="url(#gradDiskWrite)" strokeWidth={1.5} isAnimationActive={false} name="diskWriteBps" connectNulls />
                               </AreaChart>
-                            </ResponsiveContainer>
+                            </ChartContainer>
                           </ExpandableChart>
                         </Box>
                       </CardContent>
@@ -685,6 +753,41 @@ export default function VmDetailTabs(props: any) {
                     </Box>
                   ) : (
                     <Stack spacing={1}>
+                      {/* ── Pending changes revert button (full width) ── */}
+                      {(() => {
+                        // Use the raw pending keys from PVE's config.pending, which
+                        // covers ALL pending changes (CPU, memory, machine, bios, vga,
+                        // network, disks, etc.) — not just the CPU+memory subset we
+                        // were manually tracking before.
+                        const revertKeys = data?.pendingKeys as string[] | undefined
+                        if (!revertKeys || revertKeys.length === 0) return null
+                        return (
+                          <Button
+                            fullWidth
+                            variant="contained"
+                            startIcon={<i className="ri-arrow-go-back-line" />}
+                            onClick={async () => {
+                              try {
+                                const { connId, node, type, vmid } = parseVmId(selection?.id || '')
+                                await fetch(
+                                  `/api/v1/connections/${encodeURIComponent(connId)}/guests/${type}/${encodeURIComponent(node)}/${encodeURIComponent(vmid)}/config`,
+                                  {
+                                    method: 'PUT',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ revert: revertKeys.join(',') }),
+                                  },
+                                )
+                                if (refreshData) await refreshData()
+                              } catch {
+                                // Best-effort; the inline alerts will persist until
+                                // the user refreshes manually if the revert fails.
+                              }
+                            }}
+                          >
+                            {t('inventory.revertPendingChanges')}
+                          </Button>
+                        )
+                      })()}
                       {/* CPU et RAM côte à côte */}
                       <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', lg: '1fr 1fr' }, gap: 1 }}>
                         {/* CPU */}
@@ -740,18 +843,19 @@ export default function VmDetailTabs(props: any) {
                             <Box>
                               <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
                                 <Typography variant="body2" fontWeight={600}>{t('inventory.sockets')}</Typography>
-                                <TextField
+                                <BufferedNumberField
                                   size="small"
                                   type="number"
                                   value={cpuSockets}
-                                  onChange={(e) => setCpuSockets(Number(e.target.value))}
+                                  onCommit={setCpuSockets}
+                                  fallback={1}
                                   sx={{ width: 70 }}
                                   inputProps={{ min: 1, max: maxSockets }}
                                 />
                               </Box>
                               <Slider
                                 value={Math.min(cpuSockets, maxSockets)}
-                                onChange={(_, val) => setCpuSockets(val as number)}
+                                onChange={(_, val) => setCpuSockets(Math.round(val as number))}
                                 min={1}
                                 max={maxSockets}
                                 step={1}
@@ -765,11 +869,12 @@ export default function VmDetailTabs(props: any) {
                             <Box>
                               <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
                                 <Typography variant="body2" fontWeight={600}>{t('inventory.coresPerSocket')}</Typography>
-                                <TextField
+                                <BufferedNumberField
                                   size="small"
                                   type="number"
                                   value={cpuCores}
-                                  onChange={(e) => setCpuCores(Math.max(1, Number(e.target.value)))}
+                                  onCommit={setCpuCores}
+                                  fallback={1}
                                   sx={{ width: 70 }}
                                   inputProps={{ min: 1 }}
                                 />
@@ -786,7 +891,7 @@ export default function VmDetailTabs(props: any) {
                                 return (
                                   <Slider
                                     value={Math.min(cpuCores, sliderMax)}
-                                    onChange={(_, val) => setCpuCores(val as number)}
+                                    onChange={(_, val) => setCpuCores(Math.round(val as number))}
                                     min={1}
                                     max={sliderMax}
                                     step={1}
@@ -1096,15 +1201,19 @@ export default function VmDetailTabs(props: any) {
                           <Box sx={{ mb: 3 }}>
                             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
                               <Typography variant="body2" fontWeight={600}>{t('inventoryPage.memory')}</Typography>
-                              <TextField
+                              <BufferedNumberField
                                 size="small"
                                 type="number"
-                                value={(memory / 1024).toFixed(0)}
-                                onChange={(e) => {
-                                  const newMem = Math.max(512, Number(e.target.value) * 1024)
-                                  setMemory(newMem)
-                                  if (balloonEnabled && balloon > newMem) setBalloon(newMem)
+                                value={memory}
+                                display={(v) => String(Math.round(v / 1024))}
+                                parse={(s) => Number(s) * 1024}
+                                onCommit={(newMem) => {
+                                  const clamped = Math.max(512, newMem)
+
+                                  setMemory(clamped)
+                                  if (balloonEnabled && balloon > clamped) setBalloon(clamped)
                                 }}
+                                fallback={1024}
                                 InputProps={{
                                   endAdornment: <InputAdornment position="end">GB</InputAdornment>,
                                 }}
@@ -1115,7 +1224,7 @@ export default function VmDetailTabs(props: any) {
                             {(() => {
                               const hostMemGb = Math.floor((data.nodeCapacity?.maxMem || 64 * 1024 * 1024 * 1024) / (1024 * 1024 * 1024))
                               const sliderMax = Math.min(hostMemGb, 128)
-                              const step = sliderMax > 32 ? 2 : 1
+                              const step = 1
                               const marks = [
                                 { value: 1, label: '1' },
                                 ...(sliderMax >= 16 ? [{ value: Math.floor(sliderMax / 4), label: `${Math.floor(sliderMax / 4)}` }] : []),
@@ -1126,7 +1235,7 @@ export default function VmDetailTabs(props: any) {
                                 <Slider
                                   value={Math.min(memory / 1024, sliderMax)}
                                   onChange={(_, val) => {
-                                    const newMem = (val as number) * 1024
+                                    const newMem = Math.round(val as number) * 1024
                                     setMemory(newMem)
                                     if (balloonEnabled && balloon > newMem) setBalloon(newMem)
                                   }}
@@ -1348,7 +1457,53 @@ export default function VmDetailTabs(props: any) {
                                       </Typography>
                                     }
                                   />
-                                  <i className="ri-pencil-line" style={{ fontSize: 16, opacity: 0.5 }} />
+                                  {disk.isUnused ? (
+                                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }} onClick={(e) => e.stopPropagation()}>
+                                      <MuiTooltip title={t('hardware.attach')}>
+                                        <IconButton
+                                          size="small"
+                                          color="primary"
+                                          onClick={(e) => {
+                                            e.stopPropagation()
+                                            setSelectedDisk(disk)
+                                            setEditDiskInitialTab(0)
+                                            setEditDiskDialogOpen(true)
+                                          }}
+                                          aria-label={t('hardware.attach')}
+                                        >
+                                          <i className="ri-link" style={{ fontSize: 18 }} />
+                                        </IconButton>
+                                      </MuiTooltip>
+                                      <MuiTooltip title={t('common.delete')}>
+                                        <IconButton
+                                          size="small"
+                                          color="error"
+                                          onClick={(e) => {
+                                            e.stopPropagation()
+                                            setSelectedDisk(disk)
+                                            setDeleteUnusedTarget(disk)
+                                          }}
+                                          aria-label={t('common.delete')}
+                                        >
+                                          <i className="ri-delete-bin-line" style={{ fontSize: 18 }} />
+                                        </IconButton>
+                                      </MuiTooltip>
+                                    </Box>
+                                  ) : (disk.isCdrom || disk.isEfi || disk.isTpm) ? (
+                                    <i className="ri-pencil-line" style={{ fontSize: 16, opacity: 0.5 }} />
+                                  ) : (
+                                    <IconButton
+                                      size="small"
+                                      onClick={(e) => {
+                                        e.stopPropagation()
+                                        setDiskMenuTarget(disk)
+                                        setDiskMenuAnchor(e.currentTarget)
+                                      }}
+                                      aria-label="disk actions"
+                                    >
+                                      <i className="ri-more-2-fill" style={{ fontSize: 18, opacity: 0.6 }} />
+                                    </IconButton>
+                                  )}
                                 </ListItemButton>
                               ))}
                             </List>
@@ -1358,6 +1513,80 @@ export default function VmDetailTabs(props: any) {
                         </CardContent>
                           </Collapse>
                         </Card>
+
+                        {/* Menu + confirmation dialogs for disk actions */}
+                        <Menu
+                          anchorEl={diskMenuAnchor}
+                          open={Boolean(diskMenuAnchor)}
+                          onClose={() => setDiskMenuAnchor(null)}
+                        >
+                          <MenuItem
+                            onClick={() => {
+                              setDiskMenuAnchor(null)
+                              if (!diskMenuTarget) return
+                              setSelectedDisk(diskMenuTarget)
+                              setEditDiskInitialTab(0)
+                              setEditDiskDialogOpen(true)
+                            }}
+                          >
+                            <ListItemIcon><i className="ri-pencil-line" style={{ fontSize: 16 }} /></ListItemIcon>
+                            {t('common.edit')}
+                          </MenuItem>
+                          <MenuItem
+                            onClick={() => {
+                              setDiskMenuAnchor(null)
+                              if (!diskMenuTarget) return
+                              setSelectedDisk(diskMenuTarget)
+                              setEditDiskInitialTab(2)
+                              setEditDiskDialogOpen(true)
+                            }}
+                          >
+                            <ListItemIcon><i className="ri-expand-diagonal-line" style={{ fontSize: 16 }} /></ListItemIcon>
+                            {t('hardware.resize')}
+                          </MenuItem>
+                          <MenuItem
+                            onClick={() => {
+                              setDiskMenuAnchor(null)
+                              if (!diskMenuTarget) return
+                              setSelectedDisk(diskMenuTarget)
+                              setEditDiskInitialTab(3)
+                              setEditDiskDialogOpen(true)
+                            }}
+                          >
+                            <ListItemIcon><i className="ri-folder-transfer-line" style={{ fontSize: 16 }} /></ListItemIcon>
+                            {t('hardware.moveStorage')}
+                          </MenuItem>
+                          <Divider />
+                          <MenuItem
+                            onClick={() => {
+                              setDiskMenuAnchor(null)
+                              if (!diskMenuTarget) return
+                              setSelectedDisk(diskMenuTarget)
+                              setDetachConfirmOpen(true)
+                            }}
+                            sx={{ color: 'warning.main' }}
+                          >
+                            <ListItemIcon><i className="ri-link-unlink" style={{ fontSize: 16, color: 'var(--mui-palette-warning-main)' }} /></ListItemIcon>
+                            {t('hardware.detach')}
+                          </MenuItem>
+                        </Menu>
+                        {selectedDisk && (
+                          <DetachConfirmDialog
+                            open={detachConfirmOpen}
+                            diskId={selectedDisk.id}
+                            onClose={() => setDetachConfirmOpen(false)}
+                            onConfirm={async () => { await handleDetachDisk() }}
+                          />
+                        )}
+                        {deleteUnusedTarget && (
+                          <DeleteUnusedDiskDialog
+                            open={Boolean(deleteUnusedTarget)}
+                            diskId={deleteUnusedTarget.id}
+                            volume={deleteUnusedTarget.rawValue || ''}
+                            onClose={() => setDeleteUnusedTarget(null)}
+                            onConfirm={async () => { await handleDetachDisk() }}
+                          />
+                        )}
 
                         {/* Interfaces réseau */}
                         <Card variant="outlined" sx={{ borderRadius: 2, overflow: 'hidden' }}>
@@ -1513,15 +1742,42 @@ export default function VmDetailTabs(props: any) {
                                   audio: 'ri-volume-up-line',
                                   rng: 'ri-shuffle-line',
                                 }
+                                // efidisk and tpmstate are VM firmware devices — Proxmox does not
+                                // expose an edit UI for them either, so we keep them read-only here.
+                                const isEditable = ['usb', 'pci', 'serial', 'audio', 'rng'].includes(hw.type)
+                                const openEdit = () => {
+                                  setSelectedOtherHardware({
+                                    id: hw.id,
+                                    type: hw.type,
+                                    label: hw.label,
+                                    rawValue: hw.rawValue,
+                                  })
+                                  setEditOtherHardwareDialogOpen(true)
+                                }
                                 return (
                                   <ListItem
                                     key={idx}
+                                    onClick={isEditable ? openEdit : undefined}
                                     sx={{
                                       bgcolor: 'action.hover',
                                       borderRadius: 1,
                                       mb: 1,
-                                      '&:last-child': { mb: 0 }
+                                      '&:last-child': { mb: 0 },
+                                      ...(isEditable && {
+                                        cursor: 'pointer',
+                                        '&:hover': { bgcolor: 'action.selected' },
+                                      }),
                                     }}
+                                    secondaryAction={isEditable ? (
+                                      <MuiTooltip title={t('common.edit')}>
+                                        <IconButton
+                                          size="small"
+                                          onClick={(e) => { e.stopPropagation(); openEdit() }}
+                                        >
+                                          <i className="ri-pencil-line" style={{ fontSize: 16 }} />
+                                        </IconButton>
+                                      </MuiTooltip>
+                                    ) : undefined}
                                   >
                                     <ListItemIcon sx={{ minWidth: 40 }}>
                                       <i className={iconMap[hw.type] || 'ri-settings-3-line'} style={{ fontSize: 24, opacity: 0.7 }} />
@@ -1602,6 +1858,7 @@ export default function VmDetailTabs(props: any) {
                                       key: 'vga',
                                       icon: 'ri-monitor-line',
                                       label: t('inventory.display'),
+                                      type: 'vga',
                                       value: (() => {
                                         const vga = data.systemInfo.vga || 'std'
                                         const vgaLabels: Record<string, string> = {
@@ -1610,9 +1867,14 @@ export default function VmDetailTabs(props: any) {
                                           serial2: 'Serial terminal 2', serial3: 'Serial terminal 3',
                                           virtio: 'VirtIO-GPU', 'virtio-gl': 'VirtIO-GPU (virgl)', none: 'None',
                                         }
-                                        return vgaLabels[vga.split(',')[0]] || vga
+                                        const parts = vga.split(',').map((p: string) => p.trim()).filter(Boolean)
+                                        const typeKey = parts[0] || 'std'
+                                        const label = vgaLabels[typeKey] || typeKey
+                                        const memPart = parts.slice(1).find((p: string) => p.startsWith('memory='))
+                                        const mem = memPart ? parseInt(memPart.split('=')[1], 10) : NaN
+                                        return Number.isFinite(mem) ? `${label} · ${mem} MB` : label
                                       })(),
-                                      editValue: (data.systemInfo.vga || 'std').split(',')[0],
+                                      editValue: data.systemInfo.vga || 'std',
                                       options: [
                                         { value: 'std', label: 'Default (std)' }, { value: 'cirrus', label: 'Cirrus Logic' },
                                         { value: 'vmware', label: 'VMware compatible' }, { value: 'qxl', label: 'SPICE (qxl)' },
@@ -1653,14 +1915,14 @@ export default function VmDetailTabs(props: any) {
                                           {row.label}
                                         </Box>
                                       </td>
-                                      <td style={{ padding: '3px 12px', borderBottom: '1px solid var(--mui-palette-divider)', fontSize: 12 }}>
+                                      <td style={{ padding: '3px 12px', borderBottom: '1px solid var(--mui-palette-divider)', fontSize: 12, position: 'relative' as const }}>
                                         <Typography variant="body2" sx={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 13 }}>
                                           {row.value}
                                         </Typography>
                                       </td>
                                       <td style={{ padding: '3px 12px', borderBottom: '1px solid var(--mui-palette-divider)', fontSize: 12, textAlign: 'center', width: 48 }}>
                                         <MuiTooltip title={t('common.edit')}>
-                                          <IconButton size="small" onClick={() => setEditOptionDialog({ key: row.key, label: row.label, value: row.editValue, type: 'select', options: row.options })}>
+                                          <IconButton size="small" onClick={() => setEditOptionDialog({ key: row.key, label: row.label, value: row.editValue, type: (row as any).type || 'select', options: row.options })}>
                                             <i className="ri-pencil-line" style={{ fontSize: 16 }} />
                                           </IconButton>
                                         </MuiTooltip>
@@ -1686,6 +1948,45 @@ export default function VmDetailTabs(props: any) {
                       <CircularProgress />
                     </Box>
                   ) : (
+                    <Stack spacing={1}>
+                    {/* Revert pending options button — same pattern as Hardware tab */}
+                    {data?.optionsInfo?.pendingKeys?.length > 0 && (
+                      <Button
+                        fullWidth
+                        variant="contained"
+                        startIcon={<i className="ri-arrow-go-back-line" />}
+                        onClick={async () => {
+                          try {
+                            const { connId, node, type, vmid } = parseVmId(selection?.id || '')
+                            await fetch(
+                              `/api/v1/connections/${encodeURIComponent(connId)}/guests/${type}/${encodeURIComponent(node)}/${encodeURIComponent(vmid)}/config`,
+                              {
+                                method: 'PUT',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ revert: data.optionsInfo.pendingKeys.join(',') }),
+                              },
+                            )
+                            if (refreshData) await refreshData()
+                          } catch {}
+                        }}
+                      >
+                        {t('inventory.revertPendingChanges')}
+                      </Button>
+                    )}
+                    {(() => {
+                      // Helper to highlight option rows that have pending changes.
+                      // Returns extra inline styles for the <tr> (orange left border
+                      // + subtle tint) and a small "pending" chip to append in the
+                      // value cell. Defined once here and used by each row below.
+                      const pv = data?.optionsInfo?.pendingValues || {}
+                      const isPending = (key: string) => pv[key] !== undefined
+                      const pendingRowStyle = (key: string): React.CSSProperties => isPending(key)
+                        ? { borderLeft: '3px solid #ed6c02', backgroundColor: 'rgba(237, 108, 2, 0.06)' }
+                        : {}
+                      const pendingChip = (key: string) => isPending(key)
+                        ? <MuiTooltip title={t('inventory.pendingRestart')} arrow placement="top"><span style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)', display: 'inline-flex', alignItems: 'center', cursor: 'default' }}><i className="ri-error-warning-fill" style={{ fontSize: 14, color: '#ed6c02' }}></i></span></MuiTooltip>
+                        : null
+                      return (
                     <Card variant="outlined" sx={{ borderRadius: 2 }}>
                       <CardContent sx={{ p: 0 }}>
                         <Box sx={{ overflowX: 'auto' }}>
@@ -1705,7 +2006,7 @@ export default function VmDetailTabs(props: any) {
                                     {t('common.name')}
                                   </Box>
                                 </td>
-                                <td style={{ padding: '3px 12px', borderBottom: '1px solid var(--mui-palette-divider)', fontSize: 12 }}>{data.name || data.title || 'N/A'}</td>
+                                <td style={{ padding: '3px 12px', borderBottom: '1px solid var(--mui-palette-divider)', fontSize: 12, position: 'relative' as const }}>{data.name || data.title || 'N/A'}</td>
                                 <td style={{ padding: '3px 12px', borderBottom: '1px solid var(--mui-palette-divider)', fontSize: 12, textAlign: 'center' }}>
                                   <MuiTooltip title={t('common.edit')}>
                                     <IconButton size="small" onClick={() => setEditOptionDialog({ key: 'name', label: t('common.name'), value: data.name || '', type: 'text' })}>
@@ -1741,11 +2042,11 @@ export default function VmDetailTabs(props: any) {
                               <tr>
                                 <td style={{ padding: '3px 12px', borderBottom: '1px solid var(--mui-palette-divider)', fontSize: 12, fontWeight: 500 }}>
                                   <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                                    <i className="ri-price-tag-3-line" style={{ fontSize: 16, opacity: 0.6 }} />
+                                    <i className="ri-price-tag-3-line" style={{ fontSize: 16, opacity: 0.6 }} />{' '}
                                     Tags
                                   </Box>
                                 </td>
-                                <td style={{ padding: '3px 12px', borderBottom: '1px solid var(--mui-palette-divider)', fontSize: 12 }}>
+                                <td style={{ padding: '3px 12px', borderBottom: '1px solid var(--mui-palette-divider)', fontSize: 12, position: 'relative' as const }}>
                                   <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap' }}>
                                     {localTags && localTags.length > 0 ? (
                                       localTags.map(tag => {
@@ -1787,13 +2088,14 @@ return (
                                     {t('common.enabled')} boot
                                   </Box>
                                 </td>
-                                <td style={{ padding: '3px 12px', borderBottom: '1px solid var(--mui-palette-divider)', fontSize: 12 }}>
+                                <td style={{ padding: '3px 12px', borderBottom: '1px solid var(--mui-palette-divider)', fontSize: 12, position: 'relative' as const }}>
                                   <Chip
                                     size="small"
                                     label={data.optionsInfo?.onboot ? t('common.yes') : t('common.no')}
                                     color={data.optionsInfo?.onboot ? 'success' : 'default'}
                                     variant="outlined"
                                   />
+                                  {pendingChip('onboot')}
                                 </td>
                                 <td style={{ padding: '3px 12px', borderBottom: '1px solid var(--mui-palette-divider)', fontSize: 12, textAlign: 'center' }}>
                                   <MuiTooltip title={t('common.edit')}>
@@ -1812,6 +2114,7 @@ return (
                                 </td>
                                 <td style={{ padding: '3px 12px', borderBottom: '1px solid var(--mui-palette-divider)', fontFamily: 'monospace', fontSize: '0.9rem' }}>
                                   {data.optionsInfo?.startupOrder || 'order=any'}
+                                  {pendingChip('startup')}
                                 </td>
                                 <td style={{ padding: '3px 12px', borderBottom: '1px solid var(--mui-palette-divider)', fontSize: 12, textAlign: 'center' }}>
                                   <MuiTooltip title={t('common.edit')}>
@@ -1828,8 +2131,9 @@ return (
                                     {t('inventory.osType')}
                                   </Box>
                                 </td>
-                                <td style={{ padding: '3px 12px', borderBottom: '1px solid var(--mui-palette-divider)', fontSize: 12 }}>
+                                <td style={{ padding: '3px 12px', borderBottom: '1px solid var(--mui-palette-divider)', fontSize: 12, position: 'relative' as const }}>
                                   {formatOsType(data.optionsInfo?.ostype)}
+                                  {pendingChip('ostype')}
                                 </td>
                                 <td style={{ padding: '3px 12px', borderBottom: '1px solid var(--mui-palette-divider)', fontSize: 12, textAlign: 'center' }}>
                                   <MuiTooltip title={t('common.edit')}>
@@ -1870,6 +2174,7 @@ return (
                                       />
                                     ))
                                   })()}
+                                  {pendingChip('boot')}
                                 </td>
                                 <td style={{ padding: '3px 12px', borderBottom: '1px solid var(--mui-palette-divider)', fontSize: 12, textAlign: 'center' }}>
                                   <MuiTooltip title={t('common.edit')}>
@@ -1905,13 +2210,14 @@ return (
                                     {t('inventory.usbTablet')}
                                   </Box>
                                 </td>
-                                <td style={{ padding: '3px 12px', borderBottom: '1px solid var(--mui-palette-divider)', fontSize: 12 }}>
+                                <td style={{ padding: '3px 12px', borderBottom: '1px solid var(--mui-palette-divider)', fontSize: 12, position: 'relative' as const }}>
                                   <Chip
                                     size="small"
                                     label={data.optionsInfo?.useTablet !== false ? t('common.enabled') : t('common.disabled')}
                                     color={data.optionsInfo?.useTablet !== false ? 'success' : 'default'}
                                     variant="outlined"
                                   />
+                                  {pendingChip('tablet')}
                                 </td>
                                 <td style={{ padding: '3px 12px', borderBottom: '1px solid var(--mui-palette-divider)', fontSize: 12, textAlign: 'center' }}>
                                   <MuiTooltip title={t('common.edit')}>
@@ -1924,16 +2230,17 @@ return (
                               <tr>
                                 <td style={{ padding: '3px 12px', borderBottom: '1px solid var(--mui-palette-divider)', fontSize: 12, fontWeight: 500 }}>
                                   <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                                    <i className="ri-plug-line" style={{ fontSize: 16, opacity: 0.6 }} />
+                                    <i className="ri-plug-line" style={{ fontSize: 16, opacity: 0.6 }} />{' '}
                                     Hotplug
                                   </Box>
                                 </td>
-                                <td style={{ padding: '3px 12px', borderBottom: '1px solid var(--mui-palette-divider)', fontSize: 12 }}>
+                                <td style={{ padding: '3px 12px', borderBottom: '1px solid var(--mui-palette-divider)', fontSize: 12, position: 'relative' as const }}>
                                   <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap' }}>
                                     {(data.optionsInfo?.hotplug || 'disk,network,usb').split(',').map((h: string) => h.trim().toLowerCase()).filter(Boolean).map((h: string) => (
                                       <Chip key={h} label={{ disk: 'Disk', network: 'Network', usb: 'USB', memory: 'Memory', cpu: 'CPU' }[h] || h} size="small" variant="outlined" sx={{ fontSize: '0.75rem', height: 22 }} />
                                     ))}
                                   </Box>
+                                  {pendingChip('hotplug')}
                                 </td>
                                 <td style={{ padding: '3px 12px', borderBottom: '1px solid var(--mui-palette-divider)', fontSize: 12, textAlign: 'center' }}>
                                   <MuiTooltip title={t('common.edit')}>
@@ -1946,17 +2253,18 @@ return (
                               <tr>
                                 <td style={{ padding: '3px 12px', borderBottom: '1px solid var(--mui-palette-divider)', fontSize: 12, fontWeight: 500 }}>
                                   <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                                    <i className="ri-flashlight-line" style={{ fontSize: 16, opacity: 0.6 }} />
+                                    <i className="ri-flashlight-line" style={{ fontSize: 16, opacity: 0.6 }} />{' '}
                                     ACPI
                                   </Box>
                                 </td>
-                                <td style={{ padding: '3px 12px', borderBottom: '1px solid var(--mui-palette-divider)', fontSize: 12 }}>
+                                <td style={{ padding: '3px 12px', borderBottom: '1px solid var(--mui-palette-divider)', fontSize: 12, position: 'relative' as const }}>
                                   <Chip
                                     size="small"
                                     label={data.optionsInfo?.acpi !== false ? t('common.enabled') : t('common.disabled')}
                                     color={data.optionsInfo?.acpi !== false ? 'success' : 'default'}
                                     variant="outlined"
                                   />
+                                  {pendingChip('acpi')}
                                 </td>
                                 <td style={{ padding: '3px 12px', borderBottom: '1px solid var(--mui-palette-divider)', fontSize: 12, textAlign: 'center' }}>
                                   <MuiTooltip title={t('common.edit')}>
@@ -1969,17 +2277,18 @@ return (
                               <tr>
                                 <td style={{ padding: '3px 12px', borderBottom: '1px solid var(--mui-palette-divider)', fontSize: 12, fontWeight: 500 }}>
                                   <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                                    <i className="ri-speed-line" style={{ fontSize: 16, opacity: 0.6 }} />
+                                    <i className="ri-speed-line" style={{ fontSize: 16, opacity: 0.6 }} />{' '}
                                     KVM Hardware
                                   </Box>
                                 </td>
-                                <td style={{ padding: '3px 12px', borderBottom: '1px solid var(--mui-palette-divider)', fontSize: 12 }}>
+                                <td style={{ padding: '3px 12px', borderBottom: '1px solid var(--mui-palette-divider)', fontSize: 12, position: 'relative' as const }}>
                                   <Chip
                                     size="small"
                                     label={data.optionsInfo?.kvmEnabled !== false ? t('common.enabled') : t('common.disabled')}
                                     color={data.optionsInfo?.kvmEnabled !== false ? 'success' : 'default'}
                                     variant="outlined"
                                   />
+                                  {pendingChip('kvm')}
                                 </td>
                                 <td style={{ padding: '3px 12px', borderBottom: '1px solid var(--mui-palette-divider)', fontSize: 12, textAlign: 'center' }}>
                                   <MuiTooltip title={t('common.edit')}>
@@ -1996,13 +2305,14 @@ return (
                                     {t('inventory.freezeCpuOnStartup')}
                                   </Box>
                                 </td>
-                                <td style={{ padding: '3px 12px', borderBottom: '1px solid var(--mui-palette-divider)', fontSize: 12 }}>
-                                  <Chip 
-                                    size="small" 
-                                    label={data.optionsInfo?.freezeCpu ? t('common.yes') : t('common.no')} 
+                                <td style={{ padding: '3px 12px', borderBottom: '1px solid var(--mui-palette-divider)', fontSize: 12, position: 'relative' as const }}>
+                                  <Chip
+                                    size="small"
+                                    label={data.optionsInfo?.freezeCpu ? t('common.yes') : t('common.no')}
                                     color={data.optionsInfo?.freezeCpu ? 'warning' : 'default'}
                                     variant="outlined"
                                   />
+                                  {pendingChip('freeze')}
                                 </td>
                                 <td style={{ padding: '3px 12px', borderBottom: '1px solid var(--mui-palette-divider)', fontSize: 12, textAlign: 'center' }}>
                                   <MuiTooltip title={t('common.edit')}>
@@ -2019,8 +2329,9 @@ return (
                                     {t('inventory.rtcLocalTime')}
                                   </Box>
                                 </td>
-                                <td style={{ padding: '3px 12px', borderBottom: '1px solid var(--mui-palette-divider)', fontSize: 12 }}>
+                                <td style={{ padding: '3px 12px', borderBottom: '1px solid var(--mui-palette-divider)', fontSize: 12, position: 'relative' as const }}>
                                   {data.optionsInfo?.useLocalTime === 'yes' ? t('common.yes') : t('common.no')}
+                                  {pendingChip('localtime')}
                                 </td>
                                 <td style={{ padding: '3px 12px', borderBottom: '1px solid var(--mui-palette-divider)', fontSize: 12, textAlign: 'center' }}>
                                   <MuiTooltip title={t('common.edit')}>
@@ -2037,8 +2348,9 @@ return (
                                     {t('inventory.rtcDate')}
                                   </Box>
                                 </td>
-                                <td style={{ padding: '3px 12px', borderBottom: '1px solid var(--mui-palette-divider)', fontSize: 12 }}>
+                                <td style={{ padding: '3px 12px', borderBottom: '1px solid var(--mui-palette-divider)', fontSize: 12, position: 'relative' as const }}>
                                   {data.optionsInfo?.rtcStartDate || 'now'}
+                                  {pendingChip('startdate')}
                                 </td>
                                 <td style={{ padding: '3px 12px', borderBottom: '1px solid var(--mui-palette-divider)', fontSize: 12, textAlign: 'center' }}>
                                   <MuiTooltip title={t('common.edit')}>
@@ -2051,7 +2363,7 @@ return (
                               <tr>
                                 <td style={{ padding: '3px 12px', borderBottom: '1px solid var(--mui-palette-divider)', fontSize: 12, fontWeight: 500 }}>
                                   <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                                    <i className="ri-fingerprint-line" style={{ fontSize: 16, opacity: 0.6 }} />
+                                    <i className="ri-fingerprint-line" style={{ fontSize: 16, opacity: 0.6 }} />{' '}
                                     SMBIOS (type1)
                                   </Box>
                                 </td>
@@ -2071,17 +2383,18 @@ return (
                               <tr>
                                 <td style={{ padding: '3px 12px', borderBottom: '1px solid var(--mui-palette-divider)', fontSize: 12, fontWeight: 500 }}>
                                   <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                                    <i className="ri-robot-line" style={{ fontSize: 16, opacity: 0.6 }} />
+                                    <i className="ri-robot-line" style={{ fontSize: 16, opacity: 0.6 }} />{' '}
                                     QEMU Guest Agent
                                   </Box>
                                 </td>
-                                <td style={{ padding: '3px 12px', borderBottom: '1px solid var(--mui-palette-divider)', fontSize: 12 }}>
-                                  <Chip 
-                                    size="small" 
+                                <td style={{ padding: '3px 12px', borderBottom: '1px solid var(--mui-palette-divider)', fontSize: 12, position: 'relative' as const }}>
+                                  <Chip
+                                    size="small"
                                     label={data.optionsInfo?.agentEnabled ? t('common.enabled') : t('common.disabled')}
                                     color={data.optionsInfo?.agentEnabled ? 'success' : 'warning'}
                                     variant="outlined"
                                   />
+                                  {pendingChip('agent')}
                                 </td>
                                 <td style={{ padding: '3px 12px', borderBottom: '1px solid var(--mui-palette-divider)', fontSize: 12, textAlign: 'center' }}>
                                   <MuiTooltip title={t('common.edit')}>
@@ -2094,17 +2407,18 @@ return (
                               <tr>
                                 <td style={{ padding: '3px 12px', borderBottom: '1px solid var(--mui-palette-divider)', fontSize: 12, fontWeight: 500 }}>
                                   <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                                    <i className="ri-shield-check-line" style={{ fontSize: 16, opacity: 0.6 }} />
+                                    <i className="ri-shield-check-line" style={{ fontSize: 16, opacity: 0.6 }} />{' '}
                                     Protection
                                   </Box>
                                 </td>
-                                <td style={{ padding: '3px 12px', borderBottom: '1px solid var(--mui-palette-divider)', fontSize: 12 }}>
-                                  <Chip 
-                                    size="small" 
+                                <td style={{ padding: '3px 12px', borderBottom: '1px solid var(--mui-palette-divider)', fontSize: 12, position: 'relative' as const }}>
+                                  <Chip
+                                    size="small"
                                     label={data.optionsInfo?.protection ? t('common.enabled') : t('common.disabled')}
                                     color={data.optionsInfo?.protection ? 'success' : 'default'}
                                     variant="outlined"
                                   />
+                                  {pendingChip('protection')}
                                 </td>
                                 <td style={{ padding: '3px 12px', borderBottom: '1px solid var(--mui-palette-divider)', fontSize: 12, textAlign: 'center' }}>
                                   <MuiTooltip title={t('common.edit')}>
@@ -2117,12 +2431,13 @@ return (
                               <tr>
                                 <td style={{ padding: '3px 12px', borderBottom: '1px solid var(--mui-palette-divider)', fontSize: 12, fontWeight: 500 }}>
                                   <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                                    <i className="ri-tv-line" style={{ fontSize: 16, opacity: 0.6 }} />
+                                    <i className="ri-tv-line" style={{ fontSize: 16, opacity: 0.6 }} />{' '}
                                     Spice Enhancements
                                   </Box>
                                 </td>
-                                <td style={{ padding: '3px 12px', borderBottom: '1px solid var(--mui-palette-divider)', fontSize: 12 }}>
+                                <td style={{ padding: '3px 12px', borderBottom: '1px solid var(--mui-palette-divider)', fontSize: 12, position: 'relative' as const }}>
                                   {data.optionsInfo?.spiceEnhancements || 'none'}
+                                  {pendingChip('spice_enhancements')}
                                 </td>
                                 <td style={{ padding: '3px 12px', borderBottom: '1px solid var(--mui-palette-divider)', fontSize: 12, textAlign: 'center' }}>
                                   <MuiTooltip title={t('common.edit')}>
@@ -2135,12 +2450,13 @@ return (
                               <tr>
                                 <td style={{ padding: '3px 12px', borderBottom: '1px solid var(--mui-palette-divider)', fontSize: 12, fontWeight: 500 }}>
                                   <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                                    <i className="ri-save-line" style={{ fontSize: 16, opacity: 0.6 }} />
+                                    <i className="ri-save-line" style={{ fontSize: 16, opacity: 0.6 }} />{' '}
                                     VM State Storage
                                   </Box>
                                 </td>
-                                <td style={{ padding: '3px 12px', borderBottom: '1px solid var(--mui-palette-divider)', fontSize: 12 }}>
+                                <td style={{ padding: '3px 12px', borderBottom: '1px solid var(--mui-palette-divider)', fontSize: 12, position: 'relative' as const }}>
                                   {data.optionsInfo?.vmStateStorage || t('inventoryPage.automatic')}
+                                  {pendingChip('vmstatestorage')}
                                 </td>
                                 <td style={{ padding: '3px 12px', borderBottom: '1px solid var(--mui-palette-divider)', fontSize: 12, textAlign: 'center' }}>
                                   <MuiTooltip title={t('common.edit')}>
@@ -2153,12 +2469,13 @@ return (
                               <tr>
                                 <td style={{ padding: '6px 16px', fontWeight: 500 }}>
                                   <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                                    <i className="ri-lock-password-line" style={{ fontSize: 16, opacity: 0.6 }} />
+                                    <i className="ri-lock-password-line" style={{ fontSize: 16, opacity: 0.6 }} />{' '}
                                     AMD SEV
                                   </Box>
                                 </td>
                                 <td style={{ padding: '6px 16px' }}>
                                   {data.optionsInfo?.amdSEV === 'enabled' ? t('common.enabled') : t('common.disabled')}
+                                  {pendingChip('amd_sev')}
                                 </td>
                                 <td style={{ padding: '6px 16px', textAlign: 'center' }}>
                                   <MuiTooltip title={t('common.edit')}>
@@ -2178,6 +2495,9 @@ return (
                         </Box>
                       </CardContent>
                     </Card>
+                      )
+                    })()}
+                    </Stack>
                   )}
                 </Box>
               )}
@@ -3709,7 +4029,7 @@ return (
                                       {t('inventory.cloudInit.ipConfig')} ({key.replaceAll('ipconfig', '')})
                                     </Box>
                                   </td>
-                                  <td style={{ padding: '3px 12px', borderBottom: '1px solid var(--mui-palette-divider)', fontSize: 12 }}>
+                                  <td style={{ padding: '3px 12px', borderBottom: '1px solid var(--mui-palette-divider)', fontSize: 12, position: 'relative' as const }}>
                                     <Typography variant="body2" sx={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 12 }}>{String(val)}</Typography>
                                     <Typography variant="caption" color="text.secondary">{t('inventory.cloudInit.ipConfigHelp')}</Typography>
                                   </td>
@@ -3797,7 +4117,7 @@ return (
                     <CardContent>
                       <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2 }}>
                         <Typography variant="h6" sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                          <i className="ri-shield-check-line" style={{ fontSize: 20 }} />
+                          <i className="ri-shield-check-line" style={{ fontSize: 20 }} />{' '}
                           High Availability (HA)
                         </Typography>
                         <Box sx={{ display: 'flex', gap: 1 }}>

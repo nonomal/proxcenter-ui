@@ -29,7 +29,8 @@ import {
   useMediaQuery
 } from '@mui/material'
 import { DataGrid, GridColDef } from '@mui/x-data-grid'
-import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip as RTooltip } from 'recharts'
+import { AreaChart, Area, XAxis, YAxis, Tooltip as RTooltip } from 'recharts'
+import ChartContainer from '@/components/ChartContainer'
 // XLSX is dynamically imported in handleExportExcel to reduce bundle size
 
 // RemixIcon replacements for @mui/icons-material
@@ -433,7 +434,9 @@ export type VmRow = {
   type: 'qemu' | 'lxc'
   status: string
   cpu?: number
+  maxcpu?: number
   ram?: number
+  mem?: number
   maxmem?: number
   disk?: number
   maxdisk?: number
@@ -743,15 +746,20 @@ return { id: vm.id, data }
 
     const columns = [
       { header: 'ID', key: 'id', width: 8 },
-      { header: 'Nom', key: 'name', width: 25 },
+      { header: 'Name', key: 'name', width: 25 },
       { header: 'Type', key: 'type', width: 10 },
       { header: 'Status', key: 'status', width: 10 },
       { header: 'Node', key: 'node', width: 20 },
       { header: 'HA', key: 'ha', width: 10 },
       { header: 'HA Group', key: 'hagroup', width: 15 },
-      { header: 'CPU (%)', key: 'cpu', width: 10 },
-      { header: 'RAM (%)', key: 'ram', width: 10 },
-      { header: 'RAM Max (GB)', key: 'rammax', width: 12 },
+      { header: 'vCPU (allocated)', key: 'vcpu', width: 14 },
+      { header: 'CPU Usage (%)', key: 'cpu', width: 12 },
+      { header: 'RAM Allocated (GB)', key: 'ramalloc', width: 16 },
+      { header: 'RAM Used (GB)', key: 'ramused', width: 14 },
+      { header: 'RAM Usage (%)', key: 'ram', width: 12 },
+      { header: 'Disk Allocated (GB)', key: 'diskalloc', width: 16 },
+      { header: 'Disk Used (GB)', key: 'diskused', width: 14 },
+      { header: 'Disk Usage (%)', key: 'diskpct', width: 12 },
       { header: 'Uptime', key: 'uptime', width: 12 },
       { header: 'IP', key: 'ip', width: 15 },
       { header: 'Snapshots', key: 'snapshots', width: 10 },
@@ -762,6 +770,12 @@ return { id: vm.id, data }
     ws.columns = columns
 
     for (const vm of vms) {
+      const ramAllocGB = vm.maxmem ? Math.round(vm.maxmem / 1073741824 * 10) / 10 : ''
+      const ramUsedGB = vm.maxmem && vm.ram !== undefined ? Math.round((vm.ram / 100) * vm.maxmem / 1073741824 * 10) / 10 : ''
+      const diskAllocGB = vm.maxdisk ? Math.round(vm.maxdisk / 1073741824 * 10) / 10 : ''
+      const diskUsedGB = vm.disk ? Math.round(vm.disk / 1073741824 * 10) / 10 : ''
+      const diskPct = vm.maxdisk && vm.disk ? Math.round((vm.disk / vm.maxdisk) * 100) : ''
+
       ws.addRow({
         id: vm.vmid,
         name: vm.name,
@@ -770,14 +784,19 @@ return { id: vm.id, data }
         node: vm.node,
         ha: vm.hastate || '',
         hagroup: vm.hagroup || '',
+        vcpu: vm.maxcpu ?? '',
         cpu: vm.cpu !== undefined ? Math.round(vm.cpu) : '',
+        ramalloc: ramAllocGB,
+        ramused: ramUsedGB,
         ram: vm.ram !== undefined ? Math.round(vm.ram) : '',
-        rammax: vm.maxmem ? Math.round(vm.maxmem / 1024 / 1024 / 1024 * 10) / 10 : '',
+        diskalloc: diskAllocGB,
+        diskused: diskUsedGB,
+        diskpct: diskPct,
         uptime: typeof vm.uptime === 'number' ? secondsToUptime(vm.uptime) : (vm.uptime || ''),
         ip: vm.ip || '',
         snapshots: vm.snapshots ?? '',
         tags: vm.tags?.join(', ') || '',
-        template: vm.template ? 'Oui' : 'Non',
+        template: vm.template ? 'Yes' : 'No',
       })
     }
 
@@ -1208,47 +1227,40 @@ return (
           const ramColor = '#b35500'  // Orange foncé
           
           return (
-            <Box 
-              sx={{ height: 32, width: '100%', position: 'relative' }} 
-              key={chartKey}
-            >
-              <ResponsiveContainer width='100%' height='100%' minWidth={0}>
-                <AreaChart data={data} margin={{ top: 2, right: 2, left: 2, bottom: 2 }}>
-                  <defs>
-                    <linearGradient id={`cpuGradient-${vm.id}`} x1='0' y1='0' x2='0' y2='1'>
-                      <stop offset='0%' stopColor={cpuColor} stopOpacity={0.25} />
-                      <stop offset='100%' stopColor={cpuColor} stopOpacity={0.02} />
-                    </linearGradient>
-                  </defs>
-                  <XAxis dataKey='t' hide />
-                  <YAxis hide domain={[yMin, yMax]} />
-                  <RTooltip 
-                    content={<TrendTooltip />} 
-                    cursor={{ stroke: cpuColor, strokeWidth: 1, strokeDasharray: '3 3' }} 
-                  />
-                  {/* Ligne CPU - orange vif */}
-                  <Area
-                    type='monotone'
-                    dataKey='cpu'
-                    stroke={cpuColor}
-                    strokeWidth={1.5}
-                    fill={`url(#cpuGradient-${vm.id})`}
-                    dot={false}
-                    isAnimationActive={false}
-                  />
-                  {/* Ligne RAM - orange foncé */}
-                  <Area
-                    type='monotone'
-                    dataKey='ram'
-                    stroke={ramColor}
-                    strokeWidth={1.5}
-                    fill='transparent'
-                    dot={false}
-                    isAnimationActive={false}
-                  />
-                </AreaChart>
-              </ResponsiveContainer>
-            </Box>
+            <ChartContainer key={chartKey} height={32} sx={{ position: 'relative' }}>
+              <AreaChart data={data} margin={{ top: 2, right: 2, left: 2, bottom: 2 }}>
+                <defs>
+                  <linearGradient id={`cpuGradient-${vm.id}`} x1='0' y1='0' x2='0' y2='1'>
+                    <stop offset='0%' stopColor={cpuColor} stopOpacity={0.25} />
+                    <stop offset='100%' stopColor={cpuColor} stopOpacity={0.02} />
+                  </linearGradient>
+                </defs>
+                <XAxis dataKey='t' hide />
+                <YAxis hide domain={[yMin, yMax]} />
+                <RTooltip
+                  content={<TrendTooltip />}
+                  cursor={{ stroke: cpuColor, strokeWidth: 1, strokeDasharray: '3 3' }}
+                />
+                <Area
+                  type='monotone'
+                  dataKey='cpu'
+                  stroke={cpuColor}
+                  strokeWidth={1.5}
+                  fill={`url(#cpuGradient-${vm.id})`}
+                  dot={false}
+                  isAnimationActive={false}
+                />
+                <Area
+                  type='monotone'
+                  dataKey='ram'
+                  stroke={ramColor}
+                  strokeWidth={1.5}
+                  fill='transparent'
+                  dot={false}
+                  isAnimationActive={false}
+                />
+              </AreaChart>
+            </ChartContainer>
           )
         }
       })
@@ -1301,28 +1313,26 @@ return (
           const netColor = '#4caf50'
 
           return (
-            <Box sx={{ height: 32, width: '100%', position: 'relative' }} key={chartKey}>
-              <ResponsiveContainer width='100%' height='100%' minWidth={0}>
-                <AreaChart data={data} margin={{ top: 2, right: 2, left: 2, bottom: 2 }}>
-                  <defs>
-                    <linearGradient id={`diskGradient-${vm.id}`} x1='0' y1='0' x2='0' y2='1'>
-                      <stop offset='0%' stopColor={diskColor} stopOpacity={0.2} />
-                      <stop offset='100%' stopColor={diskColor} stopOpacity={0.02} />
-                    </linearGradient>
-                  </defs>
-                  <XAxis dataKey='t' hide />
-                  <YAxis hide />
-                  <RTooltip
-                    content={<IoNetTooltip />}
-                    cursor={{ stroke: diskColor, strokeWidth: 1, strokeDasharray: '3 3' }}
-                  />
-                  <Area type='monotone' dataKey='diskread' stroke={diskColor} strokeWidth={1.5} fill={`url(#diskGradient-${vm.id})`} dot={false} isAnimationActive={false} />
-                  <Area type='monotone' dataKey='diskwrite' stroke='#1565c0' strokeWidth={1.5} fill='transparent' dot={false} isAnimationActive={false} />
-                  <Area type='monotone' dataKey='netin' stroke={netColor} strokeWidth={1.5} fill='transparent' dot={false} isAnimationActive={false} />
-                  <Area type='monotone' dataKey='netout' stroke='#2e7d32' strokeWidth={1.5} fill='transparent' dot={false} isAnimationActive={false} />
-                </AreaChart>
-              </ResponsiveContainer>
-            </Box>
+            <ChartContainer key={chartKey} height={32} sx={{ position: 'relative' }}>
+              <AreaChart data={data} margin={{ top: 2, right: 2, left: 2, bottom: 2 }}>
+                <defs>
+                  <linearGradient id={`diskGradient-${vm.id}`} x1='0' y1='0' x2='0' y2='1'>
+                    <stop offset='0%' stopColor={diskColor} stopOpacity={0.2} />
+                    <stop offset='100%' stopColor={diskColor} stopOpacity={0.02} />
+                  </linearGradient>
+                </defs>
+                <XAxis dataKey='t' hide />
+                <YAxis hide />
+                <RTooltip
+                  content={<IoNetTooltip />}
+                  cursor={{ stroke: diskColor, strokeWidth: 1, strokeDasharray: '3 3' }}
+                />
+                <Area type='monotone' dataKey='diskread' stroke={diskColor} strokeWidth={1.5} fill={`url(#diskGradient-${vm.id})`} dot={false} isAnimationActive={false} />
+                <Area type='monotone' dataKey='diskwrite' stroke='#1565c0' strokeWidth={1.5} fill='transparent' dot={false} isAnimationActive={false} />
+                <Area type='monotone' dataKey='netin' stroke={netColor} strokeWidth={1.5} fill='transparent' dot={false} isAnimationActive={false} />
+                <Area type='monotone' dataKey='netout' stroke='#2e7d32' strokeWidth={1.5} fill='transparent' dot={false} isAnimationActive={false} />
+              </AreaChart>
+            </ChartContainer>
           )
         }
       })
@@ -1644,7 +1654,13 @@ return (
       if (responsiveHidden[col.field]) return false
 
 return true
-    }).map(col => columnWidths[col.field] ? { ...col, width: columnWidths[col.field] } : col)
+    }).map(col => {
+      const saved = columnWidths[col.field]
+      if (!saved) return col
+      // Strip flex so the saved width actually takes effect. With flex set,
+      // MUI re-runs flex layout on every columns-prop change and ignores width.
+      return { ...col, width: saved, flex: undefined }
+    })
   }, [isCompact, expanded, showNode, showTrends, showActions, showIpSnap, onVmAction, onMigrate, onNodeClick, primaryColor, trendsData, trendsLoading, vms, isMobile, isTablet, isSmallDesktop, isLargeDesktop, favorites, onToggleFavorite, visibleColumns, columnWidths])
 
   return (

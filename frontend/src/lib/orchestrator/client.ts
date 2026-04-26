@@ -407,7 +407,20 @@ return this.get<ClusterMetrics[]>(`/metrics/${connectionId}/history${query ? `?$
   }
 
   deleteReplicationJob(id: string) {
-    return this.delete<{ status: string }>(`/replication/jobs/${id}`)
+    return this.delete<{ status: string; purged_snapshots?: number }>(`/replication/jobs/${id}`)
+  }
+
+  listMirrorSnapshots() {
+    return this.get<any[]>('/replication/snapshots')
+  }
+
+  getSnapshotUsage(cluster: string, pool: string, image: string, snap: string) {
+    const q = new URLSearchParams({ cluster, pool, image, snap }).toString()
+    return this.get<any>(`/replication/snapshots/usage?${q}`)
+  }
+
+  deleteMirrorSnapshots(items: Array<{ cluster_id: string; pool: string; image: string; snapshot: string }>) {
+    return this.post<any>('/replication/snapshots/delete', { items })
   }
 
   syncReplicationJob(id: string) {
@@ -424,6 +437,18 @@ return this.get<ClusterMetrics[]>(`/metrics/${connectionId}/history${query ? `?$
 
   getReplicationJobLogs(id: string) {
     return this.get<any[]>(`/replication/jobs/${id}/logs`)
+  }
+
+  getReplicationJobVMs(id: string) {
+    return this.get<any[]>(`/replication/jobs/${id}/vms`)
+  }
+
+  getReplicationJobThroughput(id: string, window: string) {
+    return this.get<any[]>(`/replication/jobs/${id}/throughput?window=${encodeURIComponent(window)}`)
+  }
+
+  preflightReplication(body: { source_cluster: string; target_cluster: string; target_pool: string; estimated_size_bytes: number }) {
+    return this.post<any>('/replication/preflight', body)
   }
 
   checkSSHConnectivity(sourceCluster: string, targetCluster: string) {

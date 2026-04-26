@@ -40,6 +40,7 @@ export type DetailsPayload = {
   breadcrumb: string[]
   status: Status
   vmRealStatus?: string
+  movedTo?: string
   tags: string[]
   kpis: Kpi[]
   properties: KV[]
@@ -156,6 +157,11 @@ export type DetailsPayload = {
     hostSockets?: number
     hostCoresPerSocket?: number
   }
+  /**
+   * Raw config keys currently in `config.pending` on the Proxmox VM, used by
+   * the UI to badge which tabs have unreverted pending changes.
+   */
+  pendingKeys?: string[]
   hostInfo?: {
     uptime?: number
     cpuModel?: string
@@ -498,6 +504,7 @@ export type ActiveDialog =
   | 'addDisk'
   | 'addNetwork'
   | 'addOtherHardware'
+  | 'editOtherHardware'
   | 'editScsiController'
   | 'editDisk'
   | 'editNetwork'

@@ -44,13 +44,15 @@ import {
   useTheme,
   alpha,
 } from '@mui/material'
-import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip } from 'recharts'
+import { AreaChart, Area, XAxis, YAxis, Tooltip } from 'recharts'
+import ChartContainer from '@/components/ChartContainer'
 
 import { formatBytes } from '@/utils/format'
 import ExpandableChart from '../components/ExpandableChart'
 import NodesTable, { NodeRow, BulkAction } from '@/components/NodesTable'
 import VmsTable, { VmRow, TrendPoint } from '@/components/VmsTable'
 import ClusterFirewallTab from '@/components/ClusterFirewallTab'
+import ClusterSdnTab from '@/components/cluster-sdn/ClusterSdnTab'
 import BackupJobsPanel from '../BackupJobsPanel'
 import CveTab from '@/components/CveTab'
 import ChangeTrackingTab from './ChangeTrackingTab'
@@ -665,7 +667,7 @@ export default function ClusterTabs(props: any) {
 
   return (
     <>
-          {/* Onglets pour Cluster: Summary / Nodes / VMs / HA / Backups / Notes / Ceph / Storage / Firewall / Rolling Update / Cluster */}
+          {/* Onglets pour Cluster: Summary / Nodes / VMs / HA / Backups / Snapshots / Notes / Ceph / Storage / Firewall / SDN / Cluster / Rolling Update / ... */}
           {selection?.type === 'cluster' && data.nodesData ? (
             <Card variant="outlined" sx={{ width: '100%', borderRadius: 2, flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
               <Tabs
@@ -756,6 +758,14 @@ export default function ClusterTabs(props: any) {
                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
                       <i className="ri-shield-keyhole-line" style={{ fontSize: 16 }} />
                       {t('inventory.tabFirewall')}
+                    </Box>
+                  }
+                />
+                <Tab
+                  label={
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
+                      <i className="ri-node-tree" style={{ fontSize: 16 }} />
+                      {t('inventory.tabSdn')}
                     </Box>
                   }
                 />
@@ -1433,7 +1443,7 @@ export default function ClusterTabs(props: any) {
                       <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '1fr 1fr' }, gap: 2 }}>
                         {/* CPU Usage */}
                         <ExpandableChart title={t('inventory.cpuUsage')} height={185}>
-                          <ResponsiveContainer width="100%" height="100%" minWidth={0}>
+                          <ChartContainer>
                             <AreaChart data={clusterRrdSeries} margin={{ top: 2, right: 4, bottom: 0, left: 4 }}>
                               <defs>
                                 {clusterRrdNodeNames.map(name => (
@@ -1468,12 +1478,12 @@ export default function ClusterTabs(props: any) {
                                 <Area key={name} type="monotone" dataKey={`cpu_${name}`} stroke={nodeColors[name]} fill={`url(#cGradCpu_${name})`} strokeWidth={1.5} isAnimationActive={false} connectNulls />
                               ))}
                             </AreaChart>
-                          </ResponsiveContainer>
+                          </ChartContainer>
                         </ExpandableChart>
 
                         {/* Memory Usage */}
                         <ExpandableChart title={t('inventory.memoryUsage')} height={185}>
-                          <ResponsiveContainer width="100%" height="100%" minWidth={0}>
+                          <ChartContainer>
                             <AreaChart data={clusterRrdSeries} margin={{ top: 2, right: 4, bottom: 0, left: 4 }}>
                               <defs>
                                 {clusterRrdNodeNames.map(name => (
@@ -1508,12 +1518,12 @@ export default function ClusterTabs(props: any) {
                                 <Area key={name} type="monotone" dataKey={`ram_${name}`} stroke={nodeColors[name]} fill={`url(#cGradRam_${name})`} strokeWidth={1.5} isAnimationActive={false} connectNulls />
                               ))}
                             </AreaChart>
-                          </ResponsiveContainer>
+                          </ChartContainer>
                         </ExpandableChart>
 
                         {/* Network Traffic */}
                         <ExpandableChart title={t('inventory.networkTrafficChart')} height={185}>
-                          <ResponsiveContainer width="100%" height="100%" minWidth={0}>
+                          <ChartContainer>
                             <AreaChart data={clusterRrdSeries} margin={{ top: 2, right: 4, bottom: 0, left: 4 }}>
                               <defs>
                                 {clusterRrdNodeNames.map(name => (
@@ -1555,12 +1565,12 @@ export default function ClusterTabs(props: any) {
                                 <Area key={`out_${name}`} type="monotone" dataKey={`netOut_${name}`} stroke={nodeColors[name]} fill="none" strokeWidth={1} strokeDasharray="4 2" isAnimationActive={false} connectNulls />
                               ))}
                             </AreaChart>
-                          </ResponsiveContainer>
+                          </ChartContainer>
                         </ExpandableChart>
 
                         {/* Server Load */}
                         <ExpandableChart title={t('inventory.serverLoad')} height={185}>
-                          <ResponsiveContainer width="100%" height="100%" minWidth={0}>
+                          <ChartContainer>
                             <AreaChart data={clusterRrdSeries} margin={{ top: 2, right: 4, bottom: 0, left: 4 }}>
                               <defs>
                                 {clusterRrdNodeNames.map(name => (
@@ -1595,7 +1605,7 @@ export default function ClusterTabs(props: any) {
                                 <Area key={name} type="monotone" dataKey={`load_${name}`} stroke={nodeColors[name]} fill={`url(#cGradLoad_${name})`} strokeWidth={1.5} isAnimationActive={false} connectNulls />
                               ))}
                             </AreaChart>
-                          </ResponsiveContainer>
+                          </ChartContainer>
                         </ExpandableChart>
                       </Box>
                     </>)}
@@ -2892,7 +2902,7 @@ export default function ClusterTabs(props: any) {
                                   </Box>
                                 }
                               >
-                                <ResponsiveContainer width="100%" height="100%" minWidth={0}>
+                                <ChartContainer>
                                   <AreaChart data={clusterCephPerfFiltered} margin={{ top: 2, right: 4, bottom: 0, left: 4 }}>
                                     <XAxis dataKey="time" tickFormatter={v => new Date(v).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} minTickGap={40} tick={{ fontSize: 9 }} />
                                     <YAxis tickFormatter={v => formatBps(Number(v))} tick={{ fontSize: 9 }} width={50} domain={[0, 'auto']} />
@@ -2931,7 +2941,7 @@ export default function ClusterTabs(props: any) {
                                       isAnimationActive={false}
                                     />
                                   </AreaChart>
-                                </ResponsiveContainer>
+                                </ChartContainer>
                               </ExpandableChart>
 
                               {/* Writes Graph */}
@@ -2950,7 +2960,7 @@ export default function ClusterTabs(props: any) {
                                   </Box>
                                 }
                               >
-                                <ResponsiveContainer width="100%" height="100%" minWidth={0}>
+                                <ChartContainer>
                                   <AreaChart data={clusterCephPerfFiltered} margin={{ top: 2, right: 4, bottom: 0, left: 4 }}>
                                     <XAxis dataKey="time" tickFormatter={v => new Date(v).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} minTickGap={40} tick={{ fontSize: 9 }} />
                                     <YAxis tickFormatter={v => formatBps(Number(v))} tick={{ fontSize: 9 }} width={50} domain={[0, 'auto']} />
@@ -2989,7 +2999,7 @@ export default function ClusterTabs(props: any) {
                                       isAnimationActive={false}
                                     />
                                   </AreaChart>
-                                </ResponsiveContainer>
+                                </ChartContainer>
                               </ExpandableChart>
 
                               {/* IOPS Reads Graph */}
@@ -3008,7 +3018,7 @@ export default function ClusterTabs(props: any) {
                                   </Box>
                                 }
                               >
-                                <ResponsiveContainer width="100%" height="100%" minWidth={0}>
+                                <ChartContainer>
                                   <AreaChart data={clusterCephPerfFiltered} margin={{ top: 2, right: 4, bottom: 0, left: 4 }}>
                                     <XAxis dataKey="time" tickFormatter={v => new Date(v).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} minTickGap={40} tick={{ fontSize: 9 }} />
                                     <YAxis tick={{ fontSize: 9 }} width={40} domain={[0, 'auto']} />
@@ -3047,7 +3057,7 @@ export default function ClusterTabs(props: any) {
                                       isAnimationActive={false}
                                     />
                                   </AreaChart>
-                                </ResponsiveContainer>
+                                </ChartContainer>
                               </ExpandableChart>
 
                               {/* IOPS Writes Graph */}
@@ -3066,7 +3076,7 @@ export default function ClusterTabs(props: any) {
                                   </Box>
                                 }
                               >
-                                <ResponsiveContainer width="100%" height="100%" minWidth={0}>
+                                <ChartContainer>
                                   <AreaChart data={clusterCephPerfFiltered} margin={{ top: 2, right: 4, bottom: 0, left: 4 }}>
                                     <XAxis dataKey="time" tickFormatter={v => new Date(v).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} minTickGap={40} tick={{ fontSize: 9 }} />
                                     <YAxis tick={{ fontSize: 9 }} width={40} domain={[0, 'auto']} />
@@ -3105,7 +3115,7 @@ export default function ClusterTabs(props: any) {
                                       isAnimationActive={false}
                                     />
                                   </AreaChart>
-                                </ResponsiveContainer>
+                                </ChartContainer>
                               </ExpandableChart>
                             </Box>
                           </CardContent>
@@ -3247,8 +3257,13 @@ export default function ClusterTabs(props: any) {
                   />
                 )}
 
-                {/* Onglet Rolling Update - Index 11 */}
-                {clusterTab === 11 && (
+                {/* Onglet SDN - Index 10 */}
+                {clusterTab === 10 && connId && (
+                  <ClusterSdnTab connId={connId} />
+                )}
+
+                {/* Onglet Rolling Update - Index 12 */}
+                {clusterTab === 12 && (
                   <Box sx={{ p: 2 }}>
                     <Stack spacing={3}>
                       {/* Header */}
@@ -3937,15 +3952,15 @@ export default function ClusterTabs(props: any) {
                   </Box>
                 )}
 
-                {/* Onglet CVE - Index 12 */}
-                {clusterTab === 12 && (
+                {/* Onglet CVE - Index 13 */}
+                {clusterTab === 13 && (
                   <Box sx={{ p: 2, overflow: 'auto' }}>
                     <CveTab connectionId={selection?.id?.split(':')[0] || ''} available={cveAvailable} />
                   </Box>
                 )}
 
-                {/* Onglet Cluster - Index 10 */}
-                {clusterTab === 10 && (
+                {/* Onglet Cluster - Index 11 */}
+                {clusterTab === 11 && (
                   <Box sx={{ p: 2 }}>
                     {(clusterConfigLoading || !clusterConfigLoaded) ? (
                       <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
@@ -4119,36 +4134,36 @@ export default function ClusterTabs(props: any) {
                   </Box>
                 )}
 
-                {/* Onglet Change Tracking - Index 13 */}
-                {clusterTab === 13 && (
+                {/* Onglet Change Tracking - Index 14 */}
+                {clusterTab === 14 && (
                   <ChangeTrackingTab
                     connectionId={selection?.id || ''}
                   />
                 )}
 
-                {/* Onglet Compliance - Index 14 */}
-                {clusterTab === 14 && (
+                {/* Onglet Compliance - Index 15 */}
+                {clusterTab === 15 && (
                   <ComplianceTab
                     connectionId={selection?.id || ''}
                   />
                 )}
 
-                {/* Onglet Datacenter Settings - Index 15 */}
-                {clusterTab === 15 && (
+                {/* Onglet Datacenter Settings - Index 16 */}
+                {clusterTab === 16 && (
                   <DatacenterSettingsTab
                     connectionId={selection?.id || ''}
                   />
                 )}
 
-                {/* Onglet Metric Server - Index 16 */}
-                {clusterTab === 16 && (
+                {/* Onglet Metric Server - Index 17 */}
+                {clusterTab === 17 && (
                   <MetricServerTab
                     connectionId={selection?.id || ''}
                   />
                 )}
 
-                {/* Onglet Notifications - Index 17 */}
-                {clusterTab === 17 && (
+                {/* Onglet Notifications - Index 18 */}
+                {clusterTab === 18 && (
                   <NotificationsTab
                     connectionId={selection?.id || ''}
                   />

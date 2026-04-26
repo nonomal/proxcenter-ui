@@ -6,6 +6,7 @@ import type { CrossClusterMigrateParams } from '@/components/MigrateVmDialog'
 import type { InventorySelection, DetailsPayload } from '../types'
 import type { AllVmItem, HostItem } from '../InventoryTree'
 import { parseVmId, fetchDetails } from '../helpers'
+import { crossClusterMigrate } from '@/lib/migration/crossClusterMigrate'
 
 /* ------------------------------------------------------------------ */
 /* Types                                                               */
@@ -239,33 +240,9 @@ export function useVmActions({
 
     const { connId, node, type, vmid } = parseVmId(selection.id)
 
-    const res = await fetch(
-      `/api/v1/connections/${encodeURIComponent(connId)}/guests/${type}/${encodeURIComponent(node)}/${encodeURIComponent(vmid)}/remote-migrate`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          targetConnectionId: params.targetConnectionId,
-          targetNode: params.targetNode,
-          targetVmid: params.targetVmid,
-          targetStorage: params.targetStorage,
-          targetBridge: params.targetBridge,
-          online: params.online,
-          delete: params.deleteSource,
-          bwlimit: params.bwlimit
-        })
-      }
-    )
+    const { upid } = await crossClusterMigrate({ connId, node, type, vmid }, params)
 
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}))
-      throw new Error(err?.error || `HTTP ${res.status}`)
-    }
-
-    const json = await res.json()
-    const upid = json.data
-
-    if (upid && typeof upid === 'string' && upid.startsWith('UPID:')) {
+    if (upid) {
       trackTask({
         upid,
         connId,
@@ -394,33 +371,9 @@ export function useVmActions({
 
     const { connId, node, type, vmid } = tableMigrateVm
 
-    const res = await fetch(
-      `/api/v1/connections/${encodeURIComponent(connId)}/guests/${type}/${encodeURIComponent(node)}/${encodeURIComponent(vmid)}/remote-migrate`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          targetConnectionId: params.targetConnectionId,
-          targetNode: params.targetNode,
-          targetVmid: params.targetVmid,
-          targetStorage: params.targetStorage,
-          targetBridge: params.targetBridge,
-          online: params.online,
-          delete: params.deleteSource,
-          bwlimit: params.bwlimit
-        })
-      }
-    )
+    const { upid } = await crossClusterMigrate({ connId, node, type, vmid }, params)
 
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}))
-      throw new Error(err?.error || `HTTP ${res.status}`)
-    }
-
-    const json = await res.json()
-    const upid = json.data
-
-    if (upid && typeof upid === 'string' && upid.startsWith('UPID:')) {
+    if (upid) {
       trackTask({
         upid,
         connId,

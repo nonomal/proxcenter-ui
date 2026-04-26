@@ -116,6 +116,8 @@ show_usage() {
     echo "Options:"
     echo "  --license <key>    License key for activation"
     echo "  --version <tag>    Specific version to install (default: latest)"
+    echo "  --upgrade          Upgrade an existing installation in-place (keeps .env and data,"
+    echo "                     refreshes docker-compose.yml and pulls latest images)"
     echo "  --help             Show this help message"
     echo ""
     echo "Get your token at: https://proxcenter.io/account/tokens"
@@ -129,6 +131,7 @@ show_usage() {
 GHCR_TOKEN=""
 LICENSE_KEY=""
 VERSION="latest"
+UPGRADE_MODE=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -143,6 +146,10 @@ while [[ $# -gt 0 ]]; do
         --version)
             VERSION="$2"
             shift 2
+            ;;
+        --upgrade)
+            UPGRADE_MODE=true
+            shift
             ;;
         --help|-h)
             show_usage
@@ -355,6 +362,42 @@ EOF
 }
 
 # ============================================
+# Step 4 (upgrade): Refresh compose file
+# ============================================
+
+refresh_compose() {
+    step 4 "Refreshing docker-compose.yml"
+
+    if [ ! -f "$INSTALL_DIR/.env" ]; then
+        log_error "No existing installation found at $INSTALL_DIR. Run without --upgrade for a fresh install."
+    fi
+    if [ ! -f "$INSTALL_DIR/docker-compose.yml" ]; then
+        log_error "No docker-compose.yml at $INSTALL_DIR. Run without --upgrade for a fresh install."
+    fi
+
+    cd "$INSTALL_DIR"
+
+    # Backup current compose with timestamp
+    local backup_file
+    backup_file="docker-compose.yml.bak.$(date +%Y%m%d-%H%M%S)"
+    cp -p docker-compose.yml "$backup_file"
+    log_info "Backed up current compose to $backup_file"
+
+    # Download latest compose
+    if ! curl -fsSL "$COMPOSE_URL" -o docker-compose.yml.new 2>/dev/null; then
+        log_error "Failed to download latest compose from $COMPOSE_URL"
+    fi
+
+    if ! diff -q docker-compose.yml docker-compose.yml.new > /dev/null 2>&1; then
+        mv docker-compose.yml.new docker-compose.yml
+        log_success "Compose updated (diff available: diff $backup_file docker-compose.yml)"
+    else
+        rm -f docker-compose.yml.new
+        log_success "Compose already up-to-date"
+    fi
+}
+
+# ============================================
 # Step 5: Pull & Initialize
 # ============================================
 
@@ -466,8 +509,9 @@ print_summary() {
     echo -e "    ${DIM}Manage:${NC}"
     echo -e "      ${DIM}docker compose -f $INSTALL_DIR/docker-compose.yml logs -f${NC}     ${DIM}# Logs${NC}"
     echo -e "      ${DIM}docker compose -f $INSTALL_DIR/docker-compose.yml down${NC}        ${DIM}# Stop${NC}"
-    echo -e "      ${DIM}docker compose -f $INSTALL_DIR/docker-compose.yml pull && \\${NC}"
-    echo -e "      ${DIM}docker compose -f $INSTALL_DIR/docker-compose.yml up -d${NC}       ${DIM}# Update${NC}"
+    echo ""
+    echo -e "    ${DIM}Upgrade (refreshes docker-compose.yml and pulls latest images):${NC}"
+    echo -e "      ${DIM}curl -fsSL https://get.proxcenter.io/enterprise | sudo bash -s -- --token \$GHCR_TOKEN --upgrade${NC}"
     echo ""
     echo -e "    ${DIM}Support: support@proxcenter.io${NC}"
     echo ""
@@ -484,7 +528,11 @@ main() {
     validate_token
     install_docker
     authenticate_registry
-    setup_proxcenter
+    if [ "$UPGRADE_MODE" = "true" ]; then
+        refresh_compose
+    else
+        setup_proxcenter
+    fi
     pull_and_init
     start_and_wait
 

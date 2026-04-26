@@ -18,7 +18,8 @@ import {
   useTheme,
 } from '@mui/material'
 import { alpha } from '@mui/material/styles'
-import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip } from 'recharts'
+import { AreaChart, Area, XAxis, YAxis, Tooltip } from 'recharts'
+import ChartContainer from '@/components/ChartContainer'
 
 import type { InventorySelection } from '../types'
 import ExpandableChart from './ExpandableChart'
@@ -136,7 +137,7 @@ export default function StorageIntermediatePanel({ selection, clusterStorages, o
             </Box>
           }
         >
-          <ResponsiveContainer width="100%" height="100%" minWidth={0}>
+          <ChartContainer>
             <AreaChart data={points}>
               <XAxis dataKey="time" tickFormatter={v => new Date(v).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} minTickGap={40} tick={{ fontSize: 9 }} type="number" domain={['dataMin', 'dataMax']} />
               <YAxis domain={[0, 100]} tickFormatter={v => `${v}%`} tick={{ fontSize: 9 }} width={30} />
@@ -166,7 +167,7 @@ export default function StorageIntermediatePanel({ selection, clusterStorages, o
               />
               <Area type="monotone" dataKey="usedPct" stroke={primaryColor} fill={primaryColor} fillOpacity={0.3} strokeWidth={1.5} isAnimationActive={false} />
             </AreaChart>
-          </ResponsiveContainer>
+          </ChartContainer>
         </ExpandableChart>
       </Box>
     )
@@ -277,7 +278,7 @@ export default function StorageIntermediatePanel({ selection, clusterStorages, o
             <CardContent sx={{ p: 0, '&:last-child': { pb: 0 } }}>
               <Box sx={{ px: 2, py: 1.5, borderBottom: '1px solid', borderColor: 'divider' }}>
                 <Typography fontWeight={900} sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                  <i className="ri-share-line" style={{ fontSize: 18, opacity: 0.7 }} />
+                  <i className="ri-share-line" style={{ fontSize: 18, opacity: 0.7 }} />{' '}
                   Shared Storages
                 </Typography>
               </Box>
@@ -449,7 +450,7 @@ export default function StorageIntermediatePanel({ selection, clusterStorages, o
           <CardContent sx={{ p: 0, '&:last-child': { pb: 0 } }}>
             <Box sx={{ px: 2, py: 1.5, borderBottom: '1px solid', borderColor: 'divider' }}>
               <Typography fontWeight={900} sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                <i className="ri-database-2-line" style={{ fontSize: 18, opacity: 0.7 }} />
+                <i className="ri-database-2-line" style={{ fontSize: 18, opacity: 0.7 }} />{' '}
                 Storages
               </Typography>
             </Box>

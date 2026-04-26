@@ -25,15 +25,17 @@ import {
 import {
   DashboardTab,
   ProtectionTab,
+  SnapshotsTab,
   RecoveryPlansTab,
   EmergencyDRTab,
   SimulationTab,
   CreateJobDialog,
   CreatePlanDialog,
+  EditJobDialog,
   FailoverDialog
 } from '@/components/automation/site-recovery'
 
-import type { RecoveryPlan, RecoveryExecution } from '@/lib/orchestrator/site-recovery.types'
+import type { RecoveryPlan, RecoveryExecution, UpdateReplicationJobRequest } from '@/lib/orchestrator/site-recovery.types'
 
 const fetcher = (url: string) => fetch(url).then(res => {
   if (!res.ok) throw new Error('Failed to fetch')
@@ -45,13 +47,14 @@ export default function SiteRecoveryPage() {
   const { isEnterprise } = useLicense()
   const { setPageInfo } = usePageTitle()
 
-  // Tab state — default to Simulation (4) when not enough Ceph clusters
+  // Tab state — default to Simulation (5) when not enough Ceph clusters
   const [tab, setTab] = useState(0)
   const [tabInitialized, setTabInitialized] = useState(false)
 
   // Dialog states
   const [createJobOpen, setCreateJobOpen] = useState(false)
   const [createPlanOpen, setCreatePlanOpen] = useState(false)
+  const [editJobId, setEditJobId] = useState<string | null>(null)
   const [failoverDialog, setFailoverDialog] = useState<{
     open: boolean
     planId: string | null
@@ -104,7 +107,7 @@ export default function SiteRecoveryPage() {
   // Default to Simulation tab when not enough Ceph clusters
   useEffect(() => {
     if (connectionsLoaded && !tabInitialized) {
-      if (!hasEnoughCephClusters) setTab(4)
+      if (!hasEnoughCephClusters) setTab(5)
       setTabInitialized(true)
     }
   }, [connectionsLoaded, hasEnoughCephClusters, tabInitialized])
@@ -119,7 +122,8 @@ export default function SiteRecoveryPage() {
       type: vm.type,
       status: vm.status,
       diskGb: vm.diskGb || 0,
-      tags: Array.isArray(vm.tags) ? vm.tags : vm.tags ? String(vm.tags).split(';').filter(Boolean) : []
+      tags: (Array.isArray(vm.tags) ? vm.tags : vm.tags ? String(vm.tags).split(';') : [])
+        .map((t: string) => t.trim()).filter(Boolean)
     }))
   , [allVMsData])
 
@@ -135,6 +139,9 @@ export default function SiteRecoveryPage() {
     (plans || []).find((p: RecoveryPlan) => p.id === failoverDialog.planId) || null
   , [plans, failoverDialog.planId])
 
+  // Selected job for edit dialog
+  const editJob = editJobId ? (jobs || []).find((j: any) => j.id === editJobId) ?? null : null
+
   // ── Handlers ──────────────────────────────────────────────────────
 
   const handleCreateJob = useCallback(async (data: any) => {
@@ -149,6 +156,21 @@ export default function SiteRecoveryPage() {
       console.error('Failed to create job:', e)
     }
   }, [mutateJobs])
+
+  const handleUpdateJob = async (id: string, req: UpdateReplicationJobRequest) => {
+    const res = await fetch(`/api/v1/orchestrator/replication/jobs/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req),
+    })
+    if (!res.ok) {
+      const errBody = await res.json().catch(() => ({ error: res.statusText }))
+      const err = new Error(errBody.error || res.statusText) as Error & { status?: number }
+      err.status = res.status
+      throw err
+    }
+    mutateJobs()
+  }
 
   const handleCreatePlan = useCallback(async (data: any) => {
     try {
@@ -295,7 +317,7 @@ export default function SiteRecoveryPage() {
             value={tab}
             onChange={(_, v) => {
               // Only allow switching to disabled tabs if they require Ceph
-              if (!hasEnoughCephClusters && v !== 4) return
+              if (!hasEnoughCephClusters && v !== 5) return
               setTab(v)
             }}
             sx={{ flex: 1 }}
@@ -318,6 +340,12 @@ export default function SiteRecoveryPage() {
                 )}
               </Box>
             }
+          />
+          <Tab
+            icon={<i className='ri-camera-line' style={{ fontSize: 18 }} />}
+            iconPosition='start'
+            label={t('siteRecovery.tabs.snapshots')}
+            disabled={!hasEnoughCephClusters}
           />
           <Tab
             icon={<i className='ri-file-shield-2-line' style={{ fontSize: 18 }} />}
@@ -361,7 +389,7 @@ export default function SiteRecoveryPage() {
 
         {/* Tab Content */}
         {tab === 0 && hasEnoughCephClusters && (
-          <DashboardTab health={health} loading={healthLoading} jobs={jobs || []} connections={connections} />
+          <DashboardTab health={health} loading={healthLoading} jobs={jobs || []} connections={connections} vmNameMap={vmNameMap} onSyncJob={handleSyncJob} />
         )}
 
         {tab === 1 && hasEnoughCephClusters && (
@@ -376,12 +404,17 @@ export default function SiteRecoveryPage() {
             onPauseJob={handlePauseJob}
             onResumeJob={handleResumeJob}
             onDeleteJob={handleDeleteJob}
+            onEditJob={setEditJobId}
             selectedJobId={selectedJobId}
             onSelectJob={setSelectedJobId}
           />
         )}
 
         {tab === 2 && hasEnoughCephClusters && (
+          <SnapshotsTab connections={connections} vmNameMap={vmNameMap} />
+        )}
+
+        {tab === 3 && hasEnoughCephClusters && (
           <RecoveryPlansTab
             plans={plans || []}
             loading={plansLoading}
@@ -397,7 +430,7 @@ export default function SiteRecoveryPage() {
           />
         )}
 
-        {tab === 3 && hasEnoughCephClusters && (
+        {tab === 4 && hasEnoughCephClusters && (
           <EmergencyDRTab
             jobs={jobs || []}
             plans={plans || []}
@@ -411,7 +444,7 @@ export default function SiteRecoveryPage() {
           />
         )}
 
-        {tab === 4 && (
+        {tab === 5 && (
           <SimulationTab connections={connections} isEnterprise={isEnterprise} />
         )}
 
@@ -422,6 +455,14 @@ export default function SiteRecoveryPage() {
           onSubmit={handleCreateJob}
           connections={connections}
           allVMs={allVMs}
+        />
+
+        <EditJobDialog
+          open={editJobId !== null}
+          job={editJob}
+          onClose={() => setEditJobId(null)}
+          onSubmit={handleUpdateJob}
+          connections={connections}
         />
 
         <CreatePlanDialog
@@ -444,6 +485,7 @@ export default function SiteRecoveryPage() {
           execution={activeExecution}
           targetConnId={failoverPlan?.target_cluster}
           connections={connections}
+          vmNameMap={vmNameMap}
         />
       </Box>
     </EnterpriseGuard>

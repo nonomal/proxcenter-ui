@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react'
 import { useTranslations } from 'next-intl'
+import { isSharedStorage } from '@/lib/proxmox/storage'
 
 import {
   Dialog,
@@ -265,7 +266,14 @@ export function MigrateVmDialog({
       setValidationDone(false)
     }
   }, [open])
-  
+
+  // Reset deleteSourceAfter when SSH is not enabled on source
+  useEffect(() => {
+    if (sourceSSHEnabled === false) {
+      setDeleteSourceAfter(false)
+    }
+  }, [sourceSSHEnabled])
+
   // ========== LOCAL MIGRATION: Load nodes ==========
   useEffect(() => {
     if (!open || !connId || activeTab !== 0) return
@@ -336,7 +344,7 @@ export function MigrateVmDialog({
           if (storagesRes.ok) {
             const storagesJson = await storagesRes.json()
             for (const s of (storagesJson.data || [])) {
-              if (s.shared) sharedStorages.add(s.storage)
+              if (isSharedStorage(s)) sharedStorages.add(s.storage)
             }
           }
         } catch {}
@@ -490,7 +498,7 @@ export function MigrateVmDialog({
         if (json.data && Array.isArray(json.data)) {
           // Check if source connection has SSH enabled
           const sourceConn = json.data.find((c: any) => c.id === connId)
-          if (sourceConn) setSourceSSHEnabled(!!sourceConn.sshEnabled)
+          if (sourceConn) setSourceSSHEnabled(!!sourceConn.sshEnabled && !!sourceConn.sshConfigured)
 
           // Filter out current connection and ensure only PVE type
           const otherConnections = json.data
@@ -1475,13 +1483,19 @@ export function MigrateVmDialog({
                           checked={deleteSourceAfter}
                           onChange={(e) => setDeleteSourceAfter(e.target.checked)}
                           size="small"
+                          disabled={sourceSSHEnabled === false}
                         />
                       }
                       label={
                         <Box>
-                          <Typography variant="body2">{t('hardware.crossCluster.deleteSourceVm')}</Typography>
+                          <Typography variant="body2" sx={{ color: sourceSSHEnabled === false ? 'text.disabled' : undefined }}>
+                            {t('hardware.crossCluster.deleteSourceVm')}
+                          </Typography>
                           <Typography variant="caption" color="text.secondary">
-                            {t('hardware.crossCluster.deleteSourceVmDesc')}
+                            {sourceSSHEnabled === false
+                              ? t('hardware.crossCluster.deleteSourceRequiresSsh')
+                              : t('hardware.crossCluster.deleteSourceVmDesc')
+                            }
                           </Typography>
                         </Box>
                       }

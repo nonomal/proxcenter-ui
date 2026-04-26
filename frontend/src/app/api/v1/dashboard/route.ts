@@ -13,6 +13,7 @@ import { authOptions } from "@/lib/auth/config"
 import { filterVmsByPermission, filterNodesByPermission } from "@/lib/rbac"
 import { alertsApi } from "@/lib/orchestrator/client"
 import { demoResponse } from "@/lib/demo/demo-api"
+import { getDb } from "@/lib/db/sqlite"
 
 export const runtime = "nodejs"
 
@@ -127,6 +128,32 @@ export async function GET(req: Request) {
 
     // vDC scope: restrict dashboard to tenant's vDC resources
     const vdcScope = getVdcScope(tenantId)
+
+    // Thresholds configurés par l'utilisateur (via Settings > Alert thresholds)
+    // Stockés localement en SQLite, fonctionne sans orchestrator (Community + Enterprise).
+    const thresholds = {
+      cpu_warning: 80,
+      cpu_critical: 90,
+      memory_warning: 80,
+      memory_critical: 90,
+      storage_warning: 80,
+      storage_critical: 90,
+    }
+    try {
+      const row = getDb()
+        .prepare('SELECT value FROM settings WHERE key = ? AND tenant_id = ?')
+        .get('alert_thresholds', tenantId) as { value: string } | undefined
+      if (row?.value) {
+        const stored = JSON.parse(row.value)
+        if (stored && typeof stored === 'object') {
+          for (const k of ['cpu_warning', 'cpu_critical', 'memory_warning', 'memory_critical', 'storage_warning', 'storage_critical'] as const) {
+            if (typeof stored[k] === 'number') thresholds[k] = stored[k]
+          }
+        }
+      }
+    } catch {
+      // Pas de config stockée, on garde les défauts
+    }
 
     // Récupérer toutes les connexions (PVE et PBS) en une seule requête
     const allConnections = await prisma.connection.findMany({
@@ -453,7 +480,9 @@ return null
       if (node.status !== 'online') {
         alerts.push({
           severity: 'crit',
-          message: `Node ${node.name} : OFFLINE`,
+          message: `Node ${node.name}: OFFLINE`,
+          i18nKey: 'alerts.messages.nodeOffline',
+          i18nParams: { node: node.name },
           source: node.connection,
           sourceType: 'pve',
           entityType: 'node',
@@ -465,10 +494,12 @@ return null
         })
       }
 
-      if (node.memPct > 90) {
+      if (node.memPct > thresholds.memory_critical) {
         alerts.push({
           severity: 'crit',
-          message: `Node ${node.name} : RAM critique (${node.memPct}%)`,
+          message: `Node ${node.name}: RAM critical (${node.memPct}%)`,
+          i18nKey: 'alerts.messages.ramCritical',
+          i18nParams: { node: node.name, value: node.memPct },
           source: node.connection,
           sourceType: 'pve',
           entityType: 'node',
@@ -477,13 +508,15 @@ return null
           connId: node.connId,
           metric: 'ram',
           currentValue: node.memPct,
-          threshold: 90,
+          threshold: thresholds.memory_critical,
           time: new Date().toISOString()
         })
-      } else if (node.memPct > 80) {
+      } else if (node.memPct > thresholds.memory_warning) {
         alerts.push({
           severity: 'warn',
-          message: `Node ${node.name} : RAM élevée (${node.memPct}%)`,
+          message: `Node ${node.name}: RAM high (${node.memPct}%)`,
+          i18nKey: 'alerts.messages.ramHigh',
+          i18nParams: { node: node.name, value: node.memPct },
           source: node.connection,
           sourceType: 'pve',
           entityType: 'node',
@@ -492,15 +525,17 @@ return null
           connId: node.connId,
           metric: 'ram',
           currentValue: node.memPct,
-          threshold: 80,
+          threshold: thresholds.memory_warning,
           time: new Date().toISOString()
         })
       }
 
-      if (node.cpuPct > 90) {
+      if (node.cpuPct > thresholds.cpu_critical) {
         alerts.push({
           severity: 'crit',
-          message: `Node ${node.name} : CPU critique (${node.cpuPct}%)`,
+          message: `Node ${node.name}: CPU critical (${node.cpuPct}%)`,
+          i18nKey: 'alerts.messages.cpuCritical',
+          i18nParams: { node: node.name, value: node.cpuPct },
           source: node.connection,
           sourceType: 'pve',
           entityType: 'node',
@@ -509,13 +544,15 @@ return null
           connId: node.connId,
           metric: 'cpu',
           currentValue: node.cpuPct,
-          threshold: 90,
+          threshold: thresholds.cpu_critical,
           time: new Date().toISOString()
         })
-      } else if (node.cpuPct > 80) {
+      } else if (node.cpuPct > thresholds.cpu_warning) {
         alerts.push({
           severity: 'warn',
-          message: `Node ${node.name} : CPU élevé (${node.cpuPct}%)`,
+          message: `Node ${node.name}: CPU high (${node.cpuPct}%)`,
+          i18nKey: 'alerts.messages.cpuHigh',
+          i18nParams: { node: node.name, value: node.cpuPct },
           source: node.connection,
           sourceType: 'pve',
           entityType: 'node',
@@ -524,7 +561,7 @@ return null
           connId: node.connId,
           metric: 'cpu',
           currentValue: node.cpuPct,
-          threshold: 80,
+          threshold: thresholds.cpu_warning,
           time: new Date().toISOString()
         })
       }
@@ -535,7 +572,9 @@ return null
       if (cluster.cephHealth && cluster.cephHealth !== 'HEALTH_OK') {
         alerts.push({
           severity: cluster.cephHealth === 'HEALTH_WARN' ? 'warn' : 'crit',
-          message: `Ceph ${cluster.name} : ${cluster.cephHealth}`,
+          message: `Ceph ${cluster.name}: ${cluster.cephHealth}`,
+          i18nKey: 'alerts.messages.cephHealth',
+          i18nParams: { cluster: cluster.name, status: cluster.cephHealth },
           source: cluster.name,
           sourceType: 'ceph',
           entityType: 'cluster',
@@ -551,26 +590,30 @@ return null
     // Alertes Quorum
     for (const cluster of clusterInfos) {
       if (cluster.quorum && !cluster.quorum.quorate) {
-        alerts.push({ 
-          severity: 'crit', 
-          message: `Cluster ${cluster.name} : Quorum perdu !`, 
+        alerts.push({
+          severity: 'crit',
+          message: `Cluster ${cluster.name}: Quorum lost!`,
+          i18nKey: 'alerts.messages.quorumLost',
+          i18nParams: { cluster: cluster.name },
           source: cluster.name,
           sourceType: 'pve',
           entityType: 'cluster',
           entityId: cluster.id,
           entityName: cluster.name,
           metric: 'quorum',
-          time: new Date().toISOString() 
+          time: new Date().toISOString()
         })
       }
     }
 
     // Alertes PBS
     for (const pbs of pbsServers) {
-      if (pbs.usagePct > 90) {
-        alerts.push({ 
-          severity: 'crit', 
-          message: `PBS ${pbs.name} : Stockage critique (${pbs.usagePct}%)`, 
+      if (pbs.usagePct > thresholds.storage_critical) {
+        alerts.push({
+          severity: 'crit',
+          message: `PBS ${pbs.name}: Storage critical (${pbs.usagePct}%)`,
+          i18nKey: 'alerts.messages.pbsStorageCritical',
+          i18nParams: { server: pbs.name, value: pbs.usagePct },
           source: pbs.name,
           sourceType: 'pbs',
           entityType: 'server',
@@ -578,13 +621,15 @@ return null
           entityName: pbs.name,
           metric: 'storage',
           currentValue: pbs.usagePct,
-          threshold: 90,
-          time: new Date().toISOString() 
+          threshold: thresholds.storage_critical,
+          time: new Date().toISOString()
         })
-      } else if (pbs.usagePct > 80) {
-        alerts.push({ 
-          severity: 'warn', 
-          message: `PBS ${pbs.name} : Stockage élevé (${pbs.usagePct}%)`, 
+      } else if (pbs.usagePct > thresholds.storage_warning) {
+        alerts.push({
+          severity: 'warn',
+          message: `PBS ${pbs.name}: Storage high (${pbs.usagePct}%)`,
+          i18nKey: 'alerts.messages.pbsStorageHigh',
+          i18nParams: { server: pbs.name, value: pbs.usagePct },
           source: pbs.name,
           sourceType: 'pbs',
           entityType: 'server',
@@ -592,15 +637,17 @@ return null
           entityName: pbs.name,
           metric: 'storage',
           currentValue: pbs.usagePct,
-          threshold: 80,
-          time: new Date().toISOString() 
+          threshold: thresholds.storage_warning,
+          time: new Date().toISOString()
         })
       }
 
       if (pbs.backupsError > 0) {
-        alerts.push({ 
-          severity: 'warn', 
-          message: `PBS ${pbs.name} : ${pbs.backupsError} backup(s) échoué(s) (24h)`, 
+        alerts.push({
+          severity: 'warn',
+          message: `PBS ${pbs.name}: ${pbs.backupsError} backup(s) failed (24h)`,
+          i18nKey: 'alerts.messages.pbsBackupFailed',
+          i18nParams: { server: pbs.name, count: pbs.backupsError },
           source: pbs.name,
           sourceType: 'pbs',
           entityType: 'server',
@@ -608,7 +655,7 @@ return null
           entityName: pbs.name,
           metric: 'backup',
           currentValue: pbs.backupsError,
-          time: new Date().toISOString() 
+          time: new Date().toISOString()
         })
       }
     }

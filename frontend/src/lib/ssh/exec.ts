@@ -93,7 +93,9 @@ export async function executeSSH(
   }
 
   // Prefix command with sudo if configured
-  const finalCommand = connection.sshUseSudo ? `sudo ${command}` : command
+  // Use `sudo sh -c '...'` so compound commands (&&, ||, pipes, redirects)
+  // all execute under sudo. Naive `sudo cmd1 && cmd2` only sudo's cmd1.
+  const finalCommand = connection.sshUseSudo ? `sudo sh -c ${shellEscape(command)}` : command
 
   // 1. Try orchestrator
   try {
@@ -106,6 +108,7 @@ export async function executeSSH(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
+      signal: AbortSignal.timeout(timeoutMs),
     })
 
     if (res.ok) {
@@ -128,7 +131,7 @@ export async function executeSSH(
   }
 
   // 2. Fallback: direct ssh2
-  return executeSSHDirect({ host: nodeIp, port, user, key, password, passphrase, command: finalCommand })
+  return executeSSHDirect({ host: nodeIp, port, user, key, password, passphrase, command: finalCommand, timeoutMs })
 }
 
 /**
@@ -142,13 +145,18 @@ export function executeSSHDirect(opts: {
   password?: string
   passphrase?: string
   command: string
+  timeoutMs?: number
 }): Promise<SSHResult> {
   return new Promise((resolve) => {
     const conn = new Client()
+    // Overall timeout for the full SSH operation (connect + exec + stream).
+    // Long-running commands (e.g. multi-GB dd writes) pass a large timeoutMs
+    // from the caller. Falls back to 30s for plain command execs.
+    const overallTimeoutMs = opts.timeoutMs ?? 30_000
     const timeout = setTimeout(() => {
       conn.end()
-      resolve({ success: false, error: "SSH connection timeout (30s)" })
-    }, 30_000)
+      resolve({ success: false, error: `SSH connection timeout (${Math.round(overallTimeoutMs / 1000)}s)` })
+    }, overallTimeoutMs)
 
     conn.on("ready", () => {
       // codeql[js/command-line-injection] — commands are built server-side, not from direct user input
@@ -174,9 +182,13 @@ export function executeSSHDirect(opts: {
           conn.end()
           if (code === 0 || code === null) {
             console.log(`[ssh] executed via ssh2 on ${opts.host}`)
-            resolve({ success: true, output: stdout.trim() })
+            resolve({ success: true, output: stdout.trim(), error: stderr.trim() || undefined })
           } else {
-            resolve({ success: false, error: stderr.trim() || `Exit code ${code}` })
+            // Preserve stdout on non-zero exit so callers can surface full
+            // script output in error diagnostics. Previously stdout was
+            // discarded and we only returned stderr or "Exit code N", which
+            // blinded us when a script redirected stderr to stdout with 2>&1.
+            resolve({ success: false, output: stdout.trim(), error: stderr.trim() || `Exit code ${code}` })
           }
         })
       })

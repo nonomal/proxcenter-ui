@@ -91,7 +91,12 @@ export function mapEsxiToPveConfig(
   }
 
   if (isEfi) {
-    params.efidisk0 = `${targetStorage}:1,efitype=4m,pre-enrolled-keys=0`
+    // pre-enrolled-keys=1 mirrors the Proxmox GUI default for UEFI VMs:
+    // OVMF ships with the standard Microsoft Secure Boot keys (PK, KEK,
+    // db, dbx) so Windows (and signed Linux shim bootloaders) pass
+    // Secure Boot verification after migration. Using =0 caused silent
+    // boot failures when the source VM had Secure Boot enabled.
+    params.efidisk0 = `${targetStorage}:1,efitype=4m,pre-enrolled-keys=1`
   }
 
   return params

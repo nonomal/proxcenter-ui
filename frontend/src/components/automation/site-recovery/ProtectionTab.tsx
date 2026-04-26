@@ -4,17 +4,20 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslations } from 'next-intl'
 
 import {
-  Alert, Box, Button, Card, CardContent, Chip, Divider, Drawer, IconButton,
+  Alert, Box, Button, Card, CardContent, Chip, Dialog, DialogActions, DialogContent, DialogTitle,
+  Divider, Drawer, IconButton,
   InputAdornment, LinearProgress, MenuItem, Select, Stack, TextField, Tooltip, Typography,
   alpha, useTheme
 } from '@mui/material'
 
-import { ResponsiveContainer, AreaChart, Area, YAxis, Tooltip as RTooltip } from 'recharts'
+import { AreaChart, Area, YAxis, Tooltip as RTooltip } from 'recharts'
+import ChartContainer from '@/components/ChartContainer'
 
 import EmptyState from '@/components/EmptyState'
 import SiteRecoveryIllustration from '@/components/illustrations/SiteRecoveryIllustration'
 
 import type { ReplicationJob, ReplicationJobStatus, ReplicationJobLog } from '@/lib/orchestrator/site-recovery.types'
+import { scheduleToLabel } from './schedule/scheduleToLabel'
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
@@ -101,7 +104,7 @@ const BandwidthSparkline = ({ data, size = 'small' }: { data: ThroughputPoint[];
 
   return (
     <Box sx={{ width: isLarge ? '100%' : 80, height: isLarge ? 120 : 24, flexShrink: 0, minWidth: 0, minHeight: 0 }}>
-      <ResponsiveContainer width='100%' height='100%' minWidth={1} minHeight={1}>
+      <ChartContainer>
         <AreaChart data={chartData} margin={isLarge ? { top: 4, right: 4, left: 4, bottom: 4 } : { top: 2, right: 2, left: 2, bottom: 2 }}>
           <defs>
             <linearGradient id={gradientId} x1='0' y1='0' x2='0' y2='1'>
@@ -140,12 +143,12 @@ const BandwidthSparkline = ({ data, size = 'small' }: { data: ThroughputPoint[];
             isAnimationActive={false}
           />
         </AreaChart>
-      </ResponsiveContainer>
+      </ChartContainer>
     </Box>
   )
 }
 
-const JobCard = ({ job, onClick, vmNameMap, throughputHistory, t }: { job: ReplicationJob; onClick: () => void; vmNameMap?: Record<number, string>; throughputHistory?: ThroughputPoint[]; t: any }) => {
+const JobCard = ({ job, onClick, onEdit, vmNameMap, throughputHistory, t }: { job: ReplicationJob; onClick: () => void; onEdit: () => void; vmNameMap?: Record<number, string>; throughputHistory?: ThroughputPoint[]; t: any }) => {
   const theme = useTheme()
   const progress = job.progress_percent || 0
   const isError = job.status === 'error'
@@ -197,6 +200,13 @@ const JobCard = ({ job, onClick, vmNameMap, throughputHistory, t }: { job: Repli
     >
       <CardContent sx={{ p: 1.5, '&:last-child': { pb: 1.5 }, position: 'relative', zIndex: 1 }}>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+          {/* Ceph engine indicator */}
+          <Tooltip title='Ceph RBD' arrow>
+            <Box sx={{ display: 'inline-flex', flexShrink: 0, alignItems: 'center' }}>
+              <img src='/images/ceph-logo.svg' alt='Ceph' width={18} height={18} />
+            </Box>
+          </Tooltip>
+
           {/* Sync icon */}
           {isSyncing && (
             <Box sx={{
@@ -209,13 +219,26 @@ const JobCard = ({ job, onClick, vmNameMap, throughputHistory, t }: { job: Repli
             </Box>
           )}
 
-          {/* VM names */}
-          <Typography variant='body2' sx={{
-            fontWeight: 600, flex: 1, minWidth: 0,
-            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'
-          }}>
-            {jobLabel(job, vmNameMap)}
-          </Typography>
+          {/* Name (if set) + VM names */}
+          <Box sx={{ flex: 1, minWidth: 0 }}>
+            {job.name && (
+              <Typography variant='body2' sx={{
+                fontWeight: 700, display: 'flex', alignItems: 'center', gap: 0.5, lineHeight: 1.25,
+                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'
+              }}>
+                <i className='ri-bookmark-line' style={{ fontSize: 14, opacity: 0.7 }} />
+                {job.name}
+              </Typography>
+            )}
+            <Typography variant={job.name ? 'caption' : 'body2'} sx={{
+              fontWeight: job.name ? 400 : 600,
+              color: job.name ? 'text.secondary' : 'text.primary',
+              display: 'block', lineHeight: 1.3,
+              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'
+            }}>
+              {jobLabel(job, vmNameMap)}
+            </Typography>
+          </Box>
 
           {/* Syncing progress + throughput + sparkline */}
           {isSyncing && (
@@ -250,8 +273,42 @@ const JobCard = ({ job, onClick, vmNameMap, throughputHistory, t }: { job: Repli
             </Box>
           )}
 
-          {/* Status */}
-          <StatusChip status={job.status} t={t} />
+          {/* Next Sync */}
+          {!isSyncing && (
+            <Box sx={{ textAlign: 'center', minWidth: 100, display: { xs: 'none', md: 'block' } }}>
+              <Typography variant='caption' sx={{ color: 'text.secondary', display: 'block', lineHeight: 1.2 }}>{t('siteRecovery.protection.nextSync')}</Typography>
+              <Typography variant='body2' sx={{ fontFamily: 'monospace', fontSize: '0.7rem' }}>
+                {job.next_sync && job.status !== 'paused' ? new Date(job.next_sync).toLocaleString() : '—'}
+              </Typography>
+            </Box>
+          )}
+
+          {/* Status + retry indicator */}
+          <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 0.25 }}>
+            <StatusChip status={job.status} t={t} />
+            {job.status === 'error' && job.next_retry_at && (job.retry_count || 0) < 3 && (
+              <Tooltip title={t('siteRecovery.protection.retryTooltip', { count: job.retry_count, max: 3, at: new Date(job.next_retry_at).toLocaleString() })} arrow>
+                <Chip
+                  size='small'
+                  icon={<i className='ri-refresh-line' style={{ fontSize: 12 }} />}
+                  label={t('siteRecovery.protection.retryBadge', { count: job.retry_count, max: 3, in: formatDuration(Math.max(0, Math.round((new Date(job.next_retry_at).getTime() - Date.now()) / 1000))) })}
+                  variant='outlined'
+                  sx={{ height: 18, fontSize: '0.6rem', borderColor: 'warning.main', color: 'warning.main' }}
+                />
+              </Tooltip>
+            )}
+          </Box>
+
+          {/* Edit (does not open the drawer) */}
+          <Tooltip title={t('common.edit')} arrow>
+            <IconButton
+              size='small'
+              onClick={e => { e.stopPropagation(); onEdit() }}
+              sx={{ p: 0.5, color: 'text.secondary', '&:hover': { color: 'primary.main' } }}
+            >
+              <i className='ri-edit-line' style={{ fontSize: 16 }} />
+            </IconButton>
+          </Tooltip>
         </Box>
       </CardContent>
 
@@ -285,13 +342,14 @@ interface ProtectionTabProps {
   onPauseJob: (id: string) => void
   onResumeJob: (id: string) => void
   onDeleteJob: (id: string) => void
+  onEditJob: (id: string) => void
   selectedJobId: string | null
   onSelectJob: (id: string | null) => void
 }
 
 export default function ProtectionTab({
   jobs, loading, logs, logsLoading, connections, vmNameMap,
-  onSyncJob, onPauseJob, onResumeJob, onDeleteJob,
+  onSyncJob, onPauseJob, onResumeJob, onDeleteJob, onEditJob,
   selectedJobId, onSelectJob
 }: ProtectionTabProps) {
   const t = useTranslations()
@@ -299,6 +357,26 @@ export default function ProtectionTab({
   const [statusFilter, setStatusFilter] = useState<string>('all')
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [copied, setCopied] = useState(false)
+  const [confirmDeleteJob, setConfirmDeleteJob] = useState<ReplicationJob | null>(null)
+  type VMStatusRow = {
+    job_id: string
+    vmid: number
+    vm_name?: string
+    status: 'pending' | 'syncing' | 'synced' | 'error'
+    last_sync?: string | null
+    last_error?: string
+    bytes_sent: number
+    duration_ms: number
+    updated_at: string
+  }
+  const [vmStatuses, setVmStatuses] = useState<VMStatusRow[] | null>(null)
+  const [vmStatusesLoading, setVmStatusesLoading] = useState(false)
+
+  // Historical throughput from the server
+  type ThroughputSample = { timestamp: string; bytes_per_sec: number }
+  const [thSamples, setThSamples] = useState<ThroughputSample[] | null>(null)
+  const [thLoading, setThLoading] = useState(false)
+  const [thWindow, setThWindow] = useState<'1h' | '6h' | '24h' | '7d'>('24h')
 
   // Throughput history — persisted in localStorage, 24h rolling window
   const STORAGE_KEY = 'sr-throughput-history'
@@ -375,6 +453,7 @@ export default function ProtectionTab({
     return (jobs || []).filter(j => {
       const label = jobLabel(j, vmNameMap)
       const matchQ = !qq || label.toLowerCase().includes(qq) ||
+        (j.name || '').toLowerCase().includes(qq) ||
         connName(j.source_cluster).toLowerCase().includes(qq) || connName(j.target_cluster).toLowerCase().includes(qq)
 
       return matchQ && (statusFilter === 'all' || j.status === statusFilter)
@@ -401,6 +480,43 @@ export default function ProtectionTab({
     setDrawerOpen(true)
   }
 
+  // Fetch per-VM status when drawer opens on a job with multiple VMs.
+  useEffect(() => {
+    if (!drawerOpen || !selectedJobId) {
+      setVmStatuses(null)
+      return
+    }
+    const job = (jobs || []).find(j => j.id === selectedJobId)
+    if (!job || (job.vm_ids || []).length <= 1) {
+      setVmStatuses(null)
+      return
+    }
+    let cancelled = false
+    setVmStatusesLoading(true)
+    fetch(`/api/v1/orchestrator/replication/jobs/${selectedJobId}/vms`, { cache: 'no-store' })
+      .then(r => (r.ok ? r.json() : []))
+      .then(data => { if (!cancelled) setVmStatuses(Array.isArray(data) ? data : []) })
+      .catch(() => { if (!cancelled) setVmStatuses([]) })
+      .finally(() => { if (!cancelled) setVmStatusesLoading(false) })
+    return () => { cancelled = true }
+  }, [drawerOpen, selectedJobId, jobs])
+
+  // Fetch throughput history when drawer opens or window changes
+  useEffect(() => {
+    if (!drawerOpen || !selectedJobId) {
+      setThSamples(null)
+      return
+    }
+    let cancelled = false
+    setThLoading(true)
+    fetch(`/api/v1/orchestrator/replication/jobs/${selectedJobId}/throughput?window=${thWindow}`, { cache: 'no-store' })
+      .then(r => (r.ok ? r.json() : []))
+      .then(data => { if (!cancelled) setThSamples(Array.isArray(data) ? data : []) })
+      .catch(() => { if (!cancelled) setThSamples([]) })
+      .finally(() => { if (!cancelled) setThLoading(false) })
+    return () => { cancelled = true }
+  }, [drawerOpen, selectedJobId, thWindow])
+
   const closeDrawer = () => {
     setDrawerOpen(false)
     onSelectJob(null)
@@ -413,6 +529,20 @@ export default function ProtectionTab({
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
   }, [logs])
+
+  const formatRPO = (seconds: number) => {
+    if (seconds < 60) return `${seconds}s`
+    if (seconds < 3600) return `${Math.round(seconds / 60)}m`
+    if (seconds < 86400) return `${Math.round(seconds / 3600)}h`
+    return `${Math.round(seconds / 86400)}d`
+  }
+
+  const planningLabel = (j: typeof jobs[0]) => {
+    if (j.schedule_spec) {
+      return scheduleToLabel(j.schedule_spec, j.timezone || '', t)
+    }
+    return `${t('siteRecovery.rpoTargetLabel')}: ${formatRPO(j.rpo_target)}`
+  }
 
   if (loading) {
     return (
@@ -483,7 +613,7 @@ export default function ProtectionTab({
                 {/* Group jobs */}
                 <Stack spacing={1}>
                   {groupJobs.map(j => (
-                    <JobCard key={j.id} job={j} onClick={() => openJob(j.id)} vmNameMap={vmNameMap} throughputHistory={throughputHistoryRef.current.get(j.id)} t={t} />
+                    <JobCard key={j.id} job={j} onClick={() => openJob(j.id)} onEdit={() => onEditJob(j.id)} vmNameMap={vmNameMap} throughputHistory={throughputHistoryRef.current.get(j.id)} t={t} />
                   ))}
                 </Stack>
               </Box>
@@ -499,9 +629,21 @@ export default function ProtectionTab({
             <Alert severity='info'>{t('siteRecovery.protection.selectJob')}</Alert>
           ) : (
             <>
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', mb: 2 }}>
-                <Box>
-                  <Typography variant='h6' sx={{ fontWeight: 700, mb: 0.25 }}>{jobLabel(selected, vmNameMap)}</Typography>
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', mb: 2, gap: 1.5 }}>
+                <Tooltip title='Ceph RBD' arrow>
+                  <Box sx={{ display: 'inline-flex', flexShrink: 0, alignItems: 'center', mt: 0.5 }}>
+                    <img src='/images/ceph-logo.svg' alt='Ceph' width={24} height={24} />
+                  </Box>
+                </Tooltip>
+                <Box sx={{ minWidth: 0, flex: 1 }}>
+                  <Typography variant='h6' sx={{ fontWeight: 700, mb: 0.25 }}>
+                    {selected.name || jobLabel(selected, vmNameMap)}
+                  </Typography>
+                  {selected.name && (
+                    <Typography variant='body2' sx={{ color: 'text.primary', fontWeight: 500, mb: 0.25 }}>
+                      {jobLabel(selected, vmNameMap)}
+                    </Typography>
+                  )}
                   <Typography variant='caption' sx={{ color: 'text.secondary' }}>
                     {(selected.vm_ids || []).length} VM(s) — {(selected.vm_ids || []).map(id => {
                       const name = vmNameMap?.[id]
@@ -512,13 +654,37 @@ export default function ProtectionTab({
                 <IconButton onClick={closeDrawer} size='small'><i className='ri-close-line' /></IconButton>
               </Box>
 
-              <StatusChip status={selected.status} t={t} />
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap', mb: 1.5 }}>
+                <StatusChip status={selected.status} t={t} />
+              </Box>
+
+              {/* Actions — top placement for visibility, full-width equal split */}
+              <Box sx={{ display: 'flex', gap: 1, mb: 2, '& > *': { flex: 1, minWidth: 0 } }}>
+                <Button variant='contained' size='small' startIcon={<i className='ri-refresh-line' />} onClick={() => onSyncJob(selected.id)}>
+                  {t('siteRecovery.protection.syncNow')}
+                </Button>
+                {selected.status === 'paused' ? (
+                  <Button variant='outlined' size='small' startIcon={<i className='ri-play-circle-line' />} onClick={() => onResumeJob(selected.id)}>
+                    {t('siteRecovery.protection.resume')}
+                  </Button>
+                ) : (
+                  <Button variant='outlined' size='small' startIcon={<i className='ri-pause-line' />} onClick={() => onPauseJob(selected.id)}>
+                    {t('siteRecovery.protection.pause')}
+                  </Button>
+                )}
+                <Button variant='outlined' size='small' startIcon={<i className='ri-edit-line' />} onClick={() => onEditJob(selected.id)}>
+                  {t('common.edit')}
+                </Button>
+                <Button variant='outlined' size='small' color='error' startIcon={<i className='ri-delete-bin-line' />} onClick={() => setConfirmDeleteJob(selected)}>
+                  {t('common.delete')}
+                </Button>
+              </Box>
 
               {selected.status === 'error' && selected.error_message && (
-                <Alert severity='error' sx={{ mt: 2 }} icon={<i className='ri-error-warning-line' />}>{selected.error_message}</Alert>
+                <Alert severity='error' sx={{ mb: 2 }} icon={<i className='ri-error-warning-line' />}>{selected.error_message}</Alert>
               )}
 
-              <Box sx={{ p: 2, borderRadius: 1, bgcolor: 'action.hover', my: 2, textAlign: 'center' }}>
+              <Box sx={{ p: 2, borderRadius: 1, bgcolor: 'action.hover', mb: 2, textAlign: 'center' }}>
                 <Typography variant='caption' sx={{ color: 'text.secondary' }}>{t('siteRecovery.protection.source')}</Typography>
                 <Typography variant='body2' sx={{ fontWeight: 600, fontFamily: 'monospace', mb: 1 }}>{connName(selected.source_cluster)}</Typography>
                 <Box sx={{ color: 'text.disabled', my: 0.5 }}><i className='ri-arrow-down-line' /></Box>
@@ -527,21 +693,133 @@ export default function ProtectionTab({
               </Box>
 
               <Box sx={{ flex: 1, overflow: 'auto' }}>
-                <DetailRow icon='ri-time-line' label={t('siteRecovery.protection.schedule')} value={selected.schedule} />
+                <DetailRow icon='ri-time-line' label={t('siteRecovery.protection.schedule')} value={planningLabel(selected)} />
                 <DetailRow icon='ri-timer-line' label={t('siteRecovery.protection.rpoTarget')} value={formatDuration(selected.rpo_target)} />
                 <DetailRow icon='ri-timer-flash-line' label={t('siteRecovery.protection.rpoActual')} value={formatDuration(computeRpoActual(selected.last_sync))} />
                 <DetailRow icon='ri-speed-line' label={t('siteRecovery.protection.throughput')} value={selected.throughput_bps > 0 ? `${formatBytes(selected.throughput_bps)}/s` : '—'} />
                 <DetailRow icon='ri-calendar-line' label={t('siteRecovery.protection.lastSync')} value={selected.last_sync ? new Date(selected.last_sync).toLocaleString() : '—'} mono />
+                <DetailRow icon='ri-calendar-schedule-line' label={t('siteRecovery.protection.nextSync')} value={selected.next_sync && selected.status !== 'paused' ? new Date(selected.next_sync).toLocaleString() : '—'} mono />
 
-                {/* Bandwidth chart */}
-                {(throughputHistoryRef.current.get(selected.id)?.length || 0) >= 2 && (
+                {/* Per-VM breakdown — only shown for multi-VM jobs */}
+                {(selected.vm_ids || []).length > 1 && (
                   <>
                     <Divider sx={{ my: 2 }} />
                     <Typography variant='overline' sx={{ color: 'text.secondary', fontWeight: 600, mb: 1, display: 'block' }}>
-                      {t('siteRecovery.protection.bandwidth')}
+                      {t('siteRecovery.protection.perVmTitle')}
                     </Typography>
-                    <BandwidthSparkline data={throughputHistoryRef.current.get(selected.id)!} size='large' />
+                    {vmStatusesLoading && !vmStatuses && <LinearProgress sx={{ mb: 1 }} />}
+                    {vmStatuses && vmStatuses.length === 0 ? (
+                      <Typography variant='caption' sx={{ color: 'text.disabled', fontStyle: 'italic' }}>
+                        {t('siteRecovery.protection.perVmEmpty')}
+                      </Typography>
+                    ) : vmStatuses && (
+                      <Box sx={{ maxHeight: 280, overflow: 'auto', border: 1, borderColor: 'divider', borderRadius: 1 }}>
+                        {vmStatuses.map(row => {
+                          const color = row.status === 'synced' ? 'success' : row.status === 'syncing' ? 'primary' : row.status === 'error' ? 'error' : 'default'
+                          return (
+                            <Box key={row.vmid} sx={{ display: 'flex', alignItems: 'flex-start', gap: 1, px: 1.25, py: 1, borderBottom: 1, borderColor: 'divider', '&:last-child': { borderBottom: 0 } }}>
+                              <Box sx={{ flex: 1, minWidth: 0 }}>
+                                <Typography variant='body2' sx={{ fontWeight: 600, lineHeight: 1.25 }}>
+                                  {row.vm_name ? `${row.vmid} · ${row.vm_name}` : `VM ${row.vmid}`}
+                                </Typography>
+                                <Typography variant='caption' sx={{ color: 'text.secondary', display: 'block', lineHeight: 1.3 }}>
+                                  {row.last_sync ? new Date(row.last_sync).toLocaleString() : '—'}
+                                  {row.bytes_sent > 0 && ` · ${formatBytes(row.bytes_sent)}`}
+                                  {row.duration_ms > 0 && ` · ${formatDuration(Math.round(row.duration_ms / 1000))}`}
+                                </Typography>
+                                {row.status === 'error' && row.last_error && (
+                                  <Typography variant='caption' sx={{ color: 'error.main', display: 'block', mt: 0.25 }}>
+                                    {row.last_error}
+                                  </Typography>
+                                )}
+                              </Box>
+                              <Chip
+                                size='small'
+                                label={t(`siteRecovery.status.${row.status}`)}
+                                color={color as any}
+                                variant={row.status === 'pending' ? 'outlined' : 'filled'}
+                                sx={{ height: 20, fontSize: '0.65rem' }}
+                              />
+                            </Box>
+                          )
+                        })}
+                      </Box>
+                    )}
                   </>
+                )}
+
+                {/* Bandwidth history (server-sourced) */}
+                <Divider sx={{ my: 2 }} />
+                <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
+                  <Typography variant='overline' sx={{ color: 'text.secondary', fontWeight: 600 }}>
+                    {t('siteRecovery.protection.bandwidthHistory')}
+                  </Typography>
+                  <Box sx={{ display: 'flex', gap: 0.25 }}>
+                    {(['1h', '6h', '24h', '7d'] as const).map(w => (
+                      <Button
+                        key={w}
+                        size='small'
+                        variant={thWindow === w ? 'contained' : 'outlined'}
+                        onClick={() => setThWindow(w)}
+                        sx={{ minWidth: 32, px: 0.75, py: 0.25, fontSize: '0.65rem' }}
+                      >
+                        {w}
+                      </Button>
+                    ))}
+                  </Box>
+                </Box>
+                {thLoading && !thSamples ? (
+                  <LinearProgress sx={{ mb: 1 }} />
+                ) : (thSamples && thSamples.length >= 2) ? (
+                  <Box sx={{ width: '100%', height: 140 }}>
+                    <ChartContainer>
+                      <AreaChart data={thSamples.map(s => ({ ts: new Date(s.timestamp).getTime(), bps: s.bytes_per_sec }))} margin={{ top: 4, right: 4, left: 4, bottom: 4 }}>
+                        <defs>
+                          <linearGradient id='thGrad' x1='0' y1='0' x2='0' y2='1'>
+                            <stop offset='0%' stopColor='currentColor' stopOpacity={0.3} />
+                            <stop offset='100%' stopColor='currentColor' stopOpacity={0.02} />
+                          </linearGradient>
+                        </defs>
+                        <YAxis hide domain={[0, 'dataMax']} />
+                        <RTooltip
+                          wrapperStyle={{ backgroundColor: 'transparent' }}
+                          content={({ active, payload }) => {
+                            if (!active || !payload?.[0]) return null
+                            const p = payload[0].payload as { ts: number; bps: number }
+                            return (
+                              <Box sx={{ bgcolor: 'background.paper', border: 1, borderColor: 'divider', borderRadius: 1, px: 1.25, py: 0.75, boxShadow: 2 }}>
+                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mb: 0.25 }}>
+                                  <i className='ri-speed-line' style={{ fontSize: 14, opacity: 0.7 }} />
+                                  <Typography variant='caption' sx={{ fontWeight: 700, fontSize: '0.7rem' }}>
+                                    {t('siteRecovery.protection.throughput')}
+                                  </Typography>
+                                </Box>
+                                <Typography variant='caption' sx={{ fontFamily: '"JetBrains Mono", monospace', fontWeight: 600, display: 'block' }}>
+                                  {formatBytes(p.bps)}/s
+                                </Typography>
+                                <Typography variant='caption' sx={{ color: 'text.secondary', display: 'block', fontSize: '0.6rem' }}>
+                                  {new Date(p.ts).toLocaleString()}
+                                </Typography>
+                              </Box>
+                            )
+                          }}
+                        />
+                        <Area
+                          type='monotone'
+                          dataKey='bps'
+                          stroke='currentColor'
+                          strokeWidth={1.5}
+                          fill='url(#thGrad)'
+                          dot={false}
+                          isAnimationActive={false}
+                        />
+                      </AreaChart>
+                    </ChartContainer>
+                  </Box>
+                ) : (
+                  <Typography variant='caption' sx={{ color: 'text.disabled', fontStyle: 'italic' }}>
+                    {t('siteRecovery.protection.bandwidthHistoryEmpty')}
+                  </Typography>
                 )}
 
                 {/* Logs */}
@@ -575,33 +853,42 @@ export default function ProtectionTab({
                   </Typography>
                 )}
 
-                <Divider sx={{ my: 2 }} />
-
-                <Typography variant='overline' sx={{ color: 'text.secondary', fontWeight: 600, mb: 1.5, display: 'block' }}>
-                  {t('siteRecovery.protection.actions')}
-                </Typography>
-                <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
-                  <Button variant='contained' size='small' startIcon={<i className='ri-refresh-line' />} onClick={() => onSyncJob(selected.id)}>
-                    {t('siteRecovery.protection.syncNow')}
-                  </Button>
-                  {selected.status === 'paused' ? (
-                    <Button variant='outlined' size='small' startIcon={<i className='ri-play-circle-line' />} onClick={() => onResumeJob(selected.id)}>
-                      {t('siteRecovery.protection.resume')}
-                    </Button>
-                  ) : (
-                    <Button variant='outlined' size='small' startIcon={<i className='ri-pause-line' />} onClick={() => onPauseJob(selected.id)}>
-                      {t('siteRecovery.protection.pause')}
-                    </Button>
-                  )}
-                  <Button variant='outlined' size='small' color='error' startIcon={<i className='ri-delete-bin-line' />} onClick={() => { onDeleteJob(selected.id); closeDrawer() }}>
-                    {t('common.delete')}
-                  </Button>
-                </Box>
               </Box>
             </>
           )}
         </Box>
       </Drawer>
+
+      {/* Delete confirmation */}
+      <Dialog open={!!confirmDeleteJob} onClose={() => setConfirmDeleteJob(null)} maxWidth='sm' fullWidth>
+        <DialogTitle>{t('siteRecovery.protection.deleteConfirmTitle')}</DialogTitle>
+        <DialogContent>
+          <Stack spacing={2} sx={{ py: 2 }}>
+            <Alert severity='warning' sx={{ py: 1.5 }}>
+              {t('siteRecovery.protection.deleteConfirmDesc')}
+            </Alert>
+            <Alert severity='info' sx={{ py: 1.5 }} icon={<i className='ri-information-line' />}>
+              {t('siteRecovery.protection.deleteOrphansNote')}
+            </Alert>
+          </Stack>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <Button onClick={() => setConfirmDeleteJob(null)}>{t('common.cancel')}</Button>
+          <Button
+            variant='contained' color='error'
+            startIcon={<i className='ri-delete-bin-line' />}
+            onClick={() => {
+              if (confirmDeleteJob) {
+                onDeleteJob(confirmDeleteJob.id)
+                setConfirmDeleteJob(null)
+                closeDrawer()
+              }
+            }}
+          >
+            {t('common.delete')}
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   )
 }

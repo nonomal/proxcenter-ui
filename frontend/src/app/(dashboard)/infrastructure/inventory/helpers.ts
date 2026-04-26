@@ -659,8 +659,11 @@ export async function fetchDetails(sel: InventorySelection): Promise<DetailsPayl
           type: vm.type as 'qemu' | 'lxc',
           status: vm.status || 'unknown',
           cpu: vm.status === 'running' ? cpuPct(vm.cpu) : undefined,
+          maxcpu: vm.maxcpu ?? undefined,
           ram: vm.status === 'running' ? pct(Number(vm.mem ?? 0), Number(vm.maxmem ?? 0)) : undefined,
+          mem: Number(vm.mem ?? 0),
           maxmem: Number(vm.maxmem ?? 0),
+          disk: Number(vm.disk ?? 0),
           maxdisk: Number(vm.maxdisk ?? 0),
           uptime: Number(vm.uptime ?? 0),
           tags: parseTags(vm.tags),
@@ -839,17 +842,45 @@ return Number.isFinite(num) ? num.toFixed(2) : String(v)
       throw new Error('Failed to load VM data — please retry')
     }
 
+    // Locate the VM in /cluster/resources. After an intra-cluster qmigrate
+    // the URL still references the source node but PVE has moved the VM —
+    // try a strict match first, then fall back to a node-agnostic match
+    // so the detail panel keeps working without forcing a manual refresh.
+    let g = resources.find(
+      (x: any) => String(x.node) === String(node) && String(x.type) === String(type) && String(x.vmid) === String(vmid)
+    )
+    let effectiveNode = node
+    if (!g) {
+      const moved = resources.find(
+        (x: any) => String(x.type) === String(type) && String(x.vmid) === String(vmid) && typeof x.node === 'string'
+      )
+      if (moved) {
+        g = moved
+        effectiveNode = String(moved.node)
+      }
+    }
+    if (!g) throw new Error('VM not found')
+
     let nodeStatusData: any = null
-    if (nodeStatusR && nodeStatusR.ok) {
+    if (effectiveNode === node && nodeStatusR && nodeStatusR.ok) {
       try {
         const json = await nodeStatusR.json()
         nodeStatusData = json?.data || json
+      } catch {}
+    } else if (effectiveNode !== node) {
+      // VM moved — refetch the host node status for the new location.
+      try {
+        const r = await fetch(`/api/v1/connections/${encodeURIComponent(connId)}/nodes/${encodeURIComponent(effectiveNode)}/status`, { cache: 'no-store' })
+        if (r.ok) {
+          const json = await r.json()
+          nodeStatusData = json?.data || json
+        }
       } catch {}
     }
 
     const isCluster = nodes.length > 1
 
-    const hostNode = nodes.find((n: any) => n.node === node)
+    const hostNode = nodes.find((n: any) => n.node === effectiveNode)
     const nodeCpuInfo = nodeStatusData?.cpuinfo || {}
     const nodeCapacity = {
       maxCpu: hostNode?.maxcpu || 128,
@@ -857,12 +888,6 @@ return Number.isFinite(num) ? num.toFixed(2) : String(v)
       hostSockets: nodeCpuInfo.sockets || undefined,
       hostCoresPerSocket: nodeCpuInfo.cores || undefined,
     }
-
-    const g = resources.find(
-      (x: any) => String(x.node) === String(node) && String(x.type) === String(type) && String(x.vmid) === String(vmid)
-    )
-
-    if (!g) throw new Error('VM not found')
 
     const c = cpuPct(g.cpu)
     const r = pct(Number(g.mem ?? 0), Number(g.maxmem ?? 0))
@@ -878,6 +903,7 @@ return Number.isFinite(num) ? num.toFixed(2) : String(v)
     let otherHardwareInfo: any[] = []
     let optionsInfo: any = {}
     let cloudInitConfig: any = null
+    let pendingKeys: string[] = []
     let name = g.name || `VM ${vmid}`
     let description = ''
 
@@ -890,6 +916,7 @@ return Number.isFinite(num) ? num.toFixed(2) : String(v)
         description = config.description || ''
 
         const pending = config.pending || {}
+        pendingKeys = Object.keys(pending).filter(k => k !== 'delete')
 
         // Parse CPU type and flags from cpu field (e.g. "host,flags=+aes;-pcid")
         const cpuRaw = config.cpu || 'kvm64'
@@ -1091,6 +1118,17 @@ return Number.isFinite(num) ? num.toFixed(2) : String(v)
           }
         })
 
+        // Options pending keys: the subset of PVE config keys that map to
+        // VM options (boot order, hotplug, ACPI, KVM, agent, etc.). We track
+        // which ones have pending values so the Options tab can show change
+        // indicators + a revert button, mirroring what we do in Hardware.
+        const optionsPendingKeys = [
+          'onboot', 'startup', 'boot', 'hotplug', 'acpi', 'kvm',
+          'freeze', 'localtime', 'agent', 'tablet', 'protection',
+          'ostype', 'scsihw', 'spice_enhancements', 'vmstatestorage',
+          'startdate', 'sev',
+        ].filter(k => pending[k] !== undefined)
+
         optionsInfo = {
           scsihw: config.scsihw || 'virtio-scsi-single',
           onboot: config.onboot === 1 || config.onboot === true,
@@ -1111,6 +1149,13 @@ return Number.isFinite(num) ? num.toFixed(2) : String(v)
           spiceEnhancements: config.spice_enhancements || 'none',
           vmStateStorage: config.vmstatestorage || 'Automatic',
           amdSEV: config.sev ? 'enabled' : 'default',
+          // Pending keys specific to options (for the revert button in Options tab)
+          pendingKeys: optionsPendingKeys,
+          // Raw pending values so the Options tab can show old→new indicators
+          // per row (strikethrough old + orange new, like Proxmox native UI).
+          pendingValues: optionsPendingKeys.length > 0
+            ? Object.fromEntries(optionsPendingKeys.map(k => [k, pending[k]]))
+            : undefined,
         }
 
         // Cloud-Init extraction
@@ -1156,8 +1201,9 @@ return Number.isFinite(num) ? num.toFixed(2) : String(v)
     return {
       kindLabel: type === 'lxc' ? 'LXC' : 'VM',
       title: name,
-      subtitle: `${String(type).toUpperCase()} • ${node} • #${vmid}`,
+      subtitle: `${String(type).toUpperCase()} • ${effectiveNode} • #${vmid}`,
       breadcrumb: ['Infrastructure', 'Inventaire', 'VM', String(vmid)],
+      movedTo: effectiveNode !== node ? effectiveNode : undefined,
       status: g.status === 'running' ? 'ok' : 'unknown',
       vmRealStatus: g.status,
       tags: vmTags,
@@ -1183,6 +1229,7 @@ return Number.isFinite(num) ? num.toFixed(2) : String(v)
       optionsInfo,
       cloudInitConfig,
       nodeCapacity,
+      pendingKeys,
     }
   }
 
@@ -1468,7 +1515,14 @@ return Number.isFinite(num) ? num.toFixed(2) : String(v)
       esxiHostInfo: {
         connectionId: connId,
         connectionName: conn.name || connId,
-        hostType: conn.type || 'vmware',
+        // vCenter is stored as type=vmware + subType=vcenter in the DB. The UI uses
+        // hostType='vcenter' as the discriminator everywhere (e.g. enabling v2v code
+        // paths, showing temp storage selector, hiding sshfs option), so promote
+        // subType when present. Without this, vCenter behaves like a standalone ESXi
+        // in the UI even though backend routes it through the v2v pipeline.
+        hostType: (conn.type === 'vmware' && conn.subType === 'vcenter')
+          ? 'vcenter'
+          : (conn.type || 'vmware'),
         baseUrl: conn.baseUrl || '',
         version,
         licenseFull: statusData?.data?.licenseFull ?? false,
@@ -1485,7 +1539,12 @@ return Number.isFinite(num) ? num.toFixed(2) : String(v)
     // Determine API prefix from connection type
     const connTypeR = await fetch(`/api/v1/connections/${encodeURIComponent(connId)}`, { cache: 'no-store' }).catch(() => null)
     const connTypeData = connTypeR?.ok ? await connTypeR.json().catch(() => ({})) : {}
-    const connType = connTypeData?.data?.type || connTypeData?.type || 'vmware'
+    // Same vCenter-disambiguation rule as in the host panel above (sel.type === 'ext'):
+    // promote subType='vcenter' to hostType='vcenter' so all UI gates that key off
+    // hostType behave consistently between the host dashboard and the per-VM panel.
+    const rawConnType = connTypeData?.data?.type || connTypeData?.type || 'vmware'
+    const rawConnSubType = connTypeData?.data?.subType || connTypeData?.subType
+    const connType = (rawConnType === 'vmware' && rawConnSubType === 'vcenter') ? 'vcenter' : rawConnType
     const apiPrefix = connType === 'xcpng' ? 'xcpng' : connType === 'nutanix' ? 'nutanix' : connType === 'hyperv' ? 'hyperv' : 'vmware'
 
     const [vmR, statusR] = await Promise.all([

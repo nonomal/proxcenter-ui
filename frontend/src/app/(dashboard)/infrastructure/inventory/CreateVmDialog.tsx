@@ -23,6 +23,7 @@ import {
   IconButton,
   InputAdornment,
   InputLabel,
+  LinearProgress,
   ListSubheader,
   MenuItem,
   Select,
@@ -40,6 +41,7 @@ import { alpha } from '@mui/material/styles'
 
 import AppDialogTitle from '@/components/ui/AppDialogTitle'
 import QuotaDonut from '@/components/mydc/QuotaDonut'
+import { formatBytes } from '@/utils/format'
 import { AllVmItem } from './InventoryTree'
 
 type DiskConfig = {
@@ -53,6 +55,13 @@ type DiskConfig = {
   ioThread: boolean
   ssd: boolean
   backup: boolean
+  /** When true, import an existing disk image instead of creating an empty one.
+   *  Uses PVE 8.2+ import-from syntax: `target:0,import-from=source:volid`. */
+  importMode: boolean
+  /** Source storage containing the disk image to import (e.g. "local", "nfs-images"). */
+  importStorage: string
+  /** Full volume ID to import (e.g. "local:iso/myvm.qcow2" or "nfs:images/disk.raw"). */
+  importVolume: string
 }
 
 const createDefaultDisk = (): DiskConfig => ({
@@ -66,6 +75,9 @@ const createDefaultDisk = (): DiskConfig => ({
   ioThread: true,
   ssd: false,
   backup: true,
+  importMode: false,
+  importStorage: '',
+  importVolume: '',
 })
 
 type NicConfig = {
@@ -89,6 +101,55 @@ const createDefaultNic = (): NicConfig => ({
   rateLimit: '',
   mtu: '1500',
 })
+
+function NumericTextField({
+  value,
+  onChange,
+  fallback,
+  parse = Number.parseInt,
+  ...rest
+}: Omit<React.ComponentProps<typeof TextField>, 'value' | 'onChange'> & {
+  value: number
+  onChange: (v: number) => void
+  fallback: number
+  parse?: (s: string) => number
+}) {
+  const [raw, setRaw] = useState<string>(String(value))
+
+  useEffect(() => {
+    setRaw(String(value))
+  }, [value])
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const text = e.target.value
+
+    setRaw(text)
+
+    if (text === '' || text === '-') return
+
+    const num = parse(text)
+
+    if (Number.isFinite(num)) onChange(num)
+  }
+
+  const handleBlur = () => {
+    if (raw === '' || raw === '-') {
+      onChange(fallback)
+      setRaw(String(fallback))
+
+      return
+    }
+
+    const num = parse(raw)
+
+    if (!Number.isFinite(num)) {
+      onChange(fallback)
+      setRaw(String(fallback))
+    }
+  }
+
+  return <TextField value={raw} onChange={handleChange} onBlur={handleBlur} {...rest} />
+}
 
 function CreateVmDialog({
   open,
@@ -156,6 +217,8 @@ function CreateVmDialog({
   // Formulaire - Disks (array-based)
   const [disks, setDisks] = useState<DiskConfig[]>([createDefaultDisk()])
   const [expandedDisks, setExpandedDisks] = useState<Set<number>>(new Set([0]))
+  // Cache of fetched volume lists per disk index + source storage, keyed as "idx:storage"
+  const [importVolumes, setImportVolumes] = useState<Record<string, { volid: string; format?: string; size?: number }[]>>({})
   
   // Formulaire - CPU
   const [cpuSockets, setCpuSockets] = useState(1)
@@ -723,7 +786,20 @@ return
 
       // Disques
       for (const disk of disks) {
-        if (disk.storage) {
+        if (disk.importMode && disk.storage && disk.importVolume) {
+          // Import existing disk: PVE 8.2+ syntax
+          // target-storage:0 means "auto-allocate from source size"
+          // import-from=<source-volid> points to the existing disk image
+          let diskConfig = `${disk.storage}:0,import-from=${disk.importVolume}`
+          if (disk.format !== 'raw') diskConfig += `,format=${disk.format}`
+          if (disk.cache !== 'none') diskConfig += `,cache=${disk.cache}`
+          if (disk.discard) diskConfig += ',discard=on'
+          if (disk.ioThread) diskConfig += ',iothread=1'
+          if (disk.ssd) diskConfig += ',ssd=1'
+          if (!disk.backup) diskConfig += ',backup=0'
+          payload[`${disk.bus}${disk.index}`] = diskConfig
+        } else if (disk.storage) {
+          // Create new empty disk
           let diskConfig = `${disk.storage}:${disk.size}`
           if (disk.format !== 'raw') diskConfig += `,format=${disk.format}`
           if (disk.cache !== 'none') diskConfig += `,cache=${disk.cache}`
@@ -1278,8 +1354,17 @@ return
                   >
                     <i className={isExpanded ? 'ri-subtract-line' : 'ri-add-line'} style={{ fontSize: 18, opacity: 0.5 }} />
                     <Chip label={`${disk.bus}${disk.index}`} size="small" sx={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 11, fontWeight: 700, height: 24 }} />
-                    <Typography variant="body2" fontSize={12} sx={{ opacity: 0.6 }}>{disk.storage || '—'}{storageName ? ` (${storageName.type})` : ''}</Typography>
-                    <Typography variant="body2" fontSize={12} fontWeight={700}>{disk.size} GiB</Typography>
+                    {disk.importMode ? (
+                      <>
+                        <Chip label="Import" size="small" color="info" variant="outlined" sx={{ height: 20, fontSize: 10 }} />
+                        <Typography variant="body2" fontSize={12} sx={{ opacity: 0.6 }} noWrap>{disk.importVolume ? disk.importVolume.split('/').pop() : '—'}</Typography>
+                      </>
+                    ) : (
+                      <>
+                        <Typography variant="body2" fontSize={12} sx={{ opacity: 0.6 }}>{disk.storage || '—'}{storageName ? ` (${storageName.type})` : ''}</Typography>
+                        <Typography variant="body2" fontSize={12} fontWeight={700}>{disk.size} GiB</Typography>
+                      </>
+                    )}
                     <Typography variant="body2" fontSize={11} sx={{ opacity: 0.4 }}>{disk.format}</Typography>
                     <Box sx={{ flex: 1 }} />
                     {disks.length > 1 && (
@@ -1294,56 +1379,172 @@ return
                   {/* Expanded content */}
                   <Collapse in={isExpanded}>
                     <Box sx={{ px: 2, pb: 2, pt: 1 }}>
-                      {/* Essential fields */}
-                      <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 1.5, mb: 2 }}>
-                        <FormControl size="small">
-                          <InputLabel>{t('inventory.createVm.busDevice')}</InputLabel>
-                          <Select value={disk.bus} onChange={(e) => updateDisk(diskIdx, { bus: e.target.value })} label={t('inventory.createVm.busDevice')}>
-                            <MenuItem value="scsi">SCSI</MenuItem>
-                            <MenuItem value="virtio">VirtIO Block</MenuItem>
-                            <MenuItem value="sata">SATA</MenuItem>
-                            <MenuItem value="ide">IDE</MenuItem>
-                          </Select>
-                        </FormControl>
-                        <FormControl size="small" error={diskStoragesList.length === 0}>
-                          <InputLabel>{t('inventory.createVm.storage')}</InputLabel>
-                          <Select
-                            value={disk.storage}
-                            onChange={(e) => updateDisk(diskIdx, { storage: e.target.value })}
-                            label={t('inventory.createVm.storage')}
-                            disabled={diskStoragesList.length === 0}
+                      {/* Mode toggle: New disk / Import existing */}
+                      <Box sx={{ display: 'flex', gap: 0.75, mb: 2 }}>
+                        {([
+                          { mode: false, label: t('inventory.createVm.newDisk'), icon: 'ri-add-circle-line' },
+                          { mode: true, label: t('inventory.createVm.importDisk'), icon: 'ri-download-2-line' },
+                        ] as const).map(opt => (
+                          <Box
+                            key={String(opt.mode)}
+                            onClick={() => updateDisk(diskIdx, { importMode: opt.mode })}
+                            sx={{
+                              flex: 1, border: '1px solid', borderColor: disk.importMode === opt.mode ? 'primary.main' : 'divider', borderRadius: 1.5,
+                              px: 1.5, py: 0.75, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 1,
+                              bgcolor: disk.importMode === opt.mode ? alpha(theme.palette.primary.main, 0.06) : 'transparent',
+                              transition: 'all 0.15s',
+                              '&:hover': { borderColor: 'primary.main' },
+                            }}
                           >
-                            {diskStoragesList.length === 0 ? (
-                              <MenuItem value="" disabled>
-                                {storages.length === 0
-                                  ? t('inventory.createVm.emptyState.noStorage')
-                                  : t('inventory.createVm.emptyState.noImageStorage')}
-                              </MenuItem>
-                            ) : (
-                              diskStoragesList.map(s => (
-                                <MenuItem key={s.id || s.storage} value={s.storage}>
-                                  {s.storage} ({s.type}){!s.shared && s.node ? ` — ${s.node}` : ''}
-                                </MenuItem>
-                              ))
-                            )}
-                          </Select>
-                          {diskStoragesList.length === 0 && storages.length > 0 && (
-                            <FormHelperText>
-                              {t('inventory.createVm.emptyState.imageStorageHint')}
-                            </FormHelperText>
-                          )}
-                        </FormControl>
-                        <TextField
-                          label={t('inventory.createVm.diskSizeGib')}
-                          value={disk.size === 0 ? '' : disk.size}
-                          onChange={(e) => {
-                            const n = Number.parseInt(e.target.value, 10)
-                            updateDisk(diskIdx, { size: Number.isFinite(n) ? n : 0 })
-                          }}
-                          size="small"
-                          type="number"
-                        />
+                            <i className={opt.icon} style={{ fontSize: 16, opacity: disk.importMode === opt.mode ? 1 : 0.5 }} />
+                            <Typography variant="body2" fontSize={12} fontWeight={disk.importMode === opt.mode ? 700 : 400}>{opt.label}</Typography>
+                          </Box>
+                        ))}
                       </Box>
+
+                      {/* Essential fields */}
+                      {disk.importMode ? (
+                        /* ── Import mode: bus + target storage + source storage + volume picker ── */
+                        <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 1.5, mb: 2 }}>
+                          <FormControl size="small">
+                            <InputLabel>{t('inventory.createVm.busDevice')}</InputLabel>
+                            <Select value={disk.bus} onChange={(e) => updateDisk(diskIdx, { bus: e.target.value })} label={t('inventory.createVm.busDevice')}>
+                              <MenuItem value="scsi">SCSI</MenuItem>
+                              <MenuItem value="virtio">VirtIO Block</MenuItem>
+                              <MenuItem value="sata">SATA</MenuItem>
+                              <MenuItem value="ide">IDE</MenuItem>
+                            </Select>
+                          </FormControl>
+                          <FormControl size="small">
+                            <InputLabel>{t('inventory.createVm.storage')} ({t('inventory.createVm.target')})</InputLabel>
+                            <Select value={disk.storage} onChange={(e) => updateDisk(diskIdx, { storage: e.target.value })} label={`${t('inventory.createVm.storage')} (${t('inventory.createVm.target')})`} renderValue={(val) => { const s = diskStoragesList.find(x => x.storage === val); return s ? `${s.storage}${!s.shared && s.node ? ` — ${s.node}` : ''}` : String(val) }}>
+                              {diskStoragesList.map(s => {
+                                const total = s.total || 0
+                                const used = s.used || 0
+                                const avail = s.avail ?? (total - used)
+                                const usagePct = total > 0 ? Math.round((used / total) * 100) : 0
+                                const usageColor = usagePct > 90 ? 'error' : usagePct > 75 ? 'warning' : 'primary'
+                                return (
+                                  <MenuItem key={s.id || s.storage} value={s.storage}>
+                                    <Box sx={{ width: '100%' }}>
+                                      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 0.25 }}>
+                                        <Typography variant="body2" fontSize={13}>{s.storage}{!s.shared && s.node ? ` — ${s.node}` : ''}</Typography>
+                                        {total > 0 && <Typography variant="caption" color="text.secondary">{formatBytes(avail)} free / {formatBytes(total)}</Typography>}
+                                      </Box>
+                                      {total > 0 && <LinearProgress variant="determinate" value={usagePct} color={usageColor as any} sx={{ height: 4, borderRadius: 1 }} />}
+                                    </Box>
+                                  </MenuItem>
+                                )
+                              })}
+                            </Select>
+                          </FormControl>
+                          <FormControl size="small">
+                            <InputLabel>{t('inventory.createVm.sourceStorage')}</InputLabel>
+                            <Select
+                              value={disk.importStorage}
+                              onChange={(e) => {
+                                updateDisk(diskIdx, { importStorage: e.target.value, importVolume: '' })
+                                // Fetch available volumes from the source storage
+                                if (e.target.value && selectedConnection && resolvedNode) {
+                                  fetch(`/api/v1/connections/${encodeURIComponent(selectedConnection)}/nodes/${encodeURIComponent(resolvedNode)}/storage/${encodeURIComponent(e.target.value)}/content?content=images,import`)
+                                    .then(r => r.json())
+                                    .then(d => {
+                                      const vols = (d.data || []).map((v: any) => ({ volid: v.volid, format: v.format, size: v.size }))
+                                      setImportVolumes(prev => ({ ...prev, [`${diskIdx}:${e.target.value}`]: vols }))
+                                    })
+                                    .catch(() => {})
+                                }
+                              }}
+                              label={t('inventory.createVm.sourceStorage')}
+                              renderValue={(val) => { const s = diskStoragesList.find(x => x.storage === val); return s ? `${s.storage}` : String(val) }}
+                            >
+                              {diskStoragesList.map(s => (
+                                <MenuItem key={s.id || s.storage} value={s.storage}>
+                                  {s.storage} ({s.type})
+                                </MenuItem>
+                              ))}
+                            </Select>
+                          </FormControl>
+                          <FormControl size="small">
+                            <InputLabel>{t('inventory.createVm.diskImage')}</InputLabel>
+                            <Select
+                              value={disk.importVolume}
+                              onChange={(e) => updateDisk(diskIdx, { importVolume: e.target.value })}
+                              label={t('inventory.createVm.diskImage')}
+                              disabled={!disk.importStorage}
+                            >
+                              {(importVolumes[`${diskIdx}:${disk.importStorage}`] || []).map((v: any) => (
+                                <MenuItem key={v.volid} value={v.volid}>
+                                  {v.volid.includes('/') ? v.volid.split('/').pop() : v.volid}
+                                  {v.size ? ` (${(v.size / 1073741824).toFixed(1)} GB)` : ''}
+                                </MenuItem>
+                              ))}
+                              {(importVolumes[`${diskIdx}:${disk.importStorage}`] || []).length === 0 && disk.importStorage && (
+                                <MenuItem disabled>{t('common.noData')}</MenuItem>
+                              )}
+                            </Select>
+                          </FormControl>
+                        </Box>
+                      ) : (
+                        /* ── New disk mode: bus + storage + size ── */
+                        <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 1.5, mb: 2 }}>
+                          <FormControl size="small">
+                            <InputLabel>{t('inventory.createVm.busDevice')}</InputLabel>
+                            <Select value={disk.bus} onChange={(e) => updateDisk(diskIdx, { bus: e.target.value })} label={t('inventory.createVm.busDevice')}>
+                              <MenuItem value="scsi">SCSI</MenuItem>
+                              <MenuItem value="virtio">VirtIO Block</MenuItem>
+                              <MenuItem value="sata">SATA</MenuItem>
+                              <MenuItem value="ide">IDE</MenuItem>
+                            </Select>
+                          </FormControl>
+                          <FormControl size="small" error={diskStoragesList.length === 0}>
+                            <InputLabel>{t('inventory.createVm.storage')}</InputLabel>
+                            <Select value={disk.storage} onChange={(e) => updateDisk(diskIdx, { storage: e.target.value })} label={t('inventory.createVm.storage')} disabled={diskStoragesList.length === 0} renderValue={(val) => { const s = diskStoragesList.find(x => x.storage === val); return s ? `${s.storage}${!s.shared && s.node ? ` — ${s.node}` : ''}` : String(val) }}>
+                              {diskStoragesList.length === 0 ? (
+                                <MenuItem value="" disabled>
+                                  {storages.length === 0
+                                    ? t('inventory.createVm.emptyState.noStorage')
+                                    : t('inventory.createVm.emptyState.noImageStorage')}
+                                </MenuItem>
+                              ) : (
+                                diskStoragesList.map(s => {
+                                  const total = s.total || 0
+                                  const used = s.used || 0
+                                  const avail = s.avail ?? (total - used)
+                                  const usagePct = total > 0 ? Math.round((used / total) * 100) : 0
+                                  const usageColor = usagePct > 90 ? 'error' : usagePct > 75 ? 'warning' : 'primary'
+                                  return (
+                                    <MenuItem key={s.id || s.storage} value={s.storage}>
+                                      <Box sx={{ width: '100%' }}>
+                                        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 0.25 }}>
+                                          <Typography variant="body2" fontSize={13}>{s.storage}{!s.shared && s.node ? ` — ${s.node}` : ''}</Typography>
+                                          {total > 0 && <Typography variant="caption" color="text.secondary">{formatBytes(avail)} free / {formatBytes(total)}</Typography>}
+                                        </Box>
+                                        {total > 0 && <LinearProgress variant="determinate" value={usagePct} color={usageColor as any} sx={{ height: 4, borderRadius: 1 }} />}
+                                      </Box>
+                                    </MenuItem>
+                                  )
+                                })
+                              )}
+                            </Select>
+                            {diskStoragesList.length === 0 && storages.length > 0 && (
+                              <FormHelperText>
+                                {t('inventory.createVm.emptyState.imageStorageHint')}
+                              </FormHelperText>
+                            )}
+                          </FormControl>
+                          <TextField
+                            label={t('inventory.createVm.diskSizeGib')}
+                            value={disk.size === 0 ? '' : disk.size}
+                            onChange={(e) => {
+                              const n = Number.parseInt(e.target.value, 10)
+                              updateDisk(diskIdx, { size: Number.isFinite(n) ? n : 0 })
+                            }}
+                            size="small"
+                            type="number"
+                          />
+                        </Box>
+                      )}
 
                       {diskIdx === 0 && (
                         <Typography variant="caption" sx={{ display: 'block', opacity: 0.5, mb: 1.5 }}>{t('inventory.createVm.scsiControllerLabel', { controller: scsiController })} — {t('inventory.createVm.format', { format: disk.format })}</Typography>
@@ -1418,18 +1619,20 @@ return
 
               {/* Sockets × Cores + Type */}
               <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 1.5 }}>
-                <TextField
+                <NumericTextField
                   label={t('inventory.createVm.sockets')}
                   value={cpuSockets}
-                  onChange={(e) => setCpuSockets(Number.parseInt(e.target.value) || 1)}
+                  onChange={setCpuSockets}
+                  fallback={1}
                   size="small"
                   type="number"
                   inputProps={{ min: 1, max: 4 }}
                 />
-                <TextField
+                <NumericTextField
                   label={t('inventory.createVm.cores')}
                   value={cpuCores}
-                  onChange={(e) => setCpuCores(Number.parseInt(e.target.value) || 1)}
+                  onChange={setCpuCores}
+                  fallback={1}
                   size="small"
                   type="number"
                   inputProps={{ min: 1, max: 128 }}
@@ -1492,10 +1695,11 @@ return
                       size="small"
                       disabled
                     />
-                    <TextField
+                    <NumericTextField
                       label={t('inventory.createVm.cpuUnits')}
                       value={cpuUnits}
-                      onChange={(e) => setCpuUnits(Number.parseInt(e.target.value) || 100)}
+                      onChange={setCpuUnits}
+                      fallback={100}
                       size="small"
                       type="number"
                     />
@@ -1572,10 +1776,11 @@ return
                 />
               </Box>
 
-              <TextField
+              <NumericTextField
                 label={t('inventory.createVm.memoryMib')}
                 value={memorySize}
-                onChange={(e) => setMemorySize(Number.parseInt(e.target.value) || 512)}
+                onChange={setMemorySize}
+                fallback={512}
                 size="small"
                 type="number"
                 inputProps={{ min: 128, step: 128 }}
@@ -1600,10 +1805,11 @@ return
                       label={t('inventory.createVm.ballooningDevice')}
                       sx={{ gridColumn: '1 / -1' }}
                     />
-                    <TextField
+                    <NumericTextField
                       label={t('inventory.createVm.minMemoryMib')}
                       value={minMemory}
-                      onChange={(e) => setMinMemory(Number.parseInt(e.target.value) || 512)}
+                      onChange={setMinMemory}
+                      fallback={512}
                       size="small"
                       type="number"
                       inputProps={{ min: 128, step: 128 }}

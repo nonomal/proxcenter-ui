@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server"
+import { cookies } from "next/headers"
 
 import { request } from "undici"
 
@@ -6,6 +7,7 @@ import { getConnectionById } from "@/lib/connections/getConnection"
 import { getInsecureAgent } from "@/lib/proxmox/client"
 import { formatBytes } from "@/utils/format"
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
+import { getDateLocale } from "@/lib/i18n/date"
 
 export const runtime = "nodejs"
 
@@ -33,6 +35,9 @@ export async function GET(
 
     const denied = await checkPermission(PERMISSIONS.BACKUP_VIEW, "connection", pveId)
     if (denied) return denied
+
+    const cookieStore = await cookies()
+    const dateLocale = getDateLocale(cookieStore.get('NEXT_LOCALE')?.value || 'en')
 
     const url = new URL(req.url)
     const storage = url.searchParams.get('storage')
@@ -148,7 +153,7 @@ export async function GET(
         size: entry.size || 0,
         sizeFormatted: formatBytes(entry.size || 0),
         mtime: entry.mtime,
-        mtimeFormatted: entry.mtime ? new Date(entry.mtime * 1000).toLocaleString('fr-FR') : '-',
+        mtimeFormatted: entry.mtime ? new Date(entry.mtime * 1000).toLocaleString(dateLocale) : '-',
         leaf: entry.leaf,
         browsable: isDir || isVirtual,
       }

@@ -34,6 +34,7 @@ import {
 import EntityTagManager from './EntityTagManager'
 import { MigrateVmDialog, CrossClusterMigrateParams } from '@/components/MigrateVmDialog'
 import { CloneVmDialog } from '@/components/hardware/CloneVmDialog'
+import { crossClusterMigrate } from '@/lib/migration/crossClusterMigrate'
 import { NodeIcon, ClusterIcon, getVmIcon } from './TreeIcons'
 
 // RemixIcon replacements used in context menus / dialogs
@@ -977,20 +978,8 @@ export default function TreeDialogs(props: TreeDialogsProps) {
             setReloadTick(x => x + 1)
           }}
           onCrossClusterMigrate={async (params: CrossClusterMigrateParams) => {
-            // Migration cross-cluster
             const { connId, node, type, vmid } = migrateTarget
-            const res = await fetch(
-              `/api/v1/connections/${encodeURIComponent(connId)}/guests/${type}/${encodeURIComponent(node)}/${encodeURIComponent(vmid)}/remote-migrate`,
-              {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(params)
-              }
-            )
-            if (!res.ok) {
-              const err = await res.json().catch(() => ({}))
-              throw new Error(err?.error || res.statusText)
-            }
+            await crossClusterMigrate({ connId, node, type, vmid }, params)
             setMigrateDialogOpen(false)
             setMigrateTarget(null)
             setReloadTick(x => x + 1)

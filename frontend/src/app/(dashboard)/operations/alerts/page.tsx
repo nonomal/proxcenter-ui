@@ -36,13 +36,14 @@ import {
   Typography
 } from '@mui/material'
 import { DataGrid, GridColDef, GridRowSelectionModel } from '@mui/x-data-grid'
-import { PieChart, Pie, Cell, ResponsiveContainer } from 'recharts'
+import { PieChart, Pie, Cell } from 'recharts'
+import ChartContainer from '@/components/ChartContainer'
 
 import { usePageTitle } from '@/contexts/PageTitleContext'
 import EnterpriseGuard from '@/components/guards/EnterpriseGuard'
 import { Features, useLicense } from '@/contexts/LicenseContext'
 import { useToast } from '@/contexts/ToastContext'
-import { useOrchestratorAlerts, useAlertsSummary, useAlertRules, useAlertThresholds } from '@/hooks/useAlerts'
+import { useOrchestratorAlerts, useAlertsSummary, useAlertRules } from '@/hooks/useAlerts'
 import EmptyState from '@/components/EmptyState'
 import { CardsSkeleton, TableSkeleton } from '@/components/skeletons'
 
@@ -81,16 +82,6 @@ interface AlertSummary {
   resolved_today: number
 }
 
-interface AlertThresholds {
-  cpu_warning: number
-  cpu_critical: number
-  memory_warning: number
-  memory_critical: number
-  storage_warning: number
-  storage_critical: number
-  snapshot_max_age_days: number
-}
-
 interface EventRule {
   id: string
   name: string
@@ -100,6 +91,7 @@ interface EventRule {
   level: 'error' | 'warning' | 'info' | 'all'
   task_types: string
   pattern: string
+  exclude_pattern: string
   connection_id: string
   node_pattern: string
   severity: 'info' | 'warning' | 'critical'
@@ -212,7 +204,7 @@ function DonutStatCard({ title, value, total, color }: { title: string; value: n
     <Card variant="outlined">
       <CardContent sx={{ py: 1.5, px: 2, display: 'flex', alignItems: 'center', gap: 1.5 }}>
         <Box sx={{ width: 52, height: 52, flexShrink: 0 }}>
-          <ResponsiveContainer width="100%" height="100%" minWidth={0}>
+          <ChartContainer>
             <PieChart>
               <Pie
                 data={[{ value: value || 0 }, { value: remainder || 1 }]}
@@ -226,7 +218,7 @@ function DonutStatCard({ title, value, total, color }: { title: string; value: n
                 <Cell fill="rgba(255,255,255,0.08)" />
               </Pie>
             </PieChart>
-          </ResponsiveContainer>
+          </ChartContainer>
         </Box>
         <Box>
           <Typography variant="caption" sx={{ opacity: 0.6 }}>{title}</Typography>
@@ -245,7 +237,7 @@ function DonutTotalCard({ title, value, segments }: { title: string; value: numb
     <Card variant="outlined">
       <CardContent sx={{ py: 1.5, px: 2, display: 'flex', alignItems: 'center', gap: 1.5 }}>
         <Box sx={{ width: 52, height: 52, flexShrink: 0 }}>
-          <ResponsiveContainer width="100%" height="100%" minWidth={0}>
+          <ChartContainer>
             <PieChart>
               <Pie
                 data={data}
@@ -258,7 +250,7 @@ function DonutTotalCard({ title, value, segments }: { title: string; value: numb
                 {data.map((s, i) => <Cell key={i} fill={s.color} />)}
               </Pie>
             </PieChart>
-          </ResponsiveContainer>
+          </ChartContainer>
         </Box>
         <Box>
           <Typography variant="caption" sx={{ opacity: 0.6 }}>{title}</Typography>
@@ -281,14 +273,6 @@ export default function AlertsPage() {
   const [mounted, setMounted] = useState(false)
   const [tab, setTab] = useState(0)
 
-  const [thresholds, setThresholds] = useState<AlertThresholds>({
-    cpu_warning: 80, cpu_critical: 95,
-    memory_warning: 85, memory_critical: 95,
-    storage_warning: 80, storage_critical: 90,
-    snapshot_max_age_days: 7
-  })
-
-  const [savingThresholds, setSavingThresholds] = useState(false)
   const { showToast } = useToast()
 
   // Dialog pour créer/éditer une règle
@@ -298,7 +282,7 @@ export default function AlertsPage() {
   const [ruleForm, setRuleForm] = useState<Partial<EventRule>>({
     name: '', description: '', enabled: true,
     category: 'all', level: 'error', task_types: '',
-    pattern: '', connection_id: '', node_pattern: '',
+    pattern: '', exclude_pattern: '', connection_id: '', node_pattern: '',
     severity: 'warning', notify_email: true
   })
 
@@ -354,10 +338,6 @@ return () => setPageInfo('', '', '')
     mutate: mutateRules
   } = useAlertRules(isEnterprise)
 
-  const {
-    data: thresholdsData
-  } = useAlertThresholds(isEnterprise)
-
   // Derive state from SWR data
   const alerts: AlertData[] = alertsData?.data || []
   const orchestratorAvailable = !alertsError
@@ -371,13 +351,6 @@ return () => setPageInfo('', '', '')
     if (!rulesData) return []
     return Array.isArray(rulesData) ? rulesData : []
   }, [rulesData])
-
-  // Sync thresholds from SWR into local state (for editing)
-  useEffect(() => {
-    if (thresholdsData) {
-      setThresholds(thresholdsData)
-    }
-  }, [thresholdsData])
 
   // Revalidate all SWR caches after mutations
   const revalidateAll = useCallback(() => {
@@ -426,30 +399,12 @@ return true
     })
   }
 
-  const handleSaveThresholds = async () => {
-    if (!isEnterprise) return
-
-    try {
-      setSavingThresholds(true)
-      await fetch('/api/v1/orchestrator/alerts/thresholds', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(thresholds)
-      })
-      showToast(t('common.success'), 'success')
-    } catch (e) {
-      showToast(t('common.error'), 'error')
-    } finally {
-      setSavingThresholds(false)
-    }
-  }
-
   const openNewRuleDialog = () => {
     setEditingRule(null)
     setRuleForm({
       name: '', description: '', enabled: true,
       category: 'all', level: 'error', task_types: '',
-      pattern: '', connection_id: '', node_pattern: '',
+      pattern: '', exclude_pattern: '', connection_id: '', node_pattern: '',
       severity: 'warning', notify_email: true
     })
     setRuleDialog(true)
@@ -787,7 +742,6 @@ return <Chip size="small" label={labels[p.value] || p.value} color={colors[p.val
         <Box sx={{ borderBottom: 1, borderColor: 'divider' }}>
           <Tabs value={tab} onChange={(_, v) => setTab(v)}>
             <Tab label={t('alerts.alertsTab', { count: summary.total_active })} />
-            <Tab label={t('alerts.thresholds')} />
             <Tab label={t('alerts.eventRules', { count: rules.length })} />
           </Tabs>
         </Box>
@@ -871,126 +825,6 @@ return <Chip size="small" label={labels[p.value] || p.value} color={colors[p.val
         )}
 
         {tab === 1 && (
-          <Box sx={{ p: 3 }}>
-            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 3 }}>
-              <Typography variant="h6" fontWeight={700}>{t('alerts.thresholdsConfig')}</Typography>
-              <Button variant="contained" onClick={handleSaveThresholds} disabled={savingThresholds}
-                startIcon={savingThresholds ? <CircularProgress size={16} /> : <i className="ri-save-line" />}>{t('common.save')}</Button>
-            </Box>
-
-            {/* Section: Resource Usage */}
-            <Typography variant="overline" color="text.secondary" fontWeight={700} sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
-              <i className="ri-bar-chart-box-line" style={{ fontSize: 16 }} />
-              {t('alerts.resourceUsage')}
-            </Typography>
-            <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', lg: '1fr 1fr 1fr' }, gap: 2, mb: 4 }}>
-              {/* CPU */}
-              <Card variant="outlined" sx={{ borderRadius: 2 }}>
-                <CardContent sx={{ p: 2.5, '&:last-child': { pb: 2.5 } }}>
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
-                    <i className="ri-cpu-line" style={{ fontSize: 18, opacity: 0.6 }} />
-                    <Typography variant="subtitle2" fontWeight={700}>{t('alerts.cpu')}</Typography>
-                  </Box>
-                  <Typography variant="caption" color="text.secondary" sx={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                    {t('alerts.warning')}: {thresholds.cpu_warning}% · {t('alerts.critical')}: {thresholds.cpu_critical}%
-                  </Typography>
-                  <Slider
-                    value={[thresholds.cpu_warning, thresholds.cpu_critical]}
-                    onChange={(_, v) => { const [w, c] = v as number[]; setThresholds(th => ({ ...th, cpu_warning: w, cpu_critical: c })) }}
-                    valueLabelDisplay="auto" valueLabelFormat={(v) => `${v}%`}
-                    min={50} max={100}
-                    marks={[{ value: 50, label: '50%' }, { value: 75, label: '75%' }, { value: 100, label: '100%' }]}
-                    sx={{ mt: 2, '& .MuiSlider-markLabel[data-index="0"]': { left: '6% !important' }, '& .MuiSlider-markLabel[data-index="2"]': { left: '94% !important' } }}
-                  />
-                </CardContent>
-              </Card>
-
-              {/* Memory */}
-              <Card variant="outlined" sx={{ borderRadius: 2 }}>
-                <CardContent sx={{ p: 2.5, '&:last-child': { pb: 2.5 } }}>
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
-                    <i className="ri-ram-line" style={{ fontSize: 18, opacity: 0.6 }} />
-                    <Typography variant="subtitle2" fontWeight={700}>{t('alerts.memory')}</Typography>
-                  </Box>
-                  <Typography variant="caption" color="text.secondary" sx={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                    {t('alerts.warning')}: {thresholds.memory_warning}% · {t('alerts.critical')}: {thresholds.memory_critical}%
-                  </Typography>
-                  <Slider
-                    value={[thresholds.memory_warning, thresholds.memory_critical]}
-                    onChange={(_, v) => { const [w, c] = v as number[]; setThresholds(th => ({ ...th, memory_warning: w, memory_critical: c })) }}
-                    valueLabelDisplay="auto" valueLabelFormat={(v) => `${v}%`}
-                    min={50} max={100}
-                    marks={[{ value: 50, label: '50%' }, { value: 75, label: '75%' }, { value: 100, label: '100%' }]}
-                    sx={{ mt: 2, '& .MuiSlider-markLabel[data-index="0"]': { left: '6% !important' }, '& .MuiSlider-markLabel[data-index="2"]': { left: '94% !important' } }}
-                  />
-                </CardContent>
-              </Card>
-
-              {/* Storage */}
-              <Card variant="outlined" sx={{ borderRadius: 2 }}>
-                <CardContent sx={{ p: 2.5, '&:last-child': { pb: 2.5 } }}>
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
-                    <i className="ri-hard-drive-2-line" style={{ fontSize: 18, opacity: 0.6 }} />
-                    <Typography variant="subtitle2" fontWeight={700}>{t('alerts.storage')}</Typography>
-                  </Box>
-                  <Typography variant="caption" color="text.secondary" sx={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                    {t('alerts.warning')}: {thresholds.storage_warning}% · {t('alerts.critical')}: {thresholds.storage_critical}%
-                  </Typography>
-                  <Slider
-                    value={[thresholds.storage_warning, thresholds.storage_critical]}
-                    onChange={(_, v) => { const [w, c] = v as number[]; setThresholds(th => ({ ...th, storage_warning: w, storage_critical: c })) }}
-                    valueLabelDisplay="auto" valueLabelFormat={(v) => `${v}%`}
-                    min={50} max={100}
-                    marks={[{ value: 50, label: '50%' }, { value: 75, label: '75%' }, { value: 100, label: '100%' }]}
-                    sx={{ mt: 2, '& .MuiSlider-markLabel[data-index="0"]': { left: '6% !important' }, '& .MuiSlider-markLabel[data-index="2"]': { left: '94% !important' } }}
-                  />
-                </CardContent>
-              </Card>
-            </Box>
-
-            {/* Section: Maintenance */}
-            <Typography variant="overline" color="text.secondary" fontWeight={700} sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
-              <i className="ri-tools-line" style={{ fontSize: 16 }} />
-              {t('alerts.maintenance')}
-            </Typography>
-            <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', lg: '1fr 1fr 1fr' }, gap: 2 }}>
-              {/* Stale Snapshots */}
-              <Card variant="outlined" sx={{ borderRadius: 2 }}>
-                <CardContent sx={{ p: 2.5, '&:last-child': { pb: 2.5 } }}>
-                  <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 0.5 }}>
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                      <i className="ri-camera-line" style={{ fontSize: 18, opacity: 0.6 }} />
-                      <Typography variant="subtitle2" fontWeight={700}>{t('alerts.snapshotAge')}</Typography>
-                    </Box>
-                    <Switch
-                      size="small"
-                      checked={thresholds.snapshot_max_age_days > 0}
-                      onChange={(_, checked) => setThresholds(th => ({ ...th, snapshot_max_age_days: checked ? 7 : 0 }))}
-                    />
-                  </Box>
-                  <Typography variant="caption" color="text.secondary">{t('alerts.snapshotAgeDesc')}</Typography>
-                  {thresholds.snapshot_max_age_days > 0 ? (
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mt: 2 }}>
-                      <TextField
-                        type="number"
-                        size="small"
-                        value={thresholds.snapshot_max_age_days}
-                        onChange={(e) => setThresholds(th => ({ ...th, snapshot_max_age_days: Math.max(1, Number.parseInt(e.target.value) || 1) }))}
-                        slotProps={{ htmlInput: { min: 1, max: 365 } }}
-                        sx={{ width: 80 }}
-                      />
-                      <Typography variant="body2" color="text.secondary">{t('alerts.snapshotDays')}</Typography>
-                    </Box>
-                  ) : (
-                    <Typography variant="body2" color="text.disabled" sx={{ mt: 2 }}>{t('alerts.snapshotDisabled')}</Typography>
-                  )}
-                </CardContent>
-              </Card>
-            </Box>
-          </Box>
-        )}
-
-        {tab === 2 && (
           <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, p: 2 }}>
             <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
               <Typography variant="body2" sx={{ opacity: 0.7 }}>{t('alerts.rulesDescription')}</Typography>
@@ -1070,6 +904,8 @@ return <Chip size="small" label={labels[p.value] || p.value} color={colors[p.val
             />
             <TextField label={t('alerts.pattern')} value={ruleForm.pattern || ''} onChange={(e) => setRuleForm({ ...ruleForm, pattern: e.target.value })} fullWidth
               placeholder={t('alerts.patternPlaceholder')} helperText={t('alerts.optionalRegex')} />
+            <TextField label={t('alerts.excludePattern')} value={ruleForm.exclude_pattern || ''} onChange={(e) => setRuleForm({ ...ruleForm, exclude_pattern: e.target.value })} fullWidth
+              placeholder={t('alerts.excludePatternPlaceholder')} helperText={t('alerts.excludePatternHelp')} />
             <FormControl fullWidth>
               <InputLabel>{t('alerts.alertSeverity')}</InputLabel>
               <Select value={ruleForm.severity || 'warning'} label={t('alerts.alertSeverity')} onChange={(e) => setRuleForm({ ...ruleForm, severity: e.target.value as EventRule['severity'] })}>

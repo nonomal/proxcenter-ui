@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server"
+import { cookies } from "next/headers"
 
 import { demoResponse } from "@/lib/demo/demo-api"
 import { pbsFetch } from "@/lib/proxmox/pbs-client"
@@ -7,6 +8,7 @@ import { formatBytes } from "@/utils/format"
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
 import { getVdcScope } from "@/lib/vdc/scope"
 import { getCurrentTenantId } from "@/lib/tenant"
+import { getDateLocale } from "@/lib/i18n/date"
 import {
   type CachedBackup,
   getPbsBackupsFromCache,
@@ -23,6 +25,7 @@ export const runtime = "nodejs"
  */
 async function fetchAllPbsBackups(
   conn: any,
+  dateLocale: string,
 ): Promise<{ data: CachedBackup[]; warnings: string[] }> {
   const datastores = await pbsFetch<any[]>(conn, "/admin/datastore")
   const allBackups: CachedBackup[] = []
@@ -73,7 +76,7 @@ async function fetchAllPbsBackups(
             backupId: snap['backup-id'],
             vmName: vmName,
             backupTime: snap['backup-time'] || 0,
-            backupTimeFormatted: backupTime?.toLocaleString('fr-FR') || '-',
+            backupTimeFormatted: backupTime?.toLocaleString(dateLocale) || '-',
             backupTimeIso: backupTime?.toISOString() || '',
 
             // Taille
@@ -88,7 +91,7 @@ async function fetchAllPbsBackups(
             verification: snap.verification || null,
             verified: snap.verification?.state === 'ok',
             verifiedAt: snap.verification?.upid
-              ? new Date((snap.verification['last-run'] || 0) * 1000).toLocaleString('fr-FR')
+              ? new Date((snap.verification['last-run'] || 0) * 1000).toLocaleString(dateLocale)
               : null,
 
             // Protection
@@ -126,9 +129,10 @@ async function fetchAllPbsBackups(
 async function getAllBackups(
   id: string,
   conn: any,
-  tenantId = 'default'
+  tenantId = 'default',
+  dateLocale = 'en-US',
 ): Promise<{ data: CachedBackup[]; warnings: string[]; fromCache: boolean }> {
-  const cached = getPbsBackupsFromCache(id, tenantId)
+  const cached = getPbsBackupsFromCache(id, tenantId, dateLocale)
 
   if (cached.status === 'fresh') {
     return { data: cached.data, warnings: cached.warnings, fromCache: true }
@@ -136,11 +140,11 @@ async function getAllBackups(
 
   if (cached.status === 'stale') {
     // Serve stale data immediately, refresh in background
-    const existing = getInflightPbsFetch(id, tenantId)
+    const existing = getInflightPbsFetch(id, tenantId, dateLocale)
     if (existing === null) {
-      const refreshPromise = fetchAllPbsBackups(conn)
+      const refreshPromise = fetchAllPbsBackups(conn, dateLocale)
         .then(result => {
-          setCachedPbsBackups(id, result.data, result.warnings, tenantId)
+          setCachedPbsBackups(id, result.data, result.warnings, tenantId, dateLocale)
           return result
         })
         .catch(err => {
@@ -148,32 +152,32 @@ async function getAllBackups(
           return { data: cached.data, warnings: cached.warnings }
         })
         .finally(() => {
-          setInflightPbsFetch(null, id, tenantId)
+          setInflightPbsFetch(null, id, tenantId, dateLocale)
         })
 
-      setInflightPbsFetch(refreshPromise, id, tenantId)
+      setInflightPbsFetch(refreshPromise, id, tenantId, dateLocale)
     }
 
     return { data: cached.data, warnings: cached.warnings, fromCache: true }
   }
 
   // Cache miss — blocking fetch required (but deduplicate concurrent requests)
-  let inflight = getInflightPbsFetch(id, tenantId)
+  let inflight = getInflightPbsFetch(id, tenantId, dateLocale)
   if (inflight !== null) {
     const result = await inflight
     return { data: result.data, warnings: result.warnings, fromCache: false }
   }
 
-  const fetchPromise = fetchAllPbsBackups(conn)
+  const fetchPromise = fetchAllPbsBackups(conn, dateLocale)
     .then(result => {
-      setCachedPbsBackups(id, result.data, result.warnings, tenantId)
+      setCachedPbsBackups(id, result.data, result.warnings, tenantId, dateLocale)
       return result
     })
     .finally(() => {
-      setInflightPbsFetch(null, id, tenantId)
+      setInflightPbsFetch(null, id, tenantId, dateLocale)
     })
 
-  setInflightPbsFetch(fetchPromise, id, tenantId)
+  setInflightPbsFetch(fetchPromise, id, tenantId, dateLocale)
   const result = await fetchPromise
   return { data: result.data, warnings: result.warnings, fromCache: false }
 }
@@ -190,6 +194,9 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> |
 
     const denied = await checkPermission(PERMISSIONS.BACKUP_VIEW, "pbs", id)
     if (denied) return denied
+
+    const cookieStore = await cookies()
+    const dateLocale = getDateLocale(cookieStore.get('NEXT_LOCALE')?.value || 'en')
 
     const url = new URL(req.url)
     const datastoreFilter = url.searchParams.get('datastore')
@@ -209,13 +216,13 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> |
 
     if (noCache) {
       // Force refresh requested
-      const result = await fetchAllPbsBackups(conn)
-      setCachedPbsBackups(id, result.data, result.warnings)
+      const result = await fetchAllPbsBackups(conn, dateLocale)
+      setCachedPbsBackups(id, result.data, result.warnings, 'default', dateLocale)
       allBackups = result.data
       warnings = result.warnings
       fromCache = false
     } else {
-      const result = await getAllBackups(id, conn)
+      const result = await getAllBackups(id, conn, 'default', dateLocale)
       allBackups = result.data
       warnings = result.warnings
       fromCache = result.fromCache
