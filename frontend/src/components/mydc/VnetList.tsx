@@ -102,8 +102,8 @@ export default function VnetList({ vdcId, quota }: Props) {
         density="compact"
         rowHeight={38}
         columnHeaderHeight={40}
-        pageSizeOptions={[5, 10, 25]}
-        initialState={{ pagination: { paginationModel: { pageSize: 5 } } }}
+        pageSizeOptions={[10, 25, 50]}
+        initialState={{ pagination: { paginationModel: { pageSize: 10 } } }}
         sx={{
           '& .MuiDataGrid-cell': {
             display: 'flex',
