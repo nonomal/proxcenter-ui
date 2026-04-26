@@ -13,6 +13,8 @@ Thumbs.db
 
 # Claude artifacts
 .claude/
+AGENTS.md
+CLAUDE.md
 
 # Environment files
 .env
