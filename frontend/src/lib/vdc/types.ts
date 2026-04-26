@@ -22,6 +22,18 @@ export interface VdcWithDetails extends Vdc {
   usage: VdcUsage | null
   sharedBridges: VdcSharedBridge[]
   vnets: VdcVnet[]
+  pbsBindings: VdcPbsBinding[]
+}
+
+export interface VdcPbsBinding {
+  id: string
+  vdcId: string
+  pbsConnectionId: string
+  pbsConnectionName: string
+  datastore: string
+  namespace: string
+  mode: 'auto' | 'manual'
+  createdAt: string
 }
 
 export interface VdcQuota {

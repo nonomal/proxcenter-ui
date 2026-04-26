@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useTranslations } from 'next-intl'
 
-import { Box, Button, Chip, Typography, Stack, IconButton } from '@mui/material'
+import { Chip, IconButton, Paper, Stack, Tooltip, Typography } from '@mui/material'
 import { DataGrid, type GridColDef } from '@mui/x-data-grid'
 
 import VnetCreateDialog from './VnetCreateDialog'
@@ -43,7 +43,7 @@ export default function VnetList({ vdcId, quota }: Props) {
       field: 'pveName',
       headerName: t('myVdc.vnetName'),
       flex: 1,
-      renderCell: (p) => <Typography variant="body2" fontFamily="monospace">{p.value}</Typography>,
+      renderCell: (p) => <Typography variant="body2">{p.value}</Typography>,
     },
     { field: 'description', headerName: t('myVdc.vnetDescription'), flex: 2 },
     { field: 'vxlanTag', headerName: 'VNI', width: 100, align: 'center', headerAlign: 'center' },
@@ -72,16 +72,24 @@ export default function VnetList({ vdcId, quota }: Props) {
   ]
 
   return (
-    <Box>
-      <Stack direction="row" justifyContent="flex-end" alignItems="center" mb={2}>
-        <Button
-          variant="contained"
-          startIcon={<i className="ri-add-line" />}
-          disabled={quotaReached}
-          onClick={() => setCreateOpen(true)}
-        >
-          {t('myVdc.createVnet')}
-        </Button>
+    <Paper sx={{ p: 2 }} variant="outlined">
+      <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1.5 }}>
+        <i className="ri-git-branch-line" />
+        <Typography variant="subtitle1" sx={{ fontWeight: 600, flex: 1 }}>
+          {t('myVdc.vnetsTitle')}
+        </Typography>
+        <Tooltip title={t('myVdc.createVnet')}>
+          <span>
+            <IconButton
+              size="small"
+              color="primary"
+              disabled={quotaReached}
+              onClick={() => setCreateOpen(true)}
+            >
+              <i className="ri-add-line" />
+            </IconButton>
+          </span>
+        </Tooltip>
       </Stack>
 
       <DataGrid
@@ -112,6 +120,6 @@ export default function VnetList({ vdcId, quota }: Props) {
       <VnetCreateDialog open={createOpen} vdcId={vdcId} onClose={() => setCreateOpen(false)} onCreated={() => { setCreateOpen(false); void reload() }} />
       {editVnet && <VnetEditDialog vnet={editVnet} vdcId={vdcId} onClose={() => setEditVnet(null)} onSaved={() => { setEditVnet(null); void reload() }} />}
       {deleteVnet && <VnetDeleteDialog vnet={deleteVnet} vdcId={vdcId} onClose={() => setDeleteVnet(null)} onDeleted={() => { setDeleteVnet(null); void reload() }} />}
-    </Box>
+    </Paper>
   )
 }

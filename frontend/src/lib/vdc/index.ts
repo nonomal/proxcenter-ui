@@ -102,6 +102,14 @@ export function listVdcs(tenantId?: string): VdcWithDetails[] {
   const stmtUsage = db.prepare('SELECT * FROM vdc_usage_cache WHERE vdc_id = ?')
   const stmtShared = db.prepare('SELECT id, vdc_id, bridge, label, created_at FROM vdc_shared_bridges WHERE vdc_id = ? ORDER BY bridge')
   const stmtVnets = db.prepare('SELECT id, vdc_id, pve_name, description, vxlan_tag, firewall, created_by, created_at FROM vdc_vnets WHERE vdc_id = ? ORDER BY pve_name')
+  const stmtPbs = db.prepare(
+    `SELECT b.id, b.vdc_id, b.pbs_connection_id, b.datastore, b.namespace, b.mode, b.created_at,
+            c.name AS pbs_name
+     FROM vdc_pbs_namespaces b
+     LEFT JOIN Connection c ON c.id = b.pbs_connection_id
+     WHERE b.vdc_id = ?
+     ORDER BY c.name, b.datastore, b.namespace`
+  )
 
   return (rows as any[]).map((row) => {
     const vdc = rowToVdc(row)
@@ -126,6 +134,16 @@ export function listVdcs(tenantId?: string): VdcWithDetails[] {
       createdBy: r.created_by ?? null,
       createdAt: r.created_at,
     }))
+    const pbsBindings = (stmtPbs.all(vdc.id) as any[]).map((r) => ({
+      id: r.id,
+      vdcId: r.vdc_id,
+      pbsConnectionId: r.pbs_connection_id,
+      pbsConnectionName: r.pbs_name ?? r.pbs_connection_id,
+      datastore: r.datastore,
+      namespace: r.namespace,
+      mode: (r.mode ?? 'auto') as 'auto' | 'manual',
+      createdAt: r.created_at,
+    }))
 
     return {
       ...vdc,
@@ -136,6 +154,7 @@ export function listVdcs(tenantId?: string): VdcWithDetails[] {
       usage,
       sharedBridges,
       vnets,
+      pbsBindings,
     } as VdcWithDetails
   })
 }
@@ -178,6 +197,23 @@ export function getVdcById(id: string): VdcWithDetails | null {
     createdBy: r.created_by ?? null,
     createdAt: r.created_at,
   }))
+  const pbsBindings = (db.prepare(
+    `SELECT b.id, b.vdc_id, b.pbs_connection_id, b.datastore, b.namespace, b.mode, b.created_at,
+            c.name AS pbs_name
+     FROM vdc_pbs_namespaces b
+     LEFT JOIN Connection c ON c.id = b.pbs_connection_id
+     WHERE b.vdc_id = ?
+     ORDER BY c.name, b.datastore, b.namespace`
+  ).all(id) as any[]).map((r) => ({
+    id: r.id,
+    vdcId: r.vdc_id,
+    pbsConnectionId: r.pbs_connection_id,
+    pbsConnectionName: r.pbs_name ?? r.pbs_connection_id,
+    datastore: r.datastore,
+    namespace: r.namespace,
+    mode: (r.mode ?? 'auto') as 'auto' | 'manual',
+    createdAt: r.created_at,
+  }))
 
   return {
     ...vdc,
@@ -188,6 +224,7 @@ export function getVdcById(id: string): VdcWithDetails | null {
     usage,
     sharedBridges,
     vnets,
+    pbsBindings,
   }
 }
 

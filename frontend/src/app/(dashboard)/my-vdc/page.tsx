@@ -44,10 +44,9 @@ export default function MyVdcPage() {
   }
 
   return (
-    <Box p={3}>
-      <Stack direction="row" alignItems="center" spacing={2} mb={2}>
-        <Typography variant="h5">{t('myVdc.title')}</Typography>
-        {vdcs.length > 1 && (
+    <Box sx={{ px: 3, pb: 3, pt: 0 }}>
+      {vdcs.length > 1 && (
+        <Stack direction="row" alignItems="center" spacing={2} mb={2}>
           <FormControl size="small" sx={{ minWidth: 240 }}>
             <InputLabel>{t('myVdc.selectVdc')}</InputLabel>
             <Select
@@ -60,8 +59,8 @@ export default function MyVdcPage() {
               ))}
             </Select>
           </FormControl>
-        )}
-      </Stack>
+        </Stack>
+      )}
 
       {selectedVdc && (
         <MyVdcOverview vdc={selectedVdc} />

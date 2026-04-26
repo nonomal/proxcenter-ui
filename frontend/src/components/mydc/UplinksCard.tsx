@@ -62,7 +62,6 @@ export default function UplinksCard({ vdcId }: Props) {
               key={b.bridge}
               label={b.label ? `${b.bridge} — ${b.label}` : b.bridge}
               size="small"
-              sx={{ fontFamily: 'monospace' }}
             />
           ))}
         </Box>

@@ -9,7 +9,10 @@ import QuotaDonut from './QuotaDonut'
 import UplinksCard from './UplinksCard'
 import MyStoragesCard from './MyStoragesCard'
 import MyVmsCard from './MyVmsCard'
+import HostsCard from './HostsCard'
 import VnetList from './VnetList'
+import MyBackupsCard from './MyBackupsCard'
+import MyGreenCard from './MyGreenCard'
 
 interface Props {
   vdc: any
@@ -35,17 +38,17 @@ export default function MyVdcOverview({ vdc }: Props) {
     () => (Array.isArray(vdc.storages) ? vdc.storages : []),
     [vdc.storages],
   )
+  const allowedNodes = useMemo<string[]>(
+    () => (Array.isArray(vdc.nodes) ? vdc.nodes : []),
+    [vdc.nodes],
+  )
+  const pbsBindings = useMemo<any[]>(
+    () => (Array.isArray(vdc.pbsBindings) ? vdc.pbsBindings : []),
+    [vdc.pbsBindings],
+  )
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-      {/* Header */}
-      <Box>
-        <Typography variant="h6">{vdc.name}</Typography>
-        {vdc.description && (
-          <Typography variant="caption" color="text.secondary">{vdc.description}</Typography>
-        )}
-      </Box>
-
       {/* Block 1: Quota donuts */}
       <Paper sx={{ p: 2 }} variant="outlined">
         <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 1.5, display: 'flex', alignItems: 'center', gap: 1 }}>
@@ -74,7 +77,7 @@ export default function MyVdcOverview({ vdc }: Props) {
         </Box>
       </Paper>
 
-      {/* Blocks 2-5 in a 2x2 grid */}
+      {/* Blocks 2-7 in a 2-column grid */}
       <Box
         sx={{
           display: 'grid',
@@ -82,17 +85,17 @@ export default function MyVdcOverview({ vdc }: Props) {
           gridTemplateColumns: { xs: '1fr', md: '1fr 1fr' },
         }}
       >
+        <HostsCard connectionIds={connectionIds} allowedNodes={allowedNodes} />
         <MyVmsCard connectionIds={connectionIds} />
-        <Paper sx={{ p: 2 }} variant="outlined">
-          <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 1.5, display: 'flex', alignItems: 'center', gap: 1 }}>
-            <i className="ri-git-branch-line" />
-            {t('myVdc.vnetsTitle')}
-          </Typography>
-          <VnetList vdcId={vdc.id} quota={{ maxVnets: quota.maxVnets ?? null }} />
-        </Paper>
+        <VnetList vdcId={vdc.id} quota={{ maxVnets: quota.maxVnets ?? null }} />
         <MyStoragesCard connectionIds={connectionIds} allowedStorages={allowedStorages} />
         <UplinksCard vdcId={vdc.id} />
+        <MyBackupsCard pbsBindings={pbsBindings} />
       </Box>
+
+      {/* Green-IT card at the bottom — full width so the 3 sub-papers have
+          room without clipping. */}
+      <MyGreenCard vdcId={vdc.id} />
     </Box>
   )
 }
