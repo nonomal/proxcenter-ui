@@ -6464,6 +6464,12 @@
       "greenTreesYear": "arbres pour compenser",
       "greenVmsPerKw": "VMs/kW",
       "greenNotConfigured": "Configuration Green-IT non définie par le provider.",
+      "mapTitle": "Datacenters",
+      "mapEmpty": "Aucun datacenter associé à ce vDC.",
+      "mapOnline": "online",
+      "mapDegraded": "dégradés",
+      "mapOffline": "offline",
+      "mapVmsRunning": "{running}/{total} VMs actives",
       "loadError": "Échec du chargement"
     }
   },

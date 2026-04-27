@@ -84,7 +84,8 @@
     "no_data": "Keine Daten",
     "empty": "Leer",
     "overview": "Übersicht",
-    "configuration": "Konfiguration"
+    "configuration": "Konfiguration",
+    "created": "Erstellt"
   },
   "whatsNew": {
     "title": "Neuigkeiten"
@@ -6322,6 +6323,12 @@
       "greenTreesYear": "Bäume zum Ausgleich",
       "greenVmsPerKw": "VMs/kW",
       "greenNotConfigured": "Green-IT-Konfiguration vom Provider nicht festgelegt.",
+      "mapTitle": "Rechenzentren",
+      "mapEmpty": "Diesem vDC ist kein Rechenzentrum zugeordnet.",
+      "mapOnline": "online",
+      "mapDegraded": "degradiert",
+      "mapOffline": "offline",
+      "mapVmsRunning": "{running}/{total} VMs laufen",
       "loadError": "Laden fehlgeschlagen"
     }
   },
@@ -6346,7 +6353,9 @@
     "pbsNamespaceRequired": "Namespace ist im manuellen Modus erforderlich",
     "pbsCancel": "Abbrechen",
     "pbsCreate": "Erstellen",
-    "pbsClose": "Schließen"
+    "pbsClose": "Schließen",
+    "storage": "Speicher",
+    "backups": "Backups"
   },
   "sdn": {
     "subtab": {

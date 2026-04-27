@@ -31,6 +31,8 @@ import { DataGrid, type GridColDef } from '@mui/x-data-grid'
 import { useTranslations } from 'next-intl'
 
 import VdcPbsBindingsSection from './VdcPbsBindingsSection'
+import QuotaDonut from '@/components/mydc/QuotaDonut'
+import { NodeIcon } from '@/app/(dashboard)/infrastructure/inventory/components/TreeIcons'
 
 interface VdcFormState {
   name: string
@@ -88,6 +90,22 @@ function quotaColor(percent: number): 'success' | 'warning' | 'error' {
   return 'error'
 }
 
+// Translates an ISO timestamp into a localized "3m ago" / "2h ago" / "5d ago"
+// using the existing time.* keys, so we don't ship a new dependency.
+function formatRelative(iso: string | null | undefined, t: (k: string, p?: any) => string): string {
+  if (!iso) return ''
+  const ts = Date.parse(iso)
+  if (Number.isNaN(ts)) return ''
+  const diff = Date.now() - ts
+  if (diff < 60_000) return t('time.justNow')
+  const minutes = Math.floor(diff / 60_000)
+  if (minutes < 60) return t('time.minutesAgo', { count: minutes })
+  const hours = Math.floor(diff / 3_600_000)
+  if (hours < 24) return t('time.hoursAgo', { count: hours })
+  const days = Math.floor(diff / 86_400_000)
+  return t('time.daysAgo', { count: days })
+}
+
 export default function VdcTab() {
   const t = useTranslations()
 
@@ -122,6 +140,11 @@ export default function VdcTab() {
 
   // PBS bindings (inline in the edit dialog, below Nodes)
   const [pbsConnections, setPbsConnections] = useState<Array<{ id: string; name: string; fingerprint: string | null }>>([])
+
+  // Node statuses keyed `${connectionId}|${nodeName}` -> 'online' | 'offline' | …
+  // Populated once vDCs are loaded by hitting available-resources for each
+  // distinct connection. Used to render the status pastille in the Nodes cell.
+  const [nodeStatuses, setNodeStatuses] = useState<Record<string, string>>({})
 
   // Auto-clear success after 5s
   useEffect(() => {
@@ -171,6 +194,40 @@ export default function VdcTab() {
     fetchVdcs()
     fetchDropdowns()
   }, [fetchVdcs, fetchDropdowns])
+
+  // After vDCs are loaded, resolve each distinct connection's node statuses
+  // so the Nodes cell can display the online/offline pastille.
+  useEffect(() => {
+    if (vdcs.length === 0) return
+    const connIds = Array.from(new Set(vdcs.map((v: any) => v.connectionId).filter(Boolean)))
+    if (connIds.length === 0) return
+    let cancelled = false
+
+    void (async () => {
+      const results = await Promise.all(connIds.map(async (cid) => {
+        try {
+          const r = await fetch(`/api/v1/admin/connections/${encodeURIComponent(cid)}/available-resources`)
+          if (!r.ok) return null
+          const j = await r.json()
+          const ns = j?.data?.nodes ?? []
+          return { cid, nodes: Array.isArray(ns) ? ns : [] }
+        } catch {
+          return null
+        }
+      }))
+      if (cancelled) return
+      const statuses: Record<string, string> = {}
+      for (const r of results) {
+        if (!r) continue
+        for (const n of r.nodes as Array<{ name: string; status?: string }>) {
+          if (n?.name) statuses[`${r.cid}|${n.name}`] = n.status || 'unknown'
+        }
+      }
+      setNodeStatuses(statuses)
+    })()
+
+    return () => { cancelled = true }
+  }, [vdcs])
 
   useEffect(() => {
     ;(async () => {
@@ -405,32 +462,32 @@ export default function VdcTab() {
     }
   }
 
-  // ------- Quota gauge renderer -------
+  // ------- Quota donut renderer (compact, in-cell) -------
 
-  const renderQuotaGauge = (used: number | undefined, max: number | null | undefined, unit?: string) => {
-    if (max == null) {
-      return (
-        <Typography variant="body2" sx={{ opacity: 0.5, lineHeight: '52px' }}>
-          {t('vdc.quotaUnlimited')}
-        </Typography>
-      )
-    }
-
-    const usedVal = used ?? 0
-    const percent = max > 0 ? Math.min((usedVal / max) * 100, 100) : 0
-
+  const renderQuotaDonut = (
+    icon: string,
+    used: number | undefined,
+    max: number | null | undefined,
+    unit?: string,
+    lastSyncedAt?: string | null,
+  ) => {
+    const donut = (
+      <QuotaDonut
+        size={52}
+        icon={icon}
+        used={used ?? 0}
+        max={max}
+        unit={unit}
+        unlimitedLabel={t('vdc.quotaUnlimited')}
+      />
+    )
+    if (!lastSyncedAt) return donut
+    const when = formatRelative(lastSyncedAt, t)
+    if (!when) return donut
     return (
-      <Box sx={{ width: '100%', py: 0.5 }}>
-        <LinearProgress
-          variant="determinate"
-          value={percent}
-          color={quotaColor(percent)}
-          sx={{ height: 6, borderRadius: 3 }}
-        />
-        <Typography variant="caption" color="text.secondary">
-          {usedVal}{unit ? ` ${unit}` : ''} / {max}{unit ? ` ${unit}` : ''}
-        </Typography>
-      </Box>
+      <Tooltip title={t('time.synced', { time: when })} arrow>
+        <Box sx={{ display: 'inline-flex' }}>{donut}</Box>
+      </Tooltip>
     )
   }
 
@@ -441,12 +498,59 @@ export default function VdcTab() {
       field: 'name',
       headerName: t('common.name'),
       flex: 1,
-      minWidth: 150,
+      minWidth: 180,
+      renderCell: (params) => {
+        const enabled = params.row.enabled !== false
+        const subtitle = params.row.description || params.row.slug || params.row.pvePoolName
+        const created = formatRelative(params.row.createdAt, t)
+        const tooltipTitle = created ? `${t('common.created')} ${created}` : ''
+
+        return (
+          <Tooltip title={tooltipTitle} arrow disableInteractive>
+            <Box sx={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', overflow: 'hidden', width: '100%' }}>
+              <Stack direction="row" alignItems="center" spacing={0.5}>
+                <Typography variant="body2" noWrap sx={{ fontWeight: 500 }}>
+                  {params.value}
+                </Typography>
+                {!enabled && (
+                  <Tooltip title={t('common.disabled')} arrow>
+                    <Box
+                      component="i"
+                      className="ri-pause-circle-fill"
+                      sx={{ fontSize: 14, color: 'warning.main', flexShrink: 0 }}
+                    />
+                  </Tooltip>
+                )}
+              </Stack>
+              {subtitle && (
+                <Typography
+                  variant="caption"
+                  color="text.secondary"
+                  noWrap
+                  sx={{ fontSize: '0.7rem', lineHeight: 1.2, opacity: 0.7 }}
+                >
+                  {subtitle}
+                </Typography>
+              )}
+            </Box>
+          </Tooltip>
+        )
+      },
     },
     {
       field: 'tenantName',
       headerName: t('vdc.tenant'),
-      width: 150,
+      width: 170,
+      renderCell: (params) => (
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, overflow: 'hidden' }}>
+          <Box
+            component="i"
+            className="ri-building-line"
+            sx={{ fontSize: 16, color: 'primary.main', flexShrink: 0 }}
+          />
+          <Typography variant="body2" noWrap>{params.value}</Typography>
+        </Box>
+      ),
     },
     {
       field: 'connectionId',
@@ -457,20 +561,53 @@ export default function VdcTab() {
     {
       field: 'nodes',
       headerName: t('vdc.nodes'),
-      minWidth: 150,
+      minWidth: 200,
       flex: 1,
       renderCell: (params) => {
-        const nodes = Array.isArray(params.value) ? params.value : []
+        const nodes: string[] = Array.isArray(params.value) ? params.value : []
+        const connId: string = params.row.connectionId
+        const MAX_VISIBLE = 3
+        const visible = nodes.slice(0, MAX_VISIBLE)
+        const hidden = nodes.slice(MAX_VISIBLE)
+
         return (
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, overflow: 'hidden' }}>
-            {nodes.map((name: string) => (
-              <Tooltip key={name} title={name} arrow>
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.25, flexShrink: 0 }}>
-                  <img src="/images/proxmox-logo.svg" alt="" width={16} height={16} style={{ opacity: 0.85 }} />
-                  <Typography variant="caption" noWrap>{name}</Typography>
-                </Box>
+            {visible.map((name) => {
+              const status = nodeStatuses[`${connId}|${name}`]
+
+              return (
+                <Tooltip key={name} title={status ? `${name} (${status})` : name} arrow>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.25, flexShrink: 0 }}>
+                    <NodeIcon status={status} size={16} />
+                    <Typography variant="caption" noWrap>{name}</Typography>
+                  </Box>
+                </Tooltip>
+              )
+            })}
+            {hidden.length > 0 && (
+              <Tooltip
+                arrow
+                title={
+                  <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.25 }}>
+                    {hidden.map((name) => {
+                      const status = nodeStatuses[`${connId}|${name}`]
+                      return (
+                        <Stack key={name} direction="row" alignItems="center" spacing={0.5}>
+                          <NodeIcon status={status} size={14} />
+                          <Typography variant="caption">{name}</Typography>
+                        </Stack>
+                      )
+                    })}
+                  </Box>
+                }
+              >
+                <Chip
+                  label={`+${hidden.length}`}
+                  size="small"
+                  sx={{ height: 20, fontSize: '0.7rem', flexShrink: 0, cursor: 'default' }}
+                />
               </Tooltip>
-            ))}
+            )}
           </Box>
         )
       },
@@ -478,34 +615,106 @@ export default function VdcTab() {
     {
       field: 'quotaCpu',
       headerName: t('vdc.vcpus'),
-      width: 150,
+      width: 110,
       sortable: false,
-      renderCell: (params) => renderQuotaGauge(
+      align: 'center',
+      headerAlign: 'center',
+      renderCell: (params) => renderQuotaDonut(
+        'ri-cpu-line',
         params.row.usage?.usedVcpus,
         params.row.quota?.maxVcpus,
+        undefined,
+        params.row.usage?.lastSyncedAt,
       ),
     },
     {
       field: 'quotaRam',
       headerName: t('vdc.ram'),
-      width: 150,
+      width: 120,
       sortable: false,
+      align: 'center',
+      headerAlign: 'center',
       renderCell: (params) => {
         const usedGb = params.row.usage?.usedRamMb != null ? Math.round(params.row.usage.usedRamMb / 1024) : undefined
         const maxGb = params.row.quota?.maxRamMb != null ? Math.round(params.row.quota.maxRamMb / 1024) : null
 
-        return renderQuotaGauge(usedGb, maxGb, 'GB')
+        return renderQuotaDonut('ri-ram-2-line', usedGb, maxGb, 'GB', params.row.usage?.lastSyncedAt)
+      },
+    },
+    {
+      field: 'quotaStorage',
+      headerName: t('vdc.storage'),
+      width: 120,
+      sortable: false,
+      align: 'center',
+      headerAlign: 'center',
+      renderCell: (params) => {
+        const usedGb = params.row.usage?.usedStorageMb != null ? Math.round(params.row.usage.usedStorageMb / 1024) : undefined
+        const maxGb = params.row.quota?.maxStorageMb != null ? Math.round(params.row.quota.maxStorageMb / 1024) : null
+
+        return renderQuotaDonut('ri-hard-drive-2-line', usedGb, maxGb, 'GB', params.row.usage?.lastSyncedAt)
       },
     },
     {
       field: 'quotaVms',
       headerName: t('vdc.vms'),
-      width: 120,
+      width: 110,
       sortable: false,
-      renderCell: (params) => renderQuotaGauge(
+      align: 'center',
+      headerAlign: 'center',
+      renderCell: (params) => renderQuotaDonut(
+        'ri-computer-line',
         params.row.usage?.usedVms,
         params.row.quota?.maxVms,
+        undefined,
+        params.row.usage?.lastSyncedAt,
       ),
+    },
+    {
+      field: 'quotaVnets',
+      headerName: t('sdn.subtab.vnets'),
+      width: 110,
+      sortable: false,
+      align: 'center',
+      headerAlign: 'center',
+      renderCell: (params) => {
+        const used = Array.isArray(params.row.vnets) ? params.row.vnets.length : 0
+        return renderQuotaDonut('ri-git-branch-line', used, params.row.quota?.maxVnets)
+      },
+    },
+    {
+      field: 'pbsBindings',
+      headerName: t('vdc.backups'),
+      width: 110,
+      sortable: false,
+      align: 'center',
+      headerAlign: 'center',
+      renderCell: (params) => {
+        const bindings: any[] = Array.isArray(params.row.pbsBindings) ? params.row.pbsBindings : []
+        const count = bindings.length
+        const tooltip = count === 0 ? t('myVdc.cockpit.noBackups') : (
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.25 }}>
+            {bindings.map((b) => (
+              <Typography key={b.id} variant="caption" sx={{ whiteSpace: 'nowrap' }}>
+                {b.pbsConnectionName} • {b.datastore}{b.namespace ? ` / ${b.namespace}` : ''}
+              </Typography>
+            ))}
+          </Box>
+        )
+
+        return (
+          <Tooltip arrow title={tooltip}>
+            <Chip
+              icon={<Box component="i" className="ri-database-2-line" sx={{ fontSize: 14, ml: '6px !important' }} />}
+              label={count}
+              size="small"
+              color={count === 0 ? 'error' : 'default'}
+              variant={count === 0 ? 'outlined' : 'filled'}
+              sx={{ height: 24, cursor: 'default' }}
+            />
+          </Tooltip>
+        )
+      },
     },
     {
       field: 'actions',
@@ -631,11 +840,14 @@ export default function VdcTab() {
               rows={vdcs}
               columns={columns}
               autoHeight
+              rowHeight={68}
               disableRowSelectionOnClick
               pageSizeOptions={[10, 25]}
               initialState={{ pagination: { paginationModel: { pageSize: 10 } } }}
+              getRowClassName={(p) => p.row.enabled === false ? 'vdc-row-disabled' : ''}
               sx={{
                 '& .MuiDataGrid-cell': { display: 'flex', alignItems: 'center' },
+                '& .vdc-row-disabled': { opacity: 0.55 },
               }}
             />
           )}

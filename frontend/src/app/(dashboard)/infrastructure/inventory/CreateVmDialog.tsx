@@ -2144,6 +2144,41 @@ return
   }
   const quotaBlocked = quotaViolations.length > 0
 
+  // Structured quota state for the visual banner: one row per resource with
+  // projected usage, percent, and over-flag, so the header / donut grid /
+  // violations list all share the same source of truth.
+  type QuotaResource = 'vcpus' | 'ram' | 'storage' | 'vms'
+  interface QuotaItem {
+    resource: QuotaResource
+    label: string
+    icon: string
+    used: number
+    requested: number
+    projected: number
+    max: number | null
+    format: (v: number) => string
+    pct: number
+    over: boolean
+  }
+  const quotaItems: QuotaItem[] = vdcQuota ? (() => {
+    const fmtNum = (v: number) => String(v)
+    const raw = [
+      { resource: 'vcpus' as const, icon: 'ri-cpu-line', label: t('inventory.createVm.quotaBanner.labels.vcpus'), used: vdcUsage?.usedVcpus ?? 0, requested: requestedVcpus, max: vdcQuota.maxVcpus, format: fmtNum },
+      { resource: 'ram' as const, icon: 'ri-ram-2-line', label: t('inventory.createVm.quotaBanner.labels.ram'), used: vdcUsage?.usedRamMb ?? 0, requested: requestedRamMb, max: vdcQuota.maxRamMb, format: formatMbAsGb },
+      { resource: 'storage' as const, icon: 'ri-hard-drive-2-line', label: t('inventory.createVm.quotaBanner.labels.storage'), used: vdcUsage?.usedStorageMb ?? 0, requested: requestedStorageMb, max: vdcQuota.maxStorageMb, format: formatMbAsGb },
+      { resource: 'vms' as const, icon: 'ri-computer-line', label: t('inventory.createVm.quotaBanner.labels.vms'), used: vdcUsage?.usedVms ?? 0, requested: 1, max: vdcQuota.maxVms, format: fmtNum },
+    ]
+    return raw.map(i => {
+      const projected = i.used + i.requested
+      const pct = i.max != null && i.max > 0 ? Math.round((projected / i.max) * 100) : 0
+      const over = i.max != null && projected > i.max
+      return { ...i, projected, pct, over }
+    })
+  })() : []
+  const overItems = quotaItems.filter(i => i.over)
+  const tightItems = quotaItems.filter(i => !i.over && i.pct >= 90)
+  const quotaTight = !quotaBlocked && tightItems.length > 0
+
   // Network gate: a NIC targeting a bridge not returned by network-choices
   // (typically the hardcoded vmbr0 fallback) would be rejected by the server's
   // bridge whitelist. Block navigation/submit so the user can't hit a 403.
@@ -2184,77 +2219,142 @@ return
       </Box>
       
       <DialogContent sx={{ minHeight: 350, pt: 3 }}>
-        {vdcQuota && (
+        {vdcQuota && (() => {
+          // Glassmorphism accent colour follows the quota state so the banner
+          // tints success/warning/error consistently with the donuts.
+          const accent = quotaBlocked ? theme.palette.error.main
+            : quotaTight ? theme.palette.warning.main
+            : theme.palette.success.main
+          return (
           <Box
             sx={{
               mb: 2,
               p: 2,
               borderRadius: 1,
               border: 1,
-              borderColor: quotaBlocked ? 'error.main' : 'divider',
-              bgcolor: quotaBlocked ? 'error.lighter' : 'action.hover',
+              borderColor: alpha(accent, 0.35),
+              position: 'relative',
+              overflow: 'hidden',
+              background: `linear-gradient(135deg, ${alpha(accent, 0.1)} 0%, ${alpha(theme.palette.background.paper, 0.97)} 50%, ${alpha(accent, 0.04)} 100%)`,
+              backdropFilter: 'blur(8px)',
+              transition: 'border-color 0.2s, box-shadow 0.2s, background 0.2s',
+              '&:hover': {
+                borderColor: alpha(accent, 0.55),
+                boxShadow: `0 8px 32px ${alpha(accent, 0.15)}`,
+              },
             }}
           >
-            <Typography variant="body2" sx={{ fontWeight: 600, mb: 1.5, display: 'flex', alignItems: 'center', gap: 1 }}>
-              <i className="ri-gauge-line" />
-              {quotaBlocked ? t('inventory.createVm.quotaBanner.titleBlocked') : t('inventory.createVm.quotaBanner.title')}
-            </Typography>
+            {/* Top-right highlight blob — the "reflet" */}
+            <Box
+              aria-hidden
+              sx={{
+                position: 'absolute',
+                top: -60,
+                right: -60,
+                width: 220,
+                height: 220,
+                borderRadius: '50%',
+                background: `radial-gradient(circle, ${alpha(accent, 0.14)} 0%, transparent 70%)`,
+                pointerEvents: 'none',
+              }}
+            />
+            {/* Header: state icon + title */}
+            <Stack direction="row" alignItems="center" spacing={1} mb={1.5} sx={{ position: 'relative' }}>
+              <Box
+                component="i"
+                className={
+                  quotaBlocked ? 'ri-close-circle-fill'
+                  : quotaTight ? 'ri-error-warning-fill'
+                  : 'ri-checkbox-circle-fill'
+                }
+                sx={{
+                  fontSize: 20,
+                  color: quotaBlocked ? 'error.main' : quotaTight ? 'warning.main' : 'success.main',
+                }}
+              />
+              <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                {quotaBlocked ? t('inventory.createVm.quotaBanner.titleBlocked') : t('inventory.createVm.quotaBanner.title')}
+              </Typography>
+            </Stack>
+
+            {/* Donuts (4 across, 2 on mobile) */}
             <Box
               sx={{
                 display: 'grid',
                 gap: 2,
                 gridTemplateColumns: { xs: 'repeat(2, 1fr)', sm: 'repeat(4, 1fr)' },
                 justifyItems: 'center',
+                position: 'relative',
               }}
             >
-              <QuotaDonut
-                icon="ri-cpu-line"
-                label={t('inventory.createVm.quotaBanner.labels.vcpus')}
-                used={vdcUsage?.usedVcpus ?? 0}
-                requested={requestedVcpus}
-                max={vdcQuota.maxVcpus}
-                unlimitedLabel={t('inventory.createVm.quotaBanner.unlimited')}
-                size={88}
-              />
-              <QuotaDonut
-                icon="ri-ram-2-line"
-                label={t('inventory.createVm.quotaBanner.labels.ram')}
-                used={vdcUsage?.usedRamMb ?? 0}
-                requested={requestedRamMb}
-                max={vdcQuota.maxRamMb}
-                formatValue={formatMbAsGb}
-                unlimitedLabel={t('inventory.createVm.quotaBanner.unlimited')}
-                size={88}
-              />
-              <QuotaDonut
-                icon="ri-hard-drive-2-line"
-                label={t('inventory.createVm.quotaBanner.labels.storage')}
-                used={vdcUsage?.usedStorageMb ?? 0}
-                requested={requestedStorageMb}
-                max={vdcQuota.maxStorageMb}
-                formatValue={formatMbAsGb}
-                unlimitedLabel={t('inventory.createVm.quotaBanner.unlimited')}
-                size={88}
-              />
-              <QuotaDonut
-                icon="ri-computer-line"
-                label={t('inventory.createVm.quotaBanner.labels.vms')}
-                used={vdcUsage?.usedVms ?? 0}
-                requested={1}
-                max={vdcQuota.maxVms}
-                unlimitedLabel={t('inventory.createVm.quotaBanner.unlimited')}
-                size={88}
-              />
+              {quotaItems.map(item => (
+                <QuotaDonut
+                  key={item.resource}
+                  icon={item.icon}
+                  label={item.label}
+                  used={item.used}
+                  requested={item.requested}
+                  max={item.max}
+                  formatValue={item.resource === 'ram' || item.resource === 'storage' ? formatMbAsGb : undefined}
+                  unlimitedLabel={t('inventory.createVm.quotaBanner.unlimited')}
+                  size={88}
+                />
+              ))}
             </Box>
-            {quotaBlocked && (
-              <Stack spacing={0.5} mt={1.5}>
-                {quotaViolations.map(v => (
-                  <Typography key={v} variant="caption" color="error">{v}</Typography>
-                ))}
-              </Stack>
+
+            {/* Violations: one row per over-limit resource, with delta chip */}
+            {overItems.length > 0 && (
+              <Box
+                sx={{
+                  mt: 2,
+                  pt: 1.5,
+                  borderTop: 1,
+                  borderColor: (theme) => theme.palette.mode === 'dark' ? 'error.dark' : 'error.light',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 0.75,
+                  position: 'relative',
+                }}
+              >
+                {overItems.map(item => {
+                  const overAmount = item.max != null ? item.projected - item.max : 0
+                  return (
+                    <Stack key={item.resource} direction="row" alignItems="center" spacing={1.5}>
+                      <Box
+                        component="i"
+                        className={item.icon}
+                        sx={{ fontSize: 16, color: 'error.main', width: 16, textAlign: 'center', flexShrink: 0 }}
+                      />
+                      <Typography variant="body2" sx={{ fontWeight: 500, minWidth: 70 }}>
+                        {item.label}
+                      </Typography>
+                      <Typography variant="body2" sx={{ flex: 1, color: 'text.secondary' }} noWrap>
+                        {item.format(item.projected)} / {item.format(item.max as number)}
+                      </Typography>
+                      <Box
+                        sx={{
+                          px: 1,
+                          py: 0.25,
+                          borderRadius: 0.75,
+                          bgcolor: 'error.main',
+                          color: 'error.contrastText',
+                          fontWeight: 600,
+                          fontSize: '0.72rem',
+                          lineHeight: 1.4,
+                          flexShrink: 0,
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        +{item.format(overAmount)}
+                      </Box>
+                    </Stack>
+                  )
+                })}
+              </Box>
             )}
           </Box>
-        )}
+          )
+        })()}
         {loadingData ? (
           <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
             <CircularProgress />
