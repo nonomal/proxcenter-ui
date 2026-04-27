@@ -600,7 +600,7 @@
       "noCloudInit": "Aucun disque Cloud-Init détecté",
       "noCloudInitDesc": "Cette VM ne possède pas de disque Cloud-Init. Ajoutez un disque Cloud-Init au matériel de la VM pour configurer les paramètres Cloud-Init.",
       "passwordMasked": "Mot de passe défini (masqué par Proxmox)",
-      "ipConfigHelp": "Format : ip=<IPv4/CIDR>,gw=<GW> ou ip=dhcp",
+      "ipConfigHelp": "Format : ip=ADRESSE/CIDR,gw=PASSERELLE ou ip=dhcp",
       "saved": "Configuration Cloud-Init sauvegardée"
     },
     "noNotes": "Aucune note pour cette VM. Cliquez sur \"Modifier\" pour en ajouter.",
@@ -1738,6 +1738,7 @@
     "endTime": "Heure de fin",
     "userName": "Nom d'utilisateur",
     "newBackup": "Nouvelle sauvegarde",
+    "deployFromTemplate": "Déployer depuis un template",
     "backupContent": "Contenu de la sauvegarde",
     "recommended": "Recommandé",
     "usePbsDirectly": "Utiliser PBS directement pour cette fonctionnalité",
@@ -3191,6 +3192,7 @@
       "qmsuspend": "Mise en pause VM",
       "qmresume": "Reprise VM",
       "qmreset": "Reset VM",
+      "resize": "Redimensionnement disque",
       "qmmigrate": "Migration VM",
       "qmigrate": "Migration VM",
       "qmclone": "Clone VM",
@@ -3885,6 +3887,8 @@
       "minMem": "Mémoire min",
       "recMem": "Mémoire rec.",
       "tagsLabel": "Tags",
+      "shareWithTenants": "Partager avec tous les tenants",
+      "shareWithTenantsHelp": "Publier l'image dans le catalogue visible par tous les tenants. Seul le provider peut activer ce flag.",
       "deleteConfirm": "Supprimer cette image du catalogue ?"
     },
     "blueprints": {
@@ -3928,6 +3932,9 @@
         "scsiController": "Contrôleur SCSI",
         "cpuType": "Type de CPU",
         "bridge": "Bridge réseau",
+        "bridgeGroupVnets": "VNets (votre vDC)",
+        "bridgeGroupShared": "Bridges partagés",
+        "bridgeGroupBridges": "Bridges cluster",
         "vlan": "Tag VLAN",
         "vlanPlaceholder": "Aucun",
         "qemuAgent": "Agent QEMU invité"

@@ -18,6 +18,7 @@ import ImageCard from './ImageCard'
 import VendorLogo from './VendorLogo'
 import EmptyState from '@/components/EmptyState'
 import CustomImageDialog from './CustomImageDialog'
+import { useTenant } from '@/contexts/TenantContext'
 
 interface ImageCatalogTabProps {
   onDeploy: (image: CloudImage) => void
@@ -25,6 +26,13 @@ interface ImageCatalogTabProps {
 
 export default function ImageCatalogTab({ onDeploy }: ImageCatalogTabProps) {
   const t = useTranslations()
+  // Anyone can add their own private custom image (kept tenant-scoped via
+  // the prisma extension on the API). Edit/Delete on a card is per-image:
+  // available on images that belong to the caller, hidden on shared
+  // catalogue entries published by the provider (which a tenant must not
+  // mutate).
+  const { currentTenant, loading: tenantLoading } = useTenant()
+  const isProviderTenant = !tenantLoading && currentTenant?.id === 'default'
   const [images, setImages] = useState<(CloudImage & { isCustom?: boolean })[]>([])
   const [vendors, setVendors] = useState(VENDORS as readonly { id: string; name: string; icon: string }[])
   const [loading, setLoading] = useState(true)
@@ -170,16 +178,25 @@ export default function ImageCatalogTab({ onDeploy }: ImageCatalogTabProps) {
             gap: 2,
           }}
         >
-          {filtered.map(image => (
-            <ImageCard
-              key={image.slug}
-              image={image}
-              onDeploy={onDeploy}
-              isCustom={!!(image as any).isCustom}
-              onEdit={handleEdit}
-              onDelete={handleDelete}
-            />
-          ))}
+          {filtered.map(image => {
+            // The image is mutable for the caller iff it's a custom image
+            // they own. The provider can mutate everything (including
+            // shared catalogue entries it published itself); a tenant
+            // can only mutate its own private images, never the shared
+            // provider entries it sees through the catalogue.
+            const isShared = !!(image as any).isShared
+            const canMutate = !!(image as any).isCustom && (isProviderTenant || !isShared)
+            return (
+              <ImageCard
+                key={image.slug}
+                image={image}
+                onDeploy={onDeploy}
+                isCustom={!!(image as any).isCustom}
+                onEdit={canMutate ? handleEdit : undefined}
+                onDelete={canMutate ? handleDelete : undefined}
+              />
+            )
+          })}
         </Box>
       )}
 

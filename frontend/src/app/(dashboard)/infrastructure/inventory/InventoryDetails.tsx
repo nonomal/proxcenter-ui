@@ -89,6 +89,8 @@ import { useTaskTracker } from '@/hooks/useTaskTracker'
 import type { Status, InventorySelection, Kpi, KV, UtilMetric, DetailsPayload, RrdTimeframe, SeriesPoint, ActiveDialog } from './types'
 import { TAG_PALETTE, hashStringToInt, parseTags, formatBps, formatTime, formatUptime, parseMarkdown, parseNodeId, parseVmId, getMetricIcon, pickNumber, buildSeriesFromRrd, fetchRrd, fetchDetails } from './helpers'
 import { useTagColors } from '@/contexts/TagColorContext'
+import { useTenant } from '@/contexts/TenantContext'
+import { useRouter } from 'next/navigation'
 import { getOsSvgIcon } from '@/lib/utils/osIcons'
 import RootInventoryView from './RootInventoryView'
 import StorageDashboard from './StorageDashboard'
@@ -199,6 +201,16 @@ export default function InventoryDetails({
   }, [allVms, loadConnection])
   const { hasFeature, loading: licenseLoading } = useLicense()
   const toast = useToast()
+  // LXC sharing the host kernel doesn't give strong-enough multi-tenant
+  // isolation. Tenants on a shared cluster see only "Create VM" — the
+  // provider keeps the LXC option for lightweight workloads on dedicated
+  // setups. Same gate is used to funnel tenants through the template
+  // catalogue instead of the bare-metal Create VM dialog.
+  const { currentTenant, loading: tenantLoading } = useTenant()
+  const isProviderTenant = !tenantLoading && currentTenant?.id === 'default'
+  const allowLxc = !tenantLoading && (currentTenant === null || isProviderTenant)
+  const allowBlankVm = allowLxc
+  const router = useRouter()
   const { trackTask } = useTaskTracker()
   const { addTask: addPCTask, updateTask: updatePCTask, registerOnRestore, unregisterOnRestore } = useProxCenterTasks()
   const primaryColor = theme.palette.primary.main
@@ -2520,24 +2532,38 @@ return vm?.isCluster ?? false
                     {t('inventory.guests')} ({displayVms.length})
                   </Typography>
                   <Stack direction="row" spacing={1}>
-                    <Button
-                      size="small"
-                      variant="contained"
-                      startIcon={<i className="ri-add-line" />}
-                      onClick={() => setCreateVmDialogOpen(true)}
-                      sx={{ textTransform: 'none' }}
-                    >
-                      {t('common.create')} VM
-                    </Button>
-                    <Button
-                      size="small"
-                      variant="outlined"
-                      startIcon={<i className="ri-add-line" />}
-                      onClick={() => setCreateLxcDialogOpen(true)}
-                      sx={{ textTransform: 'none' }}
-                    >
-                      {t('common.create')} LXC
-                    </Button>
+                    {allowBlankVm ? (
+                      <Button
+                        size="small"
+                        variant="contained"
+                        startIcon={<i className="ri-add-line" />}
+                        onClick={() => setCreateVmDialogOpen(true)}
+                        sx={{ textTransform: 'none' }}
+                      >
+                        {t('common.create')} VM
+                      </Button>
+                    ) : (
+                      <Button
+                        size="small"
+                        variant="contained"
+                        startIcon={<i className="ri-rocket-2-line" />}
+                        onClick={() => router.push('/automation/templates')}
+                        sx={{ textTransform: 'none' }}
+                      >
+                        {t('inventory.deployFromTemplate')}
+                      </Button>
+                    )}
+                    {allowLxc && (
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        startIcon={<i className="ri-add-line" />}
+                        onClick={() => setCreateLxcDialogOpen(true)}
+                        sx={{ textTransform: 'none' }}
+                      >
+                        {t('common.create')} LXC
+                      </Button>
+                    )}
                   </Stack>
                 </Box>
                 <Box sx={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
@@ -3028,24 +3054,38 @@ return vm?.isCluster ?? false
                       <i className="ri-refresh-line" style={{ fontSize: 18 }} />
                     </IconButton>
                   </MuiTooltip>
-                  <Button
-                    size="small"
-                    variant="contained"
-                    startIcon={<i className="ri-add-line" />}
-                    onClick={() => setCreateVmDialogOpen(true)}
-                    sx={{ textTransform: 'none' }}
-                  >
-                    {t('common.create')} VM
-                  </Button>
-                  <Button
-                    size="small"
-                    variant="outlined"
-                    startIcon={<i className="ri-add-line" />}
-                    onClick={() => setCreateLxcDialogOpen(true)}
-                    sx={{ textTransform: 'none' }}
-                  >
-                    {t('common.create')} LXC
-                  </Button>
+                  {allowBlankVm ? (
+                    <Button
+                      size="small"
+                      variant="contained"
+                      startIcon={<i className="ri-add-line" />}
+                      onClick={() => setCreateVmDialogOpen(true)}
+                      sx={{ textTransform: 'none' }}
+                    >
+                      {t('common.create')} VM
+                    </Button>
+                  ) : (
+                    <Button
+                      size="small"
+                      variant="contained"
+                      startIcon={<i className="ri-rocket-2-line" />}
+                      onClick={() => router.push('/automation/templates')}
+                      sx={{ textTransform: 'none' }}
+                    >
+                      {t('inventory.deployFromTemplate')}
+                    </Button>
+                  )}
+                  {allowLxc && (
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      startIcon={<i className="ri-add-line" />}
+                      onClick={() => setCreateLxcDialogOpen(true)}
+                      sx={{ textTransform: 'none' }}
+                    >
+                      {t('common.create')} LXC
+                    </Button>
+                  )}
                   {selection?.type === 'node' && (
                     <>
                       <Divider orientation="vertical" flexItem />

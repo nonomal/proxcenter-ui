@@ -3,6 +3,7 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { useTranslations } from 'next-intl'
 import { useRBAC } from '@/contexts/RBACContext'
+import { useTenant } from '@/contexts/TenantContext'
 
 import {
   Alert,
@@ -55,6 +56,11 @@ function CreateLxcDialog({
   const t = useTranslations()
   const theme = useTheme()
   const { isAdmin } = useRBAC()
+  // Tenants other than the provider get the cloud abstraction: no node
+  // picker, smart auto-placement on the least-loaded node.
+  const { currentTenant, loading: tenantLoading } = useTenant()
+  const isProviderTenant = !tenantLoading && currentTenant?.id === 'default'
+  const hideNodePicker = !tenantLoading && !!currentTenant && !isProviderTenant
 
   const [activeTab, setActiveTab] = useState(0)
   const [creating, setCreating] = useState(false)
@@ -235,8 +241,33 @@ return
 
       setNodes(allNodes)
 
+      // Pick the least-loaded online node. Score = cpuPct + 1.5*memPct, RAM
+      // weighted higher because it's the harder constraint at provisioning
+      // time. Used silently when the picker is hidden (tenant view).
+      const pickBestNode = (pool: any[]): any => {
+        if (pool.length === 0) return null
+        const online = pool.filter(n => n.status === 'online')
+        const candidates = online.length > 0 ? online : pool
+        const scored = candidates.map(n => ({
+          node: n,
+          score: (n.cpuPct ?? 0) + 1.5 * (n.memPct ?? 0),
+        }))
+        scored.sort((a, b) => a.score - b.score)
+        return scored[0].node
+      }
+
       if (allNodes.length > 0) {
-        if (defaultConnId && defaultNode) {
+        if (hideNodePicker) {
+          const pool = defaultConnId
+            ? allNodes.filter((n: any) => n.connId === defaultConnId)
+            : allNodes
+          const target = pickBestNode(pool.length > 0 ? pool : allNodes)
+          if (target) {
+            setSelectedNodeValue(target.node)
+            setResolvedNode(target.node)
+            setSelectedConnection(target.connId)
+          }
+        } else if (defaultConnId && defaultNode) {
           const match = allNodes.find((n: any) => n.connId === defaultConnId && n.node === defaultNode)
           const target = match || allNodes[0]
           setSelectedNodeValue(target.node)
@@ -596,6 +627,9 @@ return
       case 0: // General
         return (
           <Stack spacing={1.5}>
+            {/* Node picker hidden for tenants — auto-placed on the least-
+                loaded node in the vDC scope. Picker stays for the provider. */}
+            {!hideNodePicker && (
             <FormControl fullWidth size="small">
               <InputLabel>{t('inventory.createLxc.node')}</InputLabel>
               <Select
@@ -709,6 +743,7 @@ return
                 ]).flat().filter(Boolean)}
               </Select>
             </FormControl>
+            )}
             {/* Resource pool selector — hidden for vDC tenants (pool assigned automatically) */}
             {isAdmin && (
               <FormControl fullWidth size="small">
@@ -734,28 +769,32 @@ return
               </FormControl>
             )}
 
-            <TextField
-              label="CT ID"
-              value={ctid}
-              onChange={(e) => handleCtidChange(e.target.value)}
-              size="small"
-              error={!!ctidError}
-              helperText={ctidError}
-              inputProps={{ inputMode: 'numeric', pattern: '[0-9]*' }}
-              slotProps={{
-                input: {
-                  endAdornment: (
-                    <InputAdornment position="end">
-                      <Tooltip title={t('inventory.createLxc.generateCtId')}>
-                        <IconButton size="small" onClick={generateNextCtid} edge="end">
-                          <i className="ri-refresh-line" style={{ fontSize: 18 }} />
-                        </IconButton>
-                      </Tooltip>
-                    </InputAdornment>
-                  )
-                }
-              }}
-            />
+            {/* CT ID is a Proxmox implementation detail — hidden from tenants
+                (auto-generated via generateNextCtid). Provider keeps it visible. */}
+            {!hideNodePicker && (
+              <TextField
+                label="CT ID"
+                value={ctid}
+                onChange={(e) => handleCtidChange(e.target.value)}
+                size="small"
+                error={!!ctidError}
+                helperText={ctidError}
+                inputProps={{ inputMode: 'numeric', pattern: '[0-9]*' }}
+                slotProps={{
+                  input: {
+                    endAdornment: (
+                      <InputAdornment position="end">
+                        <Tooltip title={t('inventory.createLxc.generateCtId')}>
+                          <IconButton size="small" onClick={generateNextCtid} edge="end">
+                            <i className="ri-refresh-line" style={{ fontSize: 18 }} />
+                          </IconButton>
+                        </Tooltip>
+                      </InputAdornment>
+                    )
+                  }
+                }}
+              />
+            )}
 
             <TextField label={t('inventory.createLxc.hostname')} value={hostname} onChange={(e) => setHostname(e.target.value)} size="small" />
 

@@ -32,6 +32,8 @@ import type { CloudImage } from '@/lib/templates/cloudImages'
 import { supportsVmDisks } from '@/lib/proxmox/storage'
 import DeploymentProgress from './DeploymentProgress'
 import VendorLogo from './VendorLogo'
+import { useTenant } from '@/contexts/TenantContext'
+import VdcQuotaBanner from '@/components/inventory/VdcQuotaBanner'
 
 interface DeployWizardProps {
   open: boolean
@@ -75,6 +77,12 @@ interface StorageInfo {
 
 export default function DeployWizard({ open, onClose, image, prefillBlueprint }: DeployWizardProps) {
   const t = useTranslations()
+  // Tenants get cloud-style abstraction in step "Target": no connection /
+  // node / storage / VMID picker. They only enter a name. Selections are
+  // resolved in the background (first allowed connection, least-loaded
+  // node, first shared storage, /cluster/nextid).
+  const { currentTenant, loading: tenantLoading } = useTenant()
+  const hideInfra = !tenantLoading && !!currentTenant && currentTenant.id !== 'default'
   const [activeStep, setActiveStep] = useState(0)
   const [deploying, setDeploying] = useState(false)
   const [deploymentId, setDeploymentId] = useState<string | null>(null)
@@ -100,6 +108,17 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint }:
   const [networkBridge, setNetworkBridge] = useState('vmbr0')
   const [vlanTag, setVlanTag] = useState<number | ''>('')
   const [cpu, setCpu] = useState('host')
+
+  // vDC quota (tenant only — provider has no vDC scope so banner stays hidden)
+  const [vdcQuota, setVdcQuota] = useState<{ maxVcpus: number | null; maxRamMb: number | null; maxStorageMb: number | null; maxVms: number | null } | null>(null)
+  const [vdcUsage, setVdcUsage] = useState<{ usedVcpus: number; usedRamMb: number; usedStorageMb: number; usedVms: number } | null>(null)
+  const [quotaBlocked, setQuotaBlocked] = useState(false)
+
+  // Bridges + VNets for the network picker. Mirrors the shape used by
+  // CreateVmDialog so we hit the same `/network-choices` endpoint.
+  // type values: 'vnet' (tenant SDN), 'shared' (provider uplink), or a
+  // PVE bridge type (e.g. 'bridge', 'OVSBridge').
+  const [bridges, setBridges] = useState<Array<{ iface: string; type: string; label?: string | null; vdc?: string | null }>>([])
   const [agent, setAgent] = useState(true)
 
   // Cloud-init step
@@ -182,10 +201,15 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint }:
       .then(res => {
         const conns = res.data || []
         setConnections(conns)
-        if (conns.length === 1) setConnectionId(conns[0].id)
+        // Tenant: auto-pick the first connection from their vDC scope so
+        // step Target requires no input. Provider keeps manual selection
+        // unless there's a single option.
+        if (conns.length === 1 || (hideInfra && conns.length > 0)) {
+          setConnectionId(conns[0].id)
+        }
       })
       .catch(() => {})
-  }, [open])
+  }, [open, hideInfra])
 
   // Fetch nodes when connection changes
   useEffect(() => {
@@ -195,10 +219,21 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint }:
       .then(res => {
         const nodeList = (res.data || []).filter((n: any) => n.status === 'online')
         setNodes(nodeList)
-        if (nodeList.length === 1) setNode(nodeList[0].node)
+        if (nodeList.length === 1) {
+          setNode(nodeList[0].node)
+        } else if (hideInfra && nodeList.length > 0) {
+          // Pick least-loaded online node (cpu + 1.5*ram, RAM weighted higher).
+          const scored = nodeList.map((n: any) => {
+            const cpuPct = n.maxcpu ? (n.cpu || 0) * 100 : 0
+            const memPct = n.maxmem ? ((n.mem || 0) / n.maxmem) * 100 : 0
+            return { n, score: cpuPct + 1.5 * memPct }
+          })
+          scored.sort((a: any, b: any) => a.score - b.score)
+          setNode(scored[0].n.node)
+        }
       })
       .catch(() => setNodes([]))
-  }, [connectionId])
+  }, [connectionId, hideInfra])
 
   // Fetch storages + next VMID when node changes
   useEffect(() => {
@@ -208,9 +243,29 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint }:
     fetch(`/api/v1/connections/${encodeURIComponent(connectionId)}/nodes/${encodeURIComponent(node)}/storages`)
       .then(r => r.json())
       .then(res => {
-        const stList = (res.data || []).filter((s: any) => supportsVmDisks(s.type) && s.enabled !== 0)
+        // Filter on BOTH type AND content. supportsVmDisks() only checks the
+        // backing technology (dir, NFS, RBD, …); we still need the storage
+        // to be configured for `images` (or `rootdir`) — otherwise PVE
+        // rejects the VM creation with "storage X does not support vm images".
+        const stList = (res.data || []).filter((s: any) =>
+          supportsVmDisks(s.type)
+          && s.enabled !== 0
+          && (s.content?.includes('images') || s.content?.includes('rootdir')),
+        )
         setStorages(stList)
-        setStorage(stList.length > 0 ? stList[0].storage : '')
+        // Tenant: prefer a shared storage (cluster-wide, no node leak), then
+        // fall back to the first available. Provider keeps the existing
+        // first-match logic.
+        if (stList.length > 0) {
+          if (hideInfra) {
+            const shared = stList.find((s: any) => s.shared)
+            setStorage((shared || stList[0]).storage)
+          } else {
+            setStorage(stList[0].storage)
+          }
+        } else {
+          setStorage('')
+        }
       })
       .catch(() => setStorages([]))
 
@@ -221,7 +276,68 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint }:
         if (res.data) setVmid(Number(res.data) || 100)
       })
       .catch(() => {})
-  }, [connectionId, node])
+
+    // Network bridges + tenant vDC VNets — populates the bridge picker on
+    // the Hardware step. Mirrors the call made by CreateVmDialog so we
+    // honour the same vDC whitelist server-side: tenants get their VNets
+    // and shared bridges, providers get the full PVE bridge list.
+    fetch(`/api/v1/connections/${encodeURIComponent(connectionId)}/network-choices?node=${encodeURIComponent(node)}`)
+      .then(r => r.json())
+      .then(res => {
+        const choices = Array.isArray(res?.data) ? res.data : []
+        const list = choices.map((c: any) => ({
+          iface: c.name,
+          type: c.kind === 'vnet' ? 'vnet' : c.kind === 'shared' ? 'shared' : (c.type || 'bridge'),
+          label: c.label ?? null,
+          vdc: c.vdc ?? null,
+        }))
+        setBridges(list)
+        if (list.length > 0 && !list.some(b => b.iface === networkBridge)) {
+          setNetworkBridge(list[0].iface)
+        }
+      })
+      .catch(() => setBridges([]))
+  }, [connectionId, node, hideInfra])
+
+  // Fetch the tenant's vDC quota+usage for the live quota banner on the
+  // Hardware step. The /api/v1/vdcs route already returns null for the
+  // provider tenant (no vDC), so the banner only shows up for tenants.
+  useEffect(() => {
+    if (!open || !connectionId) {
+      setVdcQuota(null); setVdcUsage(null)
+      return
+    }
+    let cancelled = false
+    ;(async () => {
+      try {
+        const res = await fetch('/api/v1/vdcs')
+        if (!res.ok) { if (!cancelled) { setVdcQuota(null); setVdcUsage(null) } ; return }
+        const json = await res.json()
+        const vdcs: any[] = Array.isArray(json?.data) ? json.data : []
+        const match = vdcs.find(v => v.connectionId === connectionId || v.connection_id === connectionId)
+        if (cancelled) return
+        if (match?.quota) {
+          setVdcQuota({
+            maxVcpus: match.quota.maxVcpus ?? null,
+            maxRamMb: match.quota.maxRamMb ?? null,
+            maxStorageMb: match.quota.maxStorageMb ?? null,
+            maxVms: match.quota.maxVms ?? null,
+          })
+          setVdcUsage({
+            usedVcpus: match.usage?.usedVcpus ?? 0,
+            usedRamMb: match.usage?.usedRamMb ?? 0,
+            usedStorageMb: match.usage?.usedStorageMb ?? 0,
+            usedVms: match.usage?.usedVms ?? 0,
+          })
+        } else {
+          setVdcQuota(null); setVdcUsage(null)
+        }
+      } catch {
+        if (!cancelled) { setVdcQuota(null); setVdcUsage(null) }
+      }
+    })()
+    return () => { cancelled = true }
+  }, [open, connectionId])
 
   const handleNext = useCallback(() => {
     setActiveStep(s => Math.min(s + 1, STEP_LABELS.length - 1))
@@ -316,12 +432,13 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint }:
     switch (activeStep) {
       case 0: return !!image
       case 1: return !!connectionId && !!node && !!storage && vmid >= 100
-      case 2: return cores >= 1 && memory >= 128 && !!diskSize
+      // Hardware step: also block while the vDC quota would be exceeded.
+      case 2: return cores >= 1 && memory >= 128 && !!diskSize && !quotaBlocked
       case 3: return true
-      case 4: return true
+      case 4: return !quotaBlocked
       default: return false
     }
-  }, [activeStep, image, connectionId, node, storage, vmid, cores, memory, diskSize])
+  }, [activeStep, image, connectionId, node, storage, vmid, cores, memory, diskSize, quotaBlocked])
 
   // ─── Step renderers ────────────────────────────────────────────────
 
@@ -369,7 +486,25 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint }:
     )
   }
 
-  const renderTargetStep = () => (
+  const renderTargetStep = () => {
+    // Tenant-facing simplified target: VM name only, the rest auto-resolved.
+    if (hideInfra) {
+      return (
+        <Stack spacing={2}>
+          <TextField
+            size="small"
+            fullWidth
+            label={t('templates.deploy.target.vmName')}
+            value={vmName}
+            onChange={e => setVmName(e.target.value)}
+            placeholder={image ? `${image.slug}-${vmid}` : ''}
+            autoFocus
+          />
+        </Stack>
+      )
+    }
+
+    return (
     <Stack spacing={2}>
       <FormControl size="small" fullWidth required>
         <InputLabel>{t('templates.deploy.target.connection')}</InputLabel>
@@ -449,10 +584,43 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint }:
         />
       </Box>
     </Stack>
-  )
+    )
+  }
+
+  // Convert "20G" → MB for the quota banner. Falls back to 0 on parse error.
+  const parseDiskSizeMb = (s: string): number => {
+    const m = /^(\d+)\s*([GTM]?)$/i.exec(String(s).trim())
+    if (!m) return 0
+    const n = Number.parseInt(m[1], 10)
+    const unit = m[2].toUpperCase()
+    if (unit === 'T') return n * 1024 * 1024
+    if (unit === 'M') return n
+    return n * 1024
+  }
 
   const renderHardwareStep = () => (
-    <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 2 }}>
+    <Box>
+      {vdcQuota && vdcUsage && (
+        <VdcQuotaBanner
+          quota={vdcQuota}
+          usage={vdcUsage}
+          requested={{
+            vcpus: cores * sockets,
+            ramMb: memory,
+            storageMb: parseDiskSizeMb(diskSize),
+            vms: 1,
+          }}
+          onStateChange={({ blocked }) => {
+            if (blocked !== quotaBlocked) setQuotaBlocked(blocked)
+          }}
+        />
+      )}
+      <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 2 }}>
+      {/* Cores + Memory only — sockets / SCSI controller / CPU type are
+          implementation details that the deploy wizard hides for clarity.
+          Defaults stay sensible (1 socket, virtio-scsi-single, host CPU)
+          and the provider can still tweak them via the bare-metal
+          CreateVmDialog if a specific need arises. */}
       <TextField
         size="small"
         label={t('templates.deploy.hardware.cores')}
@@ -460,14 +628,6 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint }:
         value={cores}
         onChange={e => setCores(Number.parseInt(e.target.value) || 1)}
         slotProps={{ htmlInput: { min: 1, max: 128 } }}
-      />
-      <TextField
-        size="small"
-        label={t('templates.deploy.hardware.sockets')}
-        type="number"
-        value={sockets}
-        onChange={e => setSockets(Number.parseInt(e.target.value) || 1)}
-        slotProps={{ htmlInput: { min: 1, max: 4 } }}
       />
       <TextField
         size="small"
@@ -485,46 +645,68 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint }:
         onChange={e => setDiskSize(e.target.value)}
       />
       <FormControl size="small">
-        <InputLabel>{t('templates.deploy.hardware.scsiController')}</InputLabel>
-        <Select value={scsihw} onChange={e => setScsihw(e.target.value)} label={t('templates.deploy.hardware.scsiController')}>
-          <MenuItem value="virtio-scsi-single">VirtIO SCSI Single</MenuItem>
-          <MenuItem value="virtio-scsi-pci">VirtIO SCSI</MenuItem>
-          <MenuItem value="lsi">LSI 53C895A</MenuItem>
-          <MenuItem value="megasas">MegaRAID SAS</MenuItem>
+        <InputLabel>{t('templates.deploy.hardware.bridge')}</InputLabel>
+        <Select
+          value={bridges.some(b => b.iface === networkBridge) ? networkBridge : (bridges[0]?.iface || networkBridge)}
+          onChange={e => setNetworkBridge(String(e.target.value))}
+          label={t('templates.deploy.hardware.bridge')}
+        >
+          {bridges.length === 0 && (
+            <MenuItem value={networkBridge}>{networkBridge}</MenuItem>
+          )}
+          {/* VNets first — these are the tenant's SDN networks (per vDC).
+              Provider-managed shared bridges next, raw PVE bridges last. */}
+          {bridges.filter(b => b.type === 'vnet').length > 0 && (
+            <ListSubheader sx={{ lineHeight: '28px', fontSize: 11, fontWeight: 700, opacity: 0.7, textTransform: 'uppercase' }}>
+              {t('templates.deploy.hardware.bridgeGroupVnets')}
+            </ListSubheader>
+          )}
+          {bridges.filter(b => b.type === 'vnet').map(b => (
+            <MenuItem key={b.iface} value={b.iface} sx={{ pl: 3 }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, width: '100%' }}>
+                <Box component="i" className="ri-shield-keyhole-line" sx={{ fontSize: 14, color: 'primary.main' }} />
+                <Typography variant="body2">{b.iface}</Typography>
+                {b.vdc && (
+                  <Typography variant="caption" sx={{ opacity: 0.55, ml: 'auto' }}>
+                    {b.vdc}
+                  </Typography>
+                )}
+              </Box>
+            </MenuItem>
+          ))}
+          {bridges.filter(b => b.type === 'shared').length > 0 && (
+            <ListSubheader sx={{ lineHeight: '28px', fontSize: 11, fontWeight: 700, opacity: 0.7, textTransform: 'uppercase' }}>
+              {t('templates.deploy.hardware.bridgeGroupShared')}
+            </ListSubheader>
+          )}
+          {bridges.filter(b => b.type === 'shared').map(b => (
+            <MenuItem key={b.iface} value={b.iface} sx={{ pl: 3 }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, width: '100%' }}>
+                <Box component="i" className="ri-share-line" sx={{ fontSize: 14, opacity: 0.7 }} />
+                <Typography variant="body2">{b.iface}</Typography>
+                {b.label && (
+                  <Typography variant="caption" sx={{ opacity: 0.55, ml: 'auto' }}>
+                    {b.label}
+                  </Typography>
+                )}
+              </Box>
+            </MenuItem>
+          ))}
+          {bridges.filter(b => b.type !== 'vnet' && b.type !== 'shared').length > 0 && (
+            <ListSubheader sx={{ lineHeight: '28px', fontSize: 11, fontWeight: 700, opacity: 0.7, textTransform: 'uppercase' }}>
+              {t('templates.deploy.hardware.bridgeGroupBridges')}
+            </ListSubheader>
+          )}
+          {bridges.filter(b => b.type !== 'vnet' && b.type !== 'shared').map(b => (
+            <MenuItem key={b.iface} value={b.iface} sx={{ pl: 3 }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, width: '100%' }}>
+                <Box component="i" className="ri-bridge-line" sx={{ fontSize: 14, opacity: 0.7 }} />
+                <Typography variant="body2">{b.iface}</Typography>
+              </Box>
+            </MenuItem>
+          ))}
         </Select>
       </FormControl>
-      <FormControl size="small">
-        <InputLabel>{t('templates.deploy.hardware.cpuType')}</InputLabel>
-        <Select value={cpu} onChange={e => setCpu(e.target.value)} label={t('templates.deploy.hardware.cpuType')}>
-          <ListSubheader>Special</ListSubheader>
-          <MenuItem value="host">host</MenuItem>
-          <MenuItem value="max">max</MenuItem>
-          <MenuItem value="kvm64">kvm64</MenuItem>
-          <MenuItem value="qemu64">qemu64</MenuItem>
-          <ListSubheader>x86-64 Levels</ListSubheader>
-          <MenuItem value="x86-64-v2">x86-64-v2</MenuItem>
-          <MenuItem value="x86-64-v2-AES">x86-64-v2-AES (Recommended)</MenuItem>
-          <MenuItem value="x86-64-v3">x86-64-v3</MenuItem>
-          <MenuItem value="x86-64-v4">x86-64-v4</MenuItem>
-          <ListSubheader>Intel</ListSubheader>
-          <MenuItem value="Broadwell">Broadwell</MenuItem>
-          <MenuItem value="Skylake-Server">Skylake-Server</MenuItem>
-          <MenuItem value="Cascadelake-Server">Cascadelake-Server</MenuItem>
-          <MenuItem value="Icelake-Server">Icelake-Server</MenuItem>
-          <MenuItem value="SapphireRapids">SapphireRapids</MenuItem>
-          <ListSubheader>AMD</ListSubheader>
-          <MenuItem value="EPYC">EPYC</MenuItem>
-          <MenuItem value="EPYC-Rome">EPYC-Rome</MenuItem>
-          <MenuItem value="EPYC-Milan">EPYC-Milan</MenuItem>
-          <MenuItem value="EPYC-Genoa">EPYC-Genoa</MenuItem>
-        </Select>
-      </FormControl>
-      <TextField
-        size="small"
-        label={t('templates.deploy.hardware.bridge')}
-        value={networkBridge}
-        onChange={e => setNetworkBridge(e.target.value)}
-      />
       <TextField
         size="small"
         label={t('templates.deploy.hardware.vlan')}
@@ -533,12 +715,16 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint }:
         onChange={e => setVlanTag(e.target.value ? Number.parseInt(e.target.value) : '')}
         placeholder={t('templates.deploy.hardware.vlanPlaceholder')}
         slotProps={{ htmlInput: { min: 1, max: 4094 } }}
+        // VNets carry their own intrinsic tag — disable the manual override
+        // when a VNet is selected to prevent confusion / conflicts.
+        disabled={bridges.find(b => b.iface === networkBridge)?.type === 'vnet'}
       />
       <FormControlLabel
         control={<Switch checked={agent} onChange={(_, v) => setAgent(v)} size="small" />}
         label={t('templates.deploy.hardware.qemuAgent')}
         sx={{ gridColumn: 'span 2' }}
       />
+      </Box>
     </Box>
   )
 

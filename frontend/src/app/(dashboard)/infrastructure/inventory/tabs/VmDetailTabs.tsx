@@ -76,9 +76,11 @@ const DeleteUnusedDiskDialog = dynamic(() => import('@/components/hardware/Delet
 import type { InventorySelection, DetailsPayload, RrdTimeframe, SeriesPoint, Status } from '../types'
 import { formatBps, formatOsType, formatTime, formatUptime, parseMarkdown, markdownSx, parseNodeId, parseVmId, cpuPct, pct, buildSeriesFromRrd, fetchRrd } from '../helpers'
 import { useTagColors } from '@/contexts/TagColorContext'
+import { useTenant } from '@/contexts/TenantContext'
 import { AreaPctChart, AreaBpsChart2 } from '../components/RrdCharts'
 import InventorySummary from '../components/InventorySummary'
 import { SaveIcon, AddIcon, CloseIcon } from '../components/IconWrappers'
+import VdcQuotaBanner from '@/components/inventory/VdcQuotaBanner'
 
 function BufferedNumberField({
   value,
@@ -141,8 +143,57 @@ export default function VmDetailTabs(props: any) {
   // Replication and HA are provider-scope operations (cluster-wide resource
   // planning, node failover policies) — hide their tabs from tenants.
   const { isAdmin } = useRBAC()
+  // Tenant-only: live vDC quota banner on the Hardware tab so the user
+  // sees the impact of CPU/RAM tweaks before hitting Save (the server still
+  // returns 409 if the projected usage exceeds the quota; this is purely
+  // an anticipation UX). Provider has no vDC scope and the banner hides.
+  const { currentTenant, loading: tenantLoading } = useTenant()
+  const isProviderTenant = !tenantLoading && currentTenant?.id === 'default'
+  const [vdcQuota, setVdcQuota] = useState<{ maxVcpus: number | null; maxRamMb: number | null; maxStorageMb: number | null; maxVms: number | null } | null>(null)
+  const [vdcUsage, setVdcUsage] = useState<{ usedVcpus: number; usedRamMb: number; usedStorageMb: number; usedVms: number } | null>(null)
+  const [hwQuotaBlocked, setHwQuotaBlocked] = useState(false)
   const vmConnId = props.selection?.id ? parseVmId(props.selection.id).connId : undefined
   const { getColor: getTagColor } = useTagColors(vmConnId)
+
+  // Fetch vDC quota+usage for the connection that hosts this VM. Skipped
+  // for the provider (no vDC mapping → API returns nothing). Refreshed
+  // when the selection / tenant changes.
+  useEffect(() => {
+    if (!vmConnId || tenantLoading || isProviderTenant) {
+      setVdcQuota(null); setVdcUsage(null)
+      return
+    }
+    let cancelled = false
+    void (async () => {
+      try {
+        const res = await fetch('/api/v1/vdcs')
+        if (!res.ok) { if (!cancelled) { setVdcQuota(null); setVdcUsage(null) } ; return }
+        const json = await res.json()
+        const vdcs: any[] = Array.isArray(json?.data) ? json.data : []
+        const match = vdcs.find(v => v.connectionId === vmConnId || v.connection_id === vmConnId)
+        if (cancelled) return
+        if (match?.quota) {
+          setVdcQuota({
+            maxVcpus: match.quota.maxVcpus ?? null,
+            maxRamMb: match.quota.maxRamMb ?? null,
+            maxStorageMb: match.quota.maxStorageMb ?? null,
+            maxVms: match.quota.maxVms ?? null,
+          })
+          setVdcUsage({
+            usedVcpus: match.usage?.usedVcpus ?? 0,
+            usedRamMb: match.usage?.usedRamMb ?? 0,
+            usedStorageMb: match.usage?.usedStorageMb ?? 0,
+            usedVms: match.usage?.usedVms ?? 0,
+          })
+        } else {
+          setVdcQuota(null); setVdcUsage(null)
+        }
+      } catch {
+        if (!cancelled) { setVdcQuota(null); setVdcUsage(null) }
+      }
+    })()
+    return () => { cancelled = true }
+  }, [vmConnId, tenantLoading, isProviderTenant])
   const chartTooltipStyle = { backgroundColor: theme.palette.background.paper, border: `1px solid ${theme.palette.divider}`, borderRadius: 4, color: theme.palette.text.primary }
   const [cpuFlagsOpen, setCpuFlagsOpen] = useState(false)
   const [hwSections, setHwSections] = useState<Set<string>>(new Set(['cpu', 'memory', 'system', 'disks', 'network', 'other']))
@@ -773,6 +824,32 @@ export default function VmDetailTabs(props: any) {
                     </Box>
                   ) : (
                     <Stack spacing={1}>
+                      {/* ── vDC quota banner (tenant only) ──
+                          Live preview of CPU/RAM deltas vs the vDC quota.
+                          Only the *delta* relative to the current config is
+                          billed against the quota — decreases come out as 0.
+                          Disk delta is intentionally omitted: existing disks
+                          are already counted in `usedStorageMb`, and add/resize
+                          go through dedicated routes that have their own
+                          server-side check. */}
+                      {vdcQuota && vdcUsage && (() => {
+                        const currentVcpus = ((data?.cpuInfo?.cores ?? cpuCores) as number) * ((data?.cpuInfo?.sockets ?? cpuSockets) as number)
+                        const newVcpus = (cpuCores ?? 1) * (cpuSockets ?? 1)
+                        const vcpusDelta = Math.max(0, newVcpus - currentVcpus)
+                        const currentRamMb = (data?.memoryInfo?.memory ?? memory) as number
+                        const newRamMb = (memory ?? currentRamMb) as number
+                        const ramDelta = Math.max(0, newRamMb - currentRamMb)
+                        return (
+                          <VdcQuotaBanner
+                            quota={vdcQuota}
+                            usage={vdcUsage}
+                            requested={{ vcpus: vcpusDelta, ramMb: ramDelta, storageMb: 0, vms: 0 }}
+                            onStateChange={({ blocked }) => {
+                              if (blocked !== hwQuotaBlocked) setHwQuotaBlocked(blocked)
+                            }}
+                          />
+                        )
+                      })()}
                       {/* ── Pending changes revert button (full width) ── */}
                       {(() => {
                         // Use the raw pending keys from PVE's config.pending, which
@@ -1163,7 +1240,7 @@ export default function VmDetailTabs(props: any) {
                           <Button
                             variant="contained"
                             fullWidth
-                            disabled={savingCpu || !cpuModified}
+                            disabled={savingCpu || !cpuModified || hwQuotaBlocked}
                             onClick={saveCpuConfig}
                             startIcon={savingCpu ? <CircularProgress size={16} /> : <SaveIcon />}
                           >
@@ -1369,7 +1446,7 @@ export default function VmDetailTabs(props: any) {
                           <Button
                             variant="contained"
                             fullWidth
-                            disabled={savingMemory || !memoryModified}
+                            disabled={savingMemory || !memoryModified || hwQuotaBlocked}
                             onClick={saveMemoryConfig}
                             startIcon={savingMemory ? <CircularProgress size={16} /> : <SaveIcon />}
                           >

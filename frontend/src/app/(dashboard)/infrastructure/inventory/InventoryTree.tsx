@@ -53,6 +53,7 @@ const PowerSettingsNewIcon = (props: any) => <i className="ri-shut-down-line" st
 import EntityTagManager from './components/EntityTagManager'
 import { useRBAC } from '@/contexts/RBACContext'
 import { useTagColors } from '@/contexts/TagColorContext'
+import { useTenant } from '@/contexts/TenantContext'
 import { useTaskTracker } from '@/hooks/useTaskTracker'
 import { MigrateVmDialog, CrossClusterMigrateParams } from '@/components/MigrateVmDialog'
 import { CloneVmDialog } from '@/components/hardware/CloneVmDialog'
@@ -429,6 +430,12 @@ export default function InventoryTree({ selected, onSelect, onRefreshRef, onOpti
   const theme = useTheme()
   const router = useRouter()
   const { isAdmin } = useRBAC()
+  // Tenants other than the provider get the cloud-style abstraction —
+  // shared storages on a multi-tenant cluster would leak other tenants'
+  // VMID metadata, so we hide the STORAGES section from them entirely
+  // (see also vDC strategy: dedicated storage per tenant for full isolation).
+  const { currentTenant, loading: tenantLoading } = useTenant()
+  const isProviderTenant = !tenantLoading && currentTenant?.id === 'default'
   const { trackTask } = useTaskTracker()
   const { getColor: getTagColor, loadConnection } = useTagColors()
   const [loading, setLoading] = useState(true)
@@ -2644,6 +2651,29 @@ return favorites.has(vmKey)
       {/* Mode VMs : liste à plat de toutes les VMs */}
       {viewMode === 'vms' ? (
         <Box sx={{ display: 'flex', flexDirection: 'column' }}>
+          {/* PROXMOX VE section header — keeps visual parity with the
+              STORAGES / BACKUP sections rendered below in the same mode. */}
+          {displayVms.length > 0 && (
+            <Box
+              sx={{
+                display: 'flex', alignItems: 'center', gap: 1, px: 1.5, py: 0.75,
+                bgcolor: theme.palette.mode === 'dark' ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)',
+                borderTop: '1px solid', borderBottom: '1px solid', borderColor: 'divider',
+              }}
+            >
+              <img
+                src={theme.palette.mode === 'dark' ? '/images/proxmox-logo-dark.svg' : '/images/proxmox-logo.svg'}
+                alt=""
+                style={{ width: 14, height: 14 }}
+              />
+              <Typography variant="body2" sx={{ fontWeight: 700 }}>
+                {t('inventory.headerProxmoxVe')}
+              </Typography>
+              <Typography variant="caption" sx={{ opacity: 0.5 }}>
+                ({displayVms.length} VM{displayVms.length > 1 ? 's' : ''})
+              </Typography>
+            </Box>
+          )}
           {displayVms.length === 0 ? (
             <Box sx={{ p: 2, textAlign: 'center' }}>
               <Typography variant='body2' sx={{ opacity: 0.6 }}>
@@ -3466,8 +3496,10 @@ return (
       </>
       )}
 
-      {/* ── Proxmox Storage Section ── (back on for review — still cluster-wide, rely on vDC filtering for tenants) */}
-      {viewMode === 'tree' && clusterStorages.length > 0 && (
+      {/* ── Proxmox Storage Section ── Hidden for tenants on shared clusters
+          to avoid leaking other tenants' VMID metadata via shared Ceph / NFS
+          / ZFS volume listings. Provider keeps full visibility. */}
+      {(viewMode === 'tree' || (viewMode === 'vms' && isProviderTenant)) && clusterStorages.length > 0 && (
         <>
           <Box
             onClick={(e) => {
@@ -3558,27 +3590,32 @@ return (
                 label={storageLabel(s)}
               />
             ))
-            const nodeItems = cs.nodes.filter(n => n.storages.length > 0).map(n => (
-              <TreeItem
-                key={`storage-node:${cs.connId}:${n.node}`}
-                itemId={`storage-node:${cs.connId}:${n.node}`}
-                label={
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
-                    <NodeIcon status={n.status} size={16} />
-                    <span style={{ fontSize: 13, opacity: n.status === 'online' ? 1 : 0.5 }}>{n.node}</span>
-                    <span style={{ opacity: 0.4, fontSize: 11 }}>({n.storages.length})</span>
-                  </Box>
-                }
-              >
-                {n.storages.map(s => (
-                  <TreeItem
-                    key={`storage:${cs.connId}:${s.storage}:${n.node}`}
-                    itemId={`storage:${cs.connId}:${s.storage}:${n.node}`}
-                    label={storageLabel(s)}
-                  />
-                ))}
-              </TreeItem>
-            ))
+            // Per-node sub-trees expose host names — only render in 'tree'
+            // mode (provider view). The 'vms' mode (tenant or flat) keeps
+            // shared storages only, consistent with the node abstraction.
+            const nodeItems = viewMode === 'tree'
+              ? cs.nodes.filter(n => n.storages.length > 0).map(n => (
+                <TreeItem
+                  key={`storage-node:${cs.connId}:${n.node}`}
+                  itemId={`storage-node:${cs.connId}:${n.node}`}
+                  label={
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
+                      <NodeIcon status={n.status} size={16} />
+                      <span style={{ fontSize: 13, opacity: n.status === 'online' ? 1 : 0.5 }}>{n.node}</span>
+                      <span style={{ opacity: 0.4, fontSize: 11 }}>({n.storages.length})</span>
+                    </Box>
+                  }
+                >
+                  {n.storages.map(s => (
+                    <TreeItem
+                      key={`storage:${cs.connId}:${s.storage}:${n.node}`}
+                      itemId={`storage:${cs.connId}:${s.storage}:${n.node}`}
+                      label={storageLabel(s)}
+                    />
+                  ))}
+                </TreeItem>
+              ))
+              : []
             return [...sharedItems, ...nodeItems]
           })}
           </SimpleTreeView>
@@ -3721,7 +3758,7 @@ return (
       )}
 
       {/* ── PBS / Backup Section ── */}
-      {viewMode === 'tree' && pbsServers.length > 0 && (
+      {(viewMode === 'tree' || viewMode === 'vms') && pbsServers.length > 0 && (
         <>
           <Box
             onClick={() => {

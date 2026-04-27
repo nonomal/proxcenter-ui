@@ -54,8 +54,11 @@ export const menuData = (t = (key) => key) => [
       {
         label: t('navigation.templates'),
         icon: 'ri-cloud-line',
+        // Tenants need to see the catalogue to deploy cloud images into their
+        // vDC. Provider keeps automation.view for full management (upload,
+        // delete, blueprints). Tenants only need vm.create to use the wizard.
         href: '/automation/templates',
-        permissions: ['automation.view'] // Provider-scope: template catalogue management
+        permissions: ['automation.view', 'vm.create']
       }
     ]
   },

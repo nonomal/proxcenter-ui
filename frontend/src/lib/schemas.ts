@@ -238,6 +238,10 @@ export const createCustomImageSchema = z.object({
   recommendedCores: z.number().int().min(1).max(128).default(2),
   ostype: z.string().max(20).default('l26'),
   tags: z.string().max(200).nullable().optional(),
+  // Provider-only flag: if true and the caller is on the 'default' tenant,
+  // the image becomes part of the shared catalogue visible to every tenant.
+  // The route enforces the provider check; here we just accept the input.
+  isShared: z.boolean().default(false),
 }).superRefine((data, ctx) => {
   if (data.sourceType === 'url' && !data.downloadUrl) {
     ctx.addIssue({
@@ -273,6 +277,7 @@ export const updateCustomImageSchema = z.object({
   recommendedCores: z.number().int().min(1).max(128).optional(),
   ostype: z.string().max(20).optional(),
   tags: z.string().max(200).nullable().optional(),
+  isShared: z.boolean().optional(),
 })
 
 // ─── Templates / Blueprints ──────────────────────────────────────────────────

@@ -249,16 +249,23 @@ export async function getTenantConnectionIds(): Promise<Set<string>> {
 }
 
 /**
- * Verify a connection ID belongs to the current tenant.
- * Returns a 404 NextResponse if not, or null if OK.
+ * Verify a connection ID is reachable by the current tenant: either it
+ * belongs to the tenant directly, OR the tenant has a vDC binding that
+ * references it (PVE via vdcs.connection_id, PBS via vdc_pbs_namespaces).
+ * Returns a 404 NextResponse if neither, or null if OK.
  */
 export async function verifyConnectionOwnership(connectionId: string): Promise<Response | null> {
   const tenantConnectionIds = await getTenantConnectionIds()
-  if (!tenantConnectionIds.has(connectionId)) {
-    const { NextResponse } = await import('next/server')
-    return NextResponse.json({ error: 'Connection not found' }, { status: 404 })
+  if (tenantConnectionIds.has(connectionId)) return null
+  // Fall back to vDC scope so vDC tenants can reach provider-owned PVE/PBS
+  // referenced by their bindings (mirror of the bypass used by getConnectionById).
+  const { getVdcScope } = await import('@/lib/vdc/scope')
+  const scope = getVdcScope(await getCurrentTenantId())
+  if (scope && (scope.connectionIds.has(connectionId) || scope.pbsConnectionIds.has(connectionId))) {
+    return null
   }
-  return null
+  const { NextResponse } = await import('next/server')
+  return NextResponse.json({ error: 'Connection not found' }, { status: 404 })
 }
 
 /**

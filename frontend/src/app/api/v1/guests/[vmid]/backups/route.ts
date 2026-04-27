@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server"
 import { cookies } from "next/headers"
 
-import { getSessionPrisma } from "@/lib/tenant"
+import { getSessionPrisma, getCurrentTenantId } from "@/lib/tenant"
+import { prisma as globalPrisma } from "@/lib/db/prisma"
+import { getVdcScope } from "@/lib/vdc/scope"
 import { pbsFetch } from "@/lib/proxmox/pbs-client"
 import { decryptSecret } from "@/lib/crypto/secret"
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
@@ -23,7 +25,6 @@ export async function GET(
   ctx: { params: Promise<{ vmid: string }> | { vmid: string } }
 ) {
   try {
-    const prisma = await getSessionPrisma()
     const params = await Promise.resolve(ctx.params)
     const vmid = (params as any)?.vmid
 
@@ -42,9 +43,18 @@ export async function GET(
     const url = new URL(req.url)
     const typeFilter = url.searchParams.get('type') // 'vm' | 'ct'
 
-    // Récupérer toutes les connexions PBS
-    const pbsConnections = await prisma.connection.findMany({
-      where: { type: 'pbs' },
+    // Récupérer toutes les connexions PBS visibles. Provider sees its own
+    // PBS via tenant prisma; vDC tenants reach PBS connections referenced
+    // by their vDC bindings (vdc_pbs_namespaces) using the global client +
+    // an id whitelist, mirroring `/api/v1/connections?type=pbs`.
+    const tenantId = await getCurrentTenantId()
+    const vdcScope = getVdcScope(tenantId)
+    const sessionPrisma = await getSessionPrisma()
+    const connPrisma = vdcScope ? globalPrisma : sessionPrisma
+    const pbsWhere: any = { type: 'pbs' }
+    if (vdcScope) pbsWhere.id = { in: [...vdcScope.pbsConnectionIds] }
+    const pbsConnections = await connPrisma.connection.findMany({
+      where: pbsWhere,
       select: {
         id: true,
         name: true,

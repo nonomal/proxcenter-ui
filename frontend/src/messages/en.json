@@ -600,7 +600,7 @@
       "noCloudInit": "No Cloud-Init drive detected",
       "noCloudInitDesc": "This VM does not have a Cloud-Init drive. Add a Cloud-Init drive to the VM hardware to configure Cloud-Init settings.",
       "passwordMasked": "Password is set (hidden by Proxmox)",
-      "ipConfigHelp": "Format: ip=<IPv4/CIDR>,gw=<GW> or ip=dhcp",
+      "ipConfigHelp": "Format: ip=ADDRESS/CIDR,gw=GATEWAY or ip=dhcp",
       "saved": "Cloud-Init configuration saved"
     },
     "noNotes": "No notes for this VM. Click \"Edit\" to add one.",
@@ -1738,6 +1738,7 @@
     "endTime": "End Time",
     "userName": "User Name",
     "newBackup": "New Backup",
+    "deployFromTemplate": "Deploy from template",
     "backupContent": "Backup Content",
     "recommended": "Recommended",
     "usePbsDirectly": "Use PBS directly for this feature",
@@ -3191,6 +3192,7 @@
       "qmsuspend": "VM Suspend",
       "qmresume": "VM Resume",
       "qmreset": "VM Reset",
+      "resize": "Disk Resize",
       "qmmigrate": "VM Migration",
       "qmigrate": "VM Migration",
       "qmclone": "VM Clone",
@@ -3885,6 +3887,8 @@
       "minMem": "Min Memory",
       "recMem": "Rec. Memory",
       "tagsLabel": "Tags",
+      "shareWithTenants": "Share with all tenants",
+      "shareWithTenantsHelp": "Publish to the catalogue visible by every tenant. Only the provider can flip this flag.",
       "deleteConfirm": "Delete this custom image from the catalog?"
     },
     "blueprints": {
@@ -3928,6 +3932,9 @@
         "scsiController": "SCSI Controller",
         "cpuType": "CPU Type",
         "bridge": "Network Bridge",
+        "bridgeGroupVnets": "VNets (your vDC)",
+        "bridgeGroupShared": "Shared bridges",
+        "bridgeGroupBridges": "Cluster bridges",
         "vlan": "VLAN Tag",
         "vlanPlaceholder": "None",
         "qemuAgent": "QEMU Guest Agent"

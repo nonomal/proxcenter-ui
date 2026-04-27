@@ -203,7 +203,8 @@ export function customImageToCloudImage(ci: {
   recommendedCores: number
   ostype: string
   tags: string | null
-}): CloudImage & { sourceType: string; volumeId: string | null; isCustom: true } {
+  isShared?: boolean | null
+}): CloudImage & { sourceType: string; volumeId: string | null; isCustom: true; isShared?: boolean } {
   return {
     slug: ci.slug,
     name: ci.name,
@@ -224,5 +225,6 @@ export function customImageToCloudImage(ci: {
     sourceType: ci.sourceType,
     volumeId: ci.volumeId,
     isCustom: true,
+    isShared: !!ci.isShared,
   }
 }

@@ -10,6 +10,7 @@ import { getConnectionById } from "@/lib/connections/getConnection"
 import { pveFetch } from "@/lib/proxmox/client"
 import { getImageBySlug, customImageToCloudImage } from "@/lib/templates/cloudImages"
 import { isFileBasedStorage, supportsVmDisks } from "@/lib/proxmox/storage"
+import { resolveVdcForTenant } from "@/lib/vdc/quota"
 
 export const runtime = "nodejs"
 
@@ -49,13 +50,13 @@ export async function POST(req: Request) {
     const body = parseResult.data
 
     // Resolve image: built-in first, then custom from DB
+    const tenantId = await getCurrentTenantId()
     let image = getImageBySlug(body.imageSlug) as any
     let isCustom = false
     let sourceType = 'url'
     let volumeId: string | null = null
 
     if (!image) {
-      const tenantId = await getCurrentTenantId()
       const customRow = await prisma.customImage.findUnique({ where: { tenantId_slug: { tenantId, slug: body.imageSlug } } })
       if (!customRow) {
         return NextResponse.json({ error: "Unknown image slug" }, { status: 400 })
@@ -65,6 +66,15 @@ export async function POST(req: Request) {
       sourceType = customRow.sourceType
       volumeId = customRow.volumeId
     }
+
+    // Resolve the tenant's vDC for this connection+node so we can pin the
+    // VM to its PVE pool. Without this, the inventory filter (which lists
+    // VMs by `pool === vdc.pvePoolName`) wouldn't surface the deployed VM
+    // and the tenant would think the deploy failed.
+    const vdcInfo = (() => {
+      try { return resolveVdcForTenant(tenantId, body.connectionId, body.node) }
+      catch { return null }
+    })()
 
     const conn = await getConnectionById(body.connectionId)
 
@@ -117,7 +127,18 @@ export async function POST(req: Request) {
           // Step 1: Download image to storage (skip if already present)
           await updateDeployment(deployment.id, "downloading")
 
-          const rawFilename = image.downloadUrl.split("/").pop() || `${image.slug}.${image.format}`
+          // Filename strategy:
+          //  - Built-in images (Ubuntu official, etc.): keep the upstream
+          //    filename so all tenants share the same downloaded artefact
+          //    (natural deduplication on the same PVE storage).
+          //  - Custom images: derive from the slug, which is already
+          //    tenant-prefixed for private images (e.g. `custom-acme-myapp`)
+          //    by the POST /custom-images route. Two tenants that upload the
+          //    same source URL therefore land in distinct files and can't
+          //    overwrite each other's image on a shared storage.
+          const rawFilename = isCustom
+            ? `${image.slug}.${image.format}`
+            : (image.downloadUrl.split("/").pop() || `${image.slug}.${image.format}`)
           // PVE import content type requires .qcow2/.raw/.vmdk extension — rename .img to .qcow2
           const urlFilename = rawFilename.replace(/\.img$/, ".qcow2")
 
@@ -134,6 +155,21 @@ export async function POST(req: Request) {
             throw new Error(
               `Storage '${body.storage}' (type '${storageType}') does not support VM disk images. ` +
               `Please select a storage that supports VM images (e.g. dir, NFS, RBD, LVM, ZFS).`
+            )
+          }
+
+          // The backing technology supports images, but PVE also requires the
+          // storage to be configured with `content=images` (or rootdir for
+          // containers). The default `local` directory storage typically only
+          // ships with `iso,vztmpl,backup` and PVE rejects vm creation with a
+          // 400 — check up front so we surface a readable error instead of
+          // the cryptic Proxmox parameter-verification message.
+          const storageContent = String(storageConfig?.content || '')
+          if (!storageContent.split(',').map(s => s.trim()).some(c => c === 'images' || c === 'rootdir')) {
+            throw new Error(
+              `Storage '${body.storage}' is not configured for VM disk images ` +
+              `(content="${storageContent || 'unknown'}"). Pick another storage in your vDC ` +
+              `that includes "images" in its content types (e.g. local-lvm, ceph, NFS).`
             )
           }
 
@@ -241,6 +277,12 @@ export async function POST(req: Request) {
           vga: "serial0",
           agent: hw.agent ? "1" : "0",
         })
+
+        // Pin the VM to the tenant's vDC pool so it surfaces in their
+        // inventory (the inventory stream filters by pool === vdc.pvePoolName).
+        if (vdcInfo?.poolName) {
+          createParams.set('pool', vdcInfo.poolName)
+        }
 
         const createResult = await pveFetch<any>(
           conn,

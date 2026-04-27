@@ -160,6 +160,9 @@ model CustomImage {
   recommendedCores  Int      @default(2) @map("recommended_cores")
   ostype            String   @default("l26")
   tags              String?
+  // True when the image is part of the provider-managed catalogue, visible
+  // to every tenant. Only the provider (tenant 'default') can flip this on.
+  isShared          Boolean  @default(false) @map("is_shared")
   createdBy         String?  @map("created_by")
   createdAt         DateTime @default(now()) @map("created_at")
   updatedAt         DateTime @updatedAt @map("updated_at")

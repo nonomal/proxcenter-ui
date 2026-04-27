@@ -3,6 +3,7 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { useTranslations } from 'next-intl'
 import { useRBAC } from '@/contexts/RBACContext'
+import { useTenant } from '@/contexts/TenantContext'
 import { getOsSvgIcon } from '@/lib/utils/osIcons'
 
 import {
@@ -169,6 +170,11 @@ function CreateVmDialog({
   const t = useTranslations()
   const theme = useTheme()
   const { isAdmin } = useRBAC()
+  // Tenants other than the provider get the cloud abstraction: no node
+  // picker, smart auto-placement on the least-loaded node.
+  const { currentTenant, loading: tenantLoading } = useTenant()
+  const isProviderTenant = !tenantLoading && currentTenant?.id === 'default'
+  const hideNodePicker = !tenantLoading && !!currentTenant && !isProviderTenant
 
   // États du formulaire
   const [activeTab, setActiveTab] = useState(0)
@@ -562,9 +568,39 @@ return
 
       setNodes(allNodes)
 
-      // 3. Sélectionner le node par défaut (priorité au defaultNode/defaultConnId)
+      // Pick the least-loaded online node. Score = cpuPct + 1.5*memPct, RAM
+      // weighted higher because it's the harder constraint at provisioning
+      // time. Falls back to the first online node, then to the first node.
+      const pickBestNode = (pool: any[]): any => {
+        if (pool.length === 0) return null
+        const online = pool.filter(n => n.status === 'online')
+        const candidates = online.length > 0 ? online : pool
+        const scored = candidates.map(n => ({
+          node: n,
+          score: (n.cpuPct ?? 0) + 1.5 * (n.memPct ?? 0),
+        }))
+        scored.sort((a, b) => a.score - b.score)
+        return scored[0].node
+      }
+
+      // 3. Sélectionner le node par défaut. For tenants we always go through
+      // pickBestNode (auto-placement, picker is hidden). The provider keeps
+      // the legacy precedence (defaultNode/defaultConnId/first).
       if (allNodes.length > 0) {
-        if (defaultConnId && defaultNode) {
+        if (hideNodePicker) {
+          // Tenant: pick best across the whole pool; if a defaultConnId was
+          // hinted, restrict to that cluster's nodes first.
+          const pool = defaultConnId
+            ? allNodes.filter((n: any) => n.connId === defaultConnId)
+            : allNodes
+          const target = pickBestNode(pool.length > 0 ? pool : allNodes)
+          if (target) {
+            setSelectedNodeValue(target.node)
+            setResolvedNode(target.node)
+            setSelectedConnection(target.connId)
+            loadNextVmid(target.connId)
+          }
+        } else if (defaultConnId && defaultNode) {
           const match = allNodes.find((n: any) => n.connId === defaultConnId && n.node === defaultNode)
           const target = match || allNodes[0]
           setSelectedNodeValue(target.node)
@@ -904,6 +940,10 @@ return
       case 0: // General
         return (
           <Stack spacing={1.5}>
+            {/* Node picker hidden for tenants: placement is auto-resolved on
+                the least-loaded node in their vDC scope. The selectedNodeValue
+                state is still set silently so downstream API calls work. */}
+            {!hideNodePicker && (
             <FormControl fullWidth size="small">
               <InputLabel>{t('inventory.createVm.node')}</InputLabel>
               <Select
@@ -1019,6 +1059,7 @@ return
                 ]).flat().filter(Boolean)}
               </Select>
             </FormControl>
+            )}
             {/* Resource pool selector — hidden for vDC tenants (pool assigned automatically) */}
             {isAdmin && (
               <FormControl fullWidth size="small">
@@ -1043,28 +1084,33 @@ return
                 </Select>
               </FormControl>
             )}
-            <TextField
-              label="VM ID"
-              value={vmid}
-              onChange={(e) => handleVmidChange(e.target.value)}
-              size="small"
-              error={!!vmidError}
-              helperText={vmidError}
-              inputProps={{ inputMode: 'numeric', pattern: '[0-9]*' }}
-              slotProps={{
-                input: {
-                  endAdornment: (
-                    <InputAdornment position="end">
-                      <Tooltip title={t('inventory.createVm.generateVmId')}>
-                        <IconButton size="small" onClick={generateNextVmid} edge="end">
-                          <i className="ri-refresh-line" style={{ fontSize: 18 }} />
-                        </IconButton>
-                      </Tooltip>
-                    </InputAdornment>
-                  )
-                }
-              }}
-            />
+            {/* VMID is a Proxmox implementation detail — hidden from tenants
+                (auto-generated via /cluster/nextid in loadNextVmid). Provider
+                keeps the field visible to set/override manually. */}
+            {!hideNodePicker && (
+              <TextField
+                label="VM ID"
+                value={vmid}
+                onChange={(e) => handleVmidChange(e.target.value)}
+                size="small"
+                error={!!vmidError}
+                helperText={vmidError}
+                inputProps={{ inputMode: 'numeric', pattern: '[0-9]*' }}
+                slotProps={{
+                  input: {
+                    endAdornment: (
+                      <InputAdornment position="end">
+                        <Tooltip title={t('inventory.createVm.generateVmId')}>
+                          <IconButton size="small" onClick={generateNextVmid} edge="end">
+                            <i className="ri-refresh-line" style={{ fontSize: 18 }} />
+                          </IconButton>
+                        </Tooltip>
+                      </InputAdornment>
+                    )
+                  }
+                }}
+              />
+            )}
             <TextField label={t('inventory.createVm.vmName')} value={vmName} onChange={(e) => setVmName(e.target.value)} size="small" fullWidth />
 
             {/* Boot & Shutdown — collapsible */}

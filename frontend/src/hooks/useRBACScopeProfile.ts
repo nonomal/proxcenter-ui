@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 
 import { useRBAC } from '@/contexts/RBACContext'
+import { useTenant } from '@/contexts/TenantContext'
 
 import type { ViewMode } from '@/app/(dashboard)/infrastructure/inventory/InventoryTree'
 
@@ -9,6 +10,10 @@ const INFRA_SCOPES = new Set(['global', 'connection', 'node'])
 
 /** View modes that are always safe — they only show VMs the user can access */
 const ALWAYS_ALLOWED: ViewMode[] = ['vms', 'favorites', 'templates']
+
+/** View modes that reveal cluster/node topology to the tenant — hidden when
+ *  the session is on a non-provider tenant (cloud-style abstraction). */
+const INFRA_VIEW_MODES = new Set<ViewMode>(['tree', 'hosts'])
 
 type ScopeProfile = {
   /** Which view to open by default */
@@ -33,23 +38,40 @@ type ScopeProfile = {
  */
 export function useRBACScopeProfile(): ScopeProfile {
   const { roles, isAdmin, loading } = useRBAC()
+  const { currentTenant, loading: tenantLoading } = useTenant()
+  // Tenants other than the provider get the cloud-style abstraction:
+  // nodes / hosts / clusters are an implementation detail and never appear
+  // in their UI, regardless of RBAC scope.
+  const isProviderTenant = !tenantLoading && currentTenant?.id === 'default'
+  const hideInfra = !tenantLoading && !!currentTenant && !isProviderTenant
 
   return useMemo(() => {
+    const restrict = (profile: ScopeProfile): ScopeProfile => {
+      if (!hideInfra) return profile
+      const safe = new Set<ViewMode>(
+        [...profile.allowedViewModes].filter(m => !INFRA_VIEW_MODES.has(m)),
+      )
+      const defaultView = INFRA_VIEW_MODES.has(profile.defaultViewMode)
+        ? ('vms' as ViewMode)
+        : profile.defaultViewMode
+      return { ...profile, allowedViewModes: safe, defaultViewMode: defaultView }
+    }
+
     if (loading) {
-      return {
+      return restrict({
         defaultViewMode: 'tree' as ViewMode,
         allowedViewModes: new Set<ViewMode>(['tree', 'vms', 'hosts', 'pools', 'tags', 'favorites', 'templates']),
         loading: true,
-      }
+      })
     }
 
     // Admins get everything
     if (isAdmin) {
-      return {
+      return restrict({
         defaultViewMode: 'tree' as ViewMode,
         allowedViewModes: new Set<ViewMode>(['tree', 'vms', 'hosts', 'pools', 'tags', 'favorites', 'templates']),
         loading: false,
-      }
+      })
     }
 
     // Collect unique scope types from user's roles
@@ -59,11 +81,11 @@ export function useRBACScopeProfile(): ScopeProfile {
 
     // No roles at all → minimal view
     if (scopeTypes.size === 0) {
-      return {
+      return restrict({
         defaultViewMode: 'vms' as ViewMode,
         allowedViewModes: new Set<ViewMode>(ALWAYS_ALLOWED),
         loading: false,
-      }
+      })
     }
 
     const hasInfra = [...scopeTypes].some(s => INFRA_SCOPES.has(s))
@@ -73,11 +95,11 @@ export function useRBACScopeProfile(): ScopeProfile {
 
     // Any infra scope → full access
     if (hasInfra) {
-      return {
+      return restrict({
         defaultViewMode: 'tree' as ViewMode,
         allowedViewModes: new Set<ViewMode>(['tree', 'vms', 'hosts', 'pools', 'tags', 'favorites', 'templates']),
         loading: false,
-      }
+      })
     }
 
     // Non-infra only
@@ -94,10 +116,10 @@ export function useRBACScopeProfile(): ScopeProfile {
       if (!hasTag) defaultView = 'pools'
     }
 
-    return {
+    return restrict({
       defaultViewMode: defaultView,
       allowedViewModes: allowed,
       loading: false,
-    }
-  }, [roles, isAdmin, loading])
+    })
+  }, [roles, isAdmin, loading, hideInfra])
 }

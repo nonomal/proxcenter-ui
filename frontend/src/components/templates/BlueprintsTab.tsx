@@ -13,6 +13,7 @@ import {
 import { DataGrid, GridColDef } from '@mui/x-data-grid'
 
 import { useToast } from '@/contexts/ToastContext'
+import { useTenant } from '@/contexts/TenantContext'
 import EmptyState from '@/components/EmptyState'
 import CreateBlueprintDialog from './CreateBlueprintDialog'
 
@@ -37,6 +38,11 @@ interface BlueprintsTabProps {
 export default function BlueprintsTab({ onDeploy }: BlueprintsTabProps) {
   const t = useTranslations()
   const { showToast } = useToast()
+  // Provider manages the blueprint catalogue; tenants can deploy from it but
+  // can't create / edit / delete entries (they would pollute the shared list).
+  const { currentTenant, loading: tenantLoading } = useTenant()
+  const isProviderTenant = !tenantLoading && currentTenant?.id === 'default'
+  const canManage = !tenantLoading && (currentTenant === null || isProviderTenant)
   const [blueprints, setBlueprints] = useState<Blueprint[]>([])
   const [loading, setLoading] = useState(true)
   const [dialogOpen, setDialogOpen] = useState(false)
@@ -161,20 +167,24 @@ export default function BlueprintsTab({ onDeploy }: BlueprintsTabProps) {
               <i className="ri-rocket-2-line" style={{ fontSize: 18 }} />
             </IconButton>
           </Tooltip>
-          <Tooltip title={t('common.edit')}>
-            <IconButton size="small" onClick={() => handleEdit(p.row)}>
-              <i className="ri-edit-line" style={{ fontSize: 18 }} />
-            </IconButton>
-          </Tooltip>
-          <Tooltip title={t('common.delete')}>
-            <IconButton size="small" color="error" onClick={() => handleDelete(p.row.id)}>
-              <i className="ri-delete-bin-line" style={{ fontSize: 18 }} />
-            </IconButton>
-          </Tooltip>
+          {canManage && (
+            <Tooltip title={t('common.edit')}>
+              <IconButton size="small" onClick={() => handleEdit(p.row)}>
+                <i className="ri-edit-line" style={{ fontSize: 18 }} />
+              </IconButton>
+            </Tooltip>
+          )}
+          {canManage && (
+            <Tooltip title={t('common.delete')}>
+              <IconButton size="small" color="error" onClick={() => handleDelete(p.row.id)}>
+                <i className="ri-delete-bin-line" style={{ fontSize: 18 }} />
+              </IconButton>
+            </Tooltip>
+          )}
         </Box>
       ),
     },
-  ], [t, onDeploy, handleEdit, handleDelete])
+  ], [t, onDeploy, handleEdit, handleDelete, canManage])
 
   if (!loading && blueprints.length === 0) {
     return (
@@ -183,7 +193,7 @@ export default function BlueprintsTab({ onDeploy }: BlueprintsTabProps) {
           icon="ri-draft-line"
           title={t('templates.blueprints.noBlueprints')}
           description={t('templates.blueprints.noBlueprintsDesc')}
-          action={{ label: t('templates.blueprints.create'), onClick: handleCreate, icon: 'ri-add-line' }}
+          action={canManage ? { label: t('templates.blueprints.create'), onClick: handleCreate, icon: 'ri-add-line' } : undefined}
           size="medium"
         />
         <CreateBlueprintDialog
@@ -197,16 +207,18 @@ export default function BlueprintsTab({ onDeploy }: BlueprintsTabProps) {
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, p: 2, height: '100%' }}>
-      <Box sx={{ display: 'flex', justifyContent: 'flex-end' }}>
-        <Button
-          variant="contained"
-          size="small"
-          startIcon={<i className="ri-add-line" style={{ fontSize: 16 }} />}
-          onClick={handleCreate}
-        >
-          {t('templates.blueprints.create')}
-        </Button>
-      </Box>
+      {canManage && (
+        <Box sx={{ display: 'flex', justifyContent: 'flex-end' }}>
+          <Button
+            variant="contained"
+            size="small"
+            startIcon={<i className="ri-add-line" style={{ fontSize: 16 }} />}
+            onClick={handleCreate}
+          >
+            {t('templates.blueprints.create')}
+          </Button>
+        </Box>
+      )}
 
       <Box sx={{ flex: 1, minHeight: 0 }}>
         <DataGrid

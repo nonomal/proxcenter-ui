@@ -571,7 +571,7 @@
       "noCloudInit": "未检测到 Cloud-Init 驱动器",
       "noCloudInitDesc": "此虚拟机没有 Cloud-Init 驱动器。请在虚拟机硬件中添加 Cloud-Init 驱动器以配置 Cloud-Init 设置。",
       "passwordMasked": "密码已设置（被 Proxmox 隐藏）",
-      "ipConfigHelp": "格式：ip=<IPv4/CIDR>,gw=<GW> 或 ip=dhcp",
+      "ipConfigHelp": "格式：ip=地址/CIDR,gw=网关 或 ip=dhcp",
       "saved": "Cloud-Init 配置已保存"
     },
     "noNotes": "此虚拟机没有备注。点击“编辑”添加备注。",
@@ -1708,6 +1708,7 @@
     "endTime": "结束时间",
     "userName": "用户名",
     "newBackup": "新建备份",
+    "deployFromTemplate": "从模板部署",
     "backupContent": "备份内容",
     "recommended": "推荐",
     "usePbsDirectly": "直接使用 PBS 进行此功能",
@@ -3153,6 +3154,7 @@
       "qmsuspend": "VM 暂停",
       "qmresume": "VM 恢复",
       "qmreset": "VM 重置",
+      "resize": "磁盘扩容",
       "qmmigrate": "VM 迁移",
       "qmigrate": "VM 迁移",
       "qmclone": "VM 克隆",
@@ -3847,6 +3849,8 @@
       "minMem": "最低内存",
       "recMem": "推荐内存",
       "tagsLabel": "标签",
+      "shareWithTenants": "与所有租户共享",
+      "shareWithTenantsHelp": "将镜像发布到所有租户可见的目录。只有服务提供方可以启用此选项。",
       "deleteConfirm": "从目录中删除此自定义镜像？"
     },
     "blueprints": {
@@ -3890,6 +3894,9 @@
         "scsiController": "SCSI 控制器",
         "cpuType": "CPU 类型",
         "bridge": "网络桥接",
+        "bridgeGroupVnets": "VNets（您的 vDC）",
+        "bridgeGroupShared": "共享桥接",
+        "bridgeGroupBridges": "集群桥接",
         "vlan": "VLAN 标签",
         "vlanPlaceholder": "无",
         "qemuAgent": "QEMU Guest Agent"

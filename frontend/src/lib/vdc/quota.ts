@@ -15,17 +15,19 @@ import { prisma } from '@/lib/db/prisma'
 // ---------------------------------------------------------------------------
 
 export interface QuotaOperation {
-  type: 'create' | 'clone' | 'resize' | 'config'
+  type: 'create' | 'clone' | 'resize' | 'config' | 'snapshot' | 'backup'
   addVcpus?: number     // vCPUs requested (create/clone) or delta (config)
   addRamMb?: number     // RAM in MB requested or delta
   addStorageMb?: number // Storage in MB requested or delta
   addVms?: number       // Usually 1 for create/clone, 0 for config/resize
+  addSnapshots?: number // 1 for snapshot create, 0 elsewhere
+  addBackups?: number   // 1 for backup create, 0 elsewhere
 }
 
 export interface QuotaCheckResult {
   allowed: boolean
   violations: string[] // e.g. ["RAM: 252/256 GB, +8 GB exceeds quota"]
-  currentUsage: { vcpus: number; ramMb: number; storageMb: number; vms: number }
+  currentUsage: { vcpus: number; ramMb: number; storageMb: number; vms: number; snapshots: number; backups: number }
 }
 
 export interface VdcResolveResult {
@@ -152,7 +154,7 @@ export async function checkVdcQuota(
     return {
       allowed: true,
       violations: [],
-      currentUsage: { vcpus: 0, ramMb: 0, storageMb: 0, vms: 0 },
+      currentUsage: { vcpus: 0, ramMb: 0, storageMb: 0, vms: 0, snapshots: 0, backups: 0 },
     }
   }
 
@@ -201,7 +203,26 @@ export async function checkVdcQuota(
     storageMb += Math.round((vm.maxdisk || 0) / 1048576)
   }
 
-  const currentUsage = { vcpus, ramMb, storageMb, vms }
+  // Count snapshots across the pool (only fetched when the operation cares
+  // about the snapshot quota — saves ~N PVE calls per ordinary create/resize).
+  let snapshots = 0
+  if (operation.type === 'snapshot' && quota.maxSnapshots !== null) {
+    const snapPromises = vmMembers.map(async (vm: any) => {
+      try {
+        const resType = vm.type === 'lxc' ? 'lxc' : 'qemu'
+        const list = await pveFetch<any[]>(
+          conn,
+          `/nodes/${encodeURIComponent(vm.node)}/${resType}/${encodeURIComponent(String(vm.vmid))}/snapshot`
+        )
+        // PVE includes a synthetic "current" entry — exclude it.
+        return (list || []).filter((s: any) => s.name !== 'current').length
+      } catch { return 0 }
+    })
+    const counts = await Promise.all(snapPromises)
+    snapshots = counts.reduce((acc, n) => acc + n, 0)
+  }
+
+  const currentUsage = { vcpus, ramMb, storageMb, vms, snapshots, backups: 0 }
 
   // 7. Check each quota field against requested operation
   const violations: string[] = []
@@ -239,6 +260,15 @@ export async function checkVdcQuota(
     if (vms + addVms > quota.maxVms) {
       violations.push(
         `VMs: ${vms}/${quota.maxVms} used, cannot create additional VM`
+      )
+    }
+  }
+
+  const addSnapshots = operation.addSnapshots ?? 0
+  if (quota.maxSnapshots !== null && addSnapshots > 0) {
+    if (snapshots + addSnapshots > quota.maxSnapshots) {
+      violations.push(
+        `Snapshots: ${snapshots}/${quota.maxSnapshots} used, cannot create additional snapshot`
       )
     }
   }
