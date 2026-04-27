@@ -10,7 +10,6 @@ import QuotaDonut from './QuotaDonut'
 import UplinksCard from './UplinksCard'
 import MyStoragesCard from './MyStoragesCard'
 import MyVmsCard from './MyVmsCard'
-import HostsCard from './HostsCard'
 import VnetList from './VnetList'
 import MyBackupsCard from './MyBackupsCard'
 import MyGreenCard from './MyGreenCard'
@@ -41,10 +40,6 @@ export default function MyVdcOverview({ vdc }: Props) {
   const allowedStorages = useMemo<string[]>(
     () => (Array.isArray(vdc.storages) ? vdc.storages : []),
     [vdc.storages],
-  )
-  const allowedNodes = useMemo<string[]>(
-    () => (Array.isArray(vdc.nodes) ? vdc.nodes : []),
-    [vdc.nodes],
   )
   const pbsBindings = useMemo<any[]>(
     () => (Array.isArray(vdc.pbsBindings) ? vdc.pbsBindings : []),
@@ -115,7 +110,9 @@ export default function MyVdcOverview({ vdc }: Props) {
       {/* Geographic map of datacentres hosting the vDC's resources. */}
       <MyDatacentersMapCard vdcId={vdc.id} />
 
-      {/* Blocks 2-7 in a 2-column grid */}
+      {/* Blocks 2-6 in a 2-column grid. Nodes are deliberately abstracted
+          away from the tenant view (cloud-style) — the provider manages the
+          underlying hosts via /infrastructure/inventory. */}
       <Box
         sx={{
           display: 'grid',
@@ -123,7 +120,6 @@ export default function MyVdcOverview({ vdc }: Props) {
           gridTemplateColumns: { xs: '1fr', md: '1fr 1fr' },
         }}
       >
-        <HostsCard connectionIds={connectionIds} allowedNodes={allowedNodes} />
         <MyVmsCard connectionIds={connectionIds} />
         <VnetList vdcId={vdc.id} quota={{ maxVnets: quota.maxVnets ?? null }} />
         <MyStoragesCard connectionIds={connectionIds} allowedStorages={allowedStorages} />

@@ -26,6 +26,8 @@ import {
 import { useTranslations } from 'next-intl'
 
 import { useLocale } from '@/contexts/LocaleContext'
+import { localeCountryCodes } from '@/i18n/config'
+import { CountryFlag } from '@/components/ui/CountryFlag'
 
 // Materio settings hook (theme, mode, etc.)
 import { useSettings } from '@core/hooks/useSettings'
@@ -707,7 +709,7 @@ return () => window.removeEventListener('keydown', onKeyDown)
             selected={locale === loc}
           >
             <ListItemIcon sx={{ minWidth: 'auto', mr: 2 }}>
-              <span style={{ fontSize: '1.2rem' }}>{localeFlags[loc]}</span>
+              <CountryFlag code={localeCountryCodes[loc]} size={22} />
             </ListItemIcon>
             {t(`languages.${loc}`)}
           </MenuItem>

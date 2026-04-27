@@ -1,7 +1,9 @@
 // src/app/api/v1/connections/[id]/route.ts
 import { NextResponse } from "next/server"
 
-import { getSessionPrisma } from "@/lib/tenant"
+import { getSessionPrisma, getCurrentTenantId } from "@/lib/tenant"
+import { prisma as globalPrisma } from "@/lib/db/prisma"
+import { getVdcScope } from "@/lib/vdc/scope"
 import { encryptSecret, decryptSecret } from "@/lib/crypto/secret"
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
 import { invalidateConnectionCache } from "@/lib/connections/getConnection"
@@ -15,7 +17,6 @@ export const runtime = "nodejs"
 
 export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> | { id: string } }) {
   try {
-    const prisma = await getSessionPrisma()
     const params = await Promise.resolve(ctx.params)
     const id = (params as any)?.id
 
@@ -26,13 +27,29 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
 
     if (denied) return denied
 
-    const connection = await prisma.connection.findUnique({
+    // Read access spans the caller's own tenant connections AND any
+    // provider-owned connection referenced by their vDC scope (PVE via
+    // vdcs.connection_id, PBS via vdc_pbs_namespaces). Mutations stay
+    // tenant-scoped via getSessionPrisma() in PATCH/DELETE below.
+    const tenantId = await getCurrentTenantId()
+    const vdcScope = getVdcScope(tenantId)
+
+    const connection = await globalPrisma.connection.findUnique({
       where: { id },
     })
 
     if (!connection) {
       return NextResponse.json({ error: "Connection not found" }, { status: 404 })
     }
+
+    const ownsConnection = (connection as any).tenantId === tenantId
+    const allowedByVdc = !!vdcScope && (
+      vdcScope.connectionIds.has(id) || vdcScope.pbsConnectionIds.has(id)
+    )
+    if (!ownsConnection && !allowedByVdc) {
+      return NextResponse.json({ error: "Connection not found" }, { status: 404 })
+    }
+    const prisma = globalPrisma
 
     // Retourner sans les secrets mais avec un indicateur
     // Read tags via raw SQL (in case Prisma client doesn't know the column yet)
@@ -96,6 +113,7 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
     if (body.latitude !== undefined) data.latitude = body.latitude
     if (body.longitude !== undefined) data.longitude = body.longitude
     if (body.locationLabel !== undefined) data.locationLabel = body.locationLabel || null
+    if (body.country !== undefined) data.country = body.country ? String(body.country).toUpperCase() : null
     // Tags are handled separately via raw SQL to avoid Prisma client cache issues
     const tagsUpdate = body.tags !== undefined ? body.tags || null : undefined
 

@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useMemo } from 'react'
 import { useTranslations, useLocale } from 'next-intl'
 import dynamic from 'next/dynamic'
 import DOMPurify from 'dompurify'
@@ -153,6 +153,9 @@ export default function VmDetailTabs(props: any) {
     return next
   })
   const [expandedVmBackupGroups, setExpandedVmBackupGroups] = useState<Set<string>>(new Set())
+  // Namespace filter for the BACKUP tab. 'all' shows every namespace, otherwise
+  // limits the listing to the chosen one. Reset when a different VM is selected.
+  const [vmBackupNamespaceFilter, setVmBackupNamespaceFilter] = useState<string>('all')
   const [bootOrderOpen, setBootOrderOpen] = useState(false)
   const [bootDevices, setBootDevices] = useState<Array<{ id: string; enabled: boolean }>>([])
   const [bootSaving, setBootSaving] = useState(false)
@@ -344,6 +347,23 @@ export default function VmDetailTabs(props: any) {
 
   const { hasFeature } = useLicense()
   const changeTrackingAvailable = hasFeature(Features.CHANGE_TRACKING)
+
+  // Namespaces seen in the loaded backup snapshots, sorted alphabetically with
+  // root first. Drives the dropdown above the BACKUP list.
+  const availableBackupNamespaces = useMemo<string[]>(() => {
+    const set = new Set<string>()
+    for (const b of backups || []) set.add(b.namespace || '')
+    return Array.from(set).sort((a, b) => (a === '' ? -1 : b === '' ? 1 : a.localeCompare(b)))
+  }, [backups])
+
+  // Reset the filter to 'all' as soon as it points to a namespace that is no
+  // longer in the current backups (e.g. switching to another VM whose snapshots
+  // live in a different namespace).
+  useEffect(() => {
+    if (vmBackupNamespaceFilter !== 'all' && !availableBackupNamespaces.includes(vmBackupNamespaceFilter)) {
+      setVmBackupNamespaceFilter('all')
+    }
+  }, [availableBackupNamespaces, vmBackupNamespaceFilter])
 
   const [diskMenuAnchor, setDiskMenuAnchor] = useState<HTMLElement | null>(null)
   const [diskMenuTarget, setDiskMenuTarget] = useState<any | null>(null)
@@ -2623,35 +2643,54 @@ return (
                 <Box>
                   {/* Header avec bouton de création */}
                   {!selectedBackup && (
-                    <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
-                      <Typography variant="h6" sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                    <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2, gap: 2 }}>
+                      <Typography variant="h6" sx={{ display: 'flex', alignItems: 'center', gap: 1, flexShrink: 0 }}>
                         <i className="ri-hard-drive-2-line" style={{ fontSize: 20 }} />
                         {t('inventory.tabs.backups')}
                       </Typography>
-                      <Button
-                        variant="contained"
-                        size="small"
-                        startIcon={<AddIcon />}
-                        onClick={() => {
-                          // Charger les storages de backup disponibles
-                          if (selection?.type === 'vm') {
-                            const { connId, node } = parseVmId(selection.id)
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexShrink: 0 }}>
+                        {availableBackupNamespaces.length > 1 && (
+                          <FormControl size="small" sx={{ minWidth: 200 }}>
+                            <InputLabel>Namespace</InputLabel>
+                            <Select
+                              value={vmBackupNamespaceFilter}
+                              label="Namespace"
+                              onChange={e => setVmBackupNamespaceFilter(e.target.value)}
+                            >
+                              <MenuItem value="all">{t('backups.allNamespaces')}</MenuItem>
+                              {availableBackupNamespaces.map(ns => (
+                                <MenuItem key={ns || '__root__'} value={ns}>
+                                  {ns || t('backups.rootNamespace')}
+                                </MenuItem>
+                              ))}
+                            </Select>
+                          </FormControl>
+                        )}
+                        <Button
+                          variant="contained"
+                          size="small"
+                          startIcon={<AddIcon />}
+                          onClick={() => {
+                            // Charger les storages de backup disponibles
+                            if (selection?.type === 'vm') {
+                              const { connId, node } = parseVmId(selection.id)
 
-                            fetch(`/api/v1/connections/${encodeURIComponent(connId)}/nodes/${encodeURIComponent(node)}/storages?content=backup`)
-                              .then(res => res.json())
-                              .then(json => setBackupStorages(json.data || []))
-                              .catch(() => setBackupStorages([]))
-                          }
+                              fetch(`/api/v1/connections/${encodeURIComponent(connId)}/nodes/${encodeURIComponent(node)}/storages?content=backup`)
+                                .then(res => res.json())
+                                .then(json => setBackupStorages(json.data || []))
+                                .catch(() => setBackupStorages([]))
+                            }
 
-                          setBackupStorage('')
-                          setBackupMode('snapshot')
-                          setBackupCompress('zstd')
-                          setBackupNote('')
-                          setCreateBackupDialogOpen(true)
-                        }}
-                      >
-                        {t('inventory.newBackup')}
-                      </Button>
+                            setBackupStorage('')
+                            setBackupMode('snapshot')
+                            setBackupCompress('zstd')
+                            setBackupNote('')
+                            setCreateBackupDialogOpen(true)
+                          }}
+                        >
+                          {t('inventory.newBackup')}
+                        </Button>
+                      </Box>
                     </Box>
                   )}
                   
@@ -2707,9 +2746,23 @@ return (
                       )
                     }
 
+                    // Apply the namespace filter before grouping so the rest of
+                    // the UI (counts, totals) stays consistent with what is shown.
+                    const visibleBackups = vmBackupNamespaceFilter === 'all'
+                      ? backups
+                      : backups.filter((b: any) => (b.namespace || '') === vmBackupNamespaceFilter)
+
+                    if (visibleBackups.length === 0) {
+                      return (
+                        <Alert severity="info" sx={{ mt: 2 }}>
+                          {t('common.noData')}
+                        </Alert>
+                      )
+                    }
+
                     // Group by pbsName/datastore
                     const groupMap = new Map<string, any[]>()
-                    for (const backup of backups) {
+                    for (const backup of visibleBackups) {
                       const groupKey = `${backup.pbsName || 'PBS'}/${backup.datastore || 'default'}`
                       if (!groupMap.has(groupKey)) groupMap.set(groupKey, [])
                       groupMap.get(groupKey)!.push(backup)

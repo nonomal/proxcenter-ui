@@ -38,9 +38,19 @@ export async function GET(req: Request) {
     const vdcScope = getVdcScope(tenantId)
     const prisma = vdcScope ? globalPrisma : await getSessionPrisma()
 
-    // For vDC tenants, restrict to connections referenced by their vDCs
+    // For vDC tenants, restrict to connections referenced by their vDCs.
+    // PVE connections come from vdcs.connection_id (→ scope.connectionIds);
+    // PBS connections come from vdc_pbs_namespaces (→ scope.pbsConnectionIds).
+    // When the caller asks for both (no type filter), allow either set.
     if (vdcScope) {
-      where.id = { in: [...vdcScope.connectionIds] }
+      const pveIds = [...vdcScope.connectionIds]
+      const pbsIds = [...vdcScope.pbsConnectionIds]
+      const allowedIds = typeFilter === 'pbs'
+        ? pbsIds
+        : typeFilter === 'pve'
+          ? pveIds
+          : [...pveIds, ...pbsIds]
+      where.id = { in: allowedIds }
     }
 
     const connections = await prisma.connection.findMany({
@@ -57,6 +67,7 @@ export async function GET(req: Request) {
         latitude: true,
         longitude: true,
         locationLabel: true,
+        country: true,
         fingerprint: true,
         // SSH fields (sans les secrets)
         sshEnabled: true,
@@ -118,7 +129,7 @@ export async function POST(req: Request) {
     const {
       name, type, baseUrl, behindProxy, insecureTLS, hasCeph, apiToken,
       subType, vmwareUser, vmwarePassword, vmwareDatacenter, hypervShareName,
-      latitude, longitude, locationLabel,
+      latitude, longitude, locationLabel, country,
       sshEnabled, sshPort, sshUser, sshAuthMethod,
       sshKey, sshPassphrase, sshPassword, sshUseSudo,
     } = parseResult.data
@@ -134,6 +145,7 @@ export async function POST(req: Request) {
       latitude: latitude ?? null,
       longitude: longitude ?? null,
       locationLabel: locationLabel ?? null,
+      country: country ?? null,
     }
 
     if (type === 'vmware' || type === 'xcpng' || type === 'hyperv' || type === 'nutanix') {
@@ -295,6 +307,7 @@ export async function POST(req: Request) {
         latitude: true,
         longitude: true,
         locationLabel: true,
+        country: true,
         sshEnabled: true,
         sshPort: true,
         sshUser: true,

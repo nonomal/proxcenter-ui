@@ -65,10 +65,10 @@ function buildSeries(raw: any[]): SeriesPoint[] {
 }
 
 /**
- * VMs table: compact list of tenant guests in the same style as HostsCard.
- * Per-row sparklines for CPU/RAM and IO/NET are fed by the guest RRD (1h
- * window, /nodes/{node}/{type}/{vmid}). Node column removed at user request
- * — Hosts card already surfaces the mapping.
+ * VMs table: compact list of tenant guests with per-row CPU/RAM/IO/NET
+ * sparklines fed by the guest RRD (1h window). Nodes are intentionally
+ * hidden from the tenant view — placement is a provider concern, the tenant
+ * just sees their VMs as a flat resource pool.
  */
 export default function MyVmsCard({ connectionIds }: Props) {
   const t = useTranslations()

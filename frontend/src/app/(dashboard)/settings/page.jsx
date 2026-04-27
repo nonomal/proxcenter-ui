@@ -44,6 +44,8 @@ import { usePageTitle } from '@/contexts/PageTitleContext'
 import { useLicense, Features } from '@/contexts/LicenseContext'
 import { useRBAC } from '@/contexts/RBACContext'
 import EmptyState from '@/components/EmptyState'
+import { CountryFlag } from '@/components/ui/CountryFlag'
+import { findCountry } from '@/lib/utils/countries'
 
 import { useConnectionsManagement } from '@/hooks/useConnectionsManagement'
 import { useLicenseManagement } from '@/hooks/useLicenseManagement'
@@ -378,6 +380,7 @@ function ConnectionsTab() {
       latitude: formData.latitude !== '' && !Number.isNaN(Number.parseFloat(formData.latitude)) ? Number.parseFloat(formData.latitude) : null,
       longitude: formData.longitude !== '' && !Number.isNaN(Number.parseFloat(formData.longitude)) ? Number.parseFloat(formData.longitude) : null,
       locationLabel: formData.locationLabel?.trim() || null,
+      country: formData.country?.trim().toUpperCase() || null,
       // PVE/PBS: API token
       ...(!isExtHypervisor && formData.apiToken.trim() && { apiToken: formData.apiToken.trim() }),
       // VMware/XCP-ng: username + password
@@ -646,19 +649,31 @@ function ConnectionsTab() {
       {
         field: 'locationLabel',
         headerName: t('settings.location'),
-        width: 140,
-        renderCell: params => (
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, height: '100%' }}>
-            {params.value ? (
-              <>
-                <i className='ri-map-pin-2-line' style={{ fontSize: 14, opacity: 0.6 }} />
-                <Typography variant='body2' noWrap>{params.value}</Typography>
-              </>
-            ) : (
-              <Typography variant='caption' sx={{ opacity: 0.3 }}>—</Typography>
-            )}
-          </Box>
-        )
+        width: 180,
+        renderCell: params => {
+          const country = params.row.country
+          const country3 = findCountry(country)?.code
+          if (!params.value && !country3) {
+            return (
+              <Box sx={{ display: 'flex', alignItems: 'center', height: '100%' }}>
+                <Typography variant='caption' sx={{ opacity: 0.3 }}>—</Typography>
+              </Box>
+            )
+          }
+          return (
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, height: '100%', overflow: 'hidden' }}>
+              {country3 && <CountryFlag code={country3} size={18} />}
+              {params.value ? (
+                <>
+                  <i className='ri-map-pin-2-line' style={{ fontSize: 14, opacity: 0.6 }} />
+                  <Typography variant='body2' noWrap>{params.value}</Typography>
+                </>
+              ) : country3 ? (
+                <Typography variant='body2' sx={{ opacity: 0.7 }}>{country3}</Typography>
+              ) : null}
+            </Box>
+          )
+        },
       },
       {
         field: 'actions',
@@ -734,19 +749,31 @@ function ConnectionsTab() {
       {
         field: 'locationLabel',
         headerName: t('settings.location'),
-        width: 140,
-        renderCell: params => (
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, height: '100%' }}>
-            {params.value ? (
-              <>
-                <i className='ri-map-pin-2-line' style={{ fontSize: 14, opacity: 0.6 }} />
-                <Typography variant='body2' noWrap>{params.value}</Typography>
-              </>
-            ) : (
-              <Typography variant='caption' sx={{ opacity: 0.3 }}>—</Typography>
-            )}
-          </Box>
-        )
+        width: 180,
+        renderCell: params => {
+          const country = params.row.country
+          const country3 = findCountry(country)?.code
+          if (!params.value && !country3) {
+            return (
+              <Box sx={{ display: 'flex', alignItems: 'center', height: '100%' }}>
+                <Typography variant='caption' sx={{ opacity: 0.3 }}>—</Typography>
+              </Box>
+            )
+          }
+          return (
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, height: '100%', overflow: 'hidden' }}>
+              {country3 && <CountryFlag code={country3} size={18} />}
+              {params.value ? (
+                <>
+                  <i className='ri-map-pin-2-line' style={{ fontSize: 14, opacity: 0.6 }} />
+                  <Typography variant='body2' noWrap>{params.value}</Typography>
+                </>
+              ) : country3 ? (
+                <Typography variant='body2' sx={{ opacity: 0.7 }}>{country3}</Typography>
+              ) : null}
+            </Box>
+          )
+        },
       },
       {
         field: 'actions',
@@ -885,19 +912,31 @@ function ConnectionsTab() {
       {
         field: 'locationLabel',
         headerName: t('settings.location'),
-        width: 140,
-        renderCell: params => (
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, height: '100%' }}>
-            {params.value ? (
-              <>
-                <i className='ri-map-pin-2-line' style={{ fontSize: 14, opacity: 0.6 }} />
-                <Typography variant='body2' noWrap>{params.value}</Typography>
-              </>
-            ) : (
-              <Typography variant='caption' sx={{ opacity: 0.3 }}>—</Typography>
-            )}
-          </Box>
-        )
+        width: 180,
+        renderCell: params => {
+          const country = params.row.country
+          const country3 = findCountry(country)?.code
+          if (!params.value && !country3) {
+            return (
+              <Box sx={{ display: 'flex', alignItems: 'center', height: '100%' }}>
+                <Typography variant='caption' sx={{ opacity: 0.3 }}>—</Typography>
+              </Box>
+            )
+          }
+          return (
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, height: '100%', overflow: 'hidden' }}>
+              {country3 && <CountryFlag code={country3} size={18} />}
+              {params.value ? (
+                <>
+                  <i className='ri-map-pin-2-line' style={{ fontSize: 14, opacity: 0.6 }} />
+                  <Typography variant='body2' noWrap>{params.value}</Typography>
+                </>
+              ) : country3 ? (
+                <Typography variant='body2' sx={{ opacity: 0.7 }}>{country3}</Typography>
+              ) : null}
+            </Box>
+          )
+        },
       },
       {
         field: 'actions',

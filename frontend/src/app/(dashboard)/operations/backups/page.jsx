@@ -25,6 +25,7 @@ import {
   ListItemButton,
   ListItemIcon,
   ListItemText,
+  ListSubheader,
   MenuItem,
   Select,
   Stack,
@@ -148,6 +149,11 @@ return () => setPageInfo('', '', '')
 
   // Available namespaces (from API response)
   const [availableNamespaces, setAvailableNamespaces] = useState([])
+
+  // (datastore, namespace) -> vDC bindings, used to group namespaces by vDC.
+  // Populated from /api/v1/pbs/[id]/backups response. Tenant callers see only
+  // their own vDCs; super-admins see bindings across every tenant.
+  const [bindings, setBindings] = useState([])
 
   // Filters
   const [search, setSearch] = useState('')
@@ -406,6 +412,7 @@ return () => setPageInfo('', '', '')
           setTotalRows(json?.data?.pagination?.totalItems || 0)
           setWarnings(json?.data?.warnings || [])
           setAvailableNamespaces(json?.data?.namespaces || [])
+          setBindings(json?.data?.bindings || [])
         } else {
           const errJson = await res.json().catch(() => ({}))
 
@@ -430,9 +437,48 @@ return () => setPageInfo('', '', '')
       setPaginationModel(prev => ({ ...prev, page: 0 })) // Reset page on search
     }, 300)
 
-    
+
 return () => clearTimeout(timer)
   }, [searchInput])
+
+  // Exact (datastore, namespace) → vDC mapping for the table column.
+  const vdcByPair = useMemo(() => {
+    const m = new Map()
+    for (const b of bindings) {
+      m.set(`${b.datastore}|${b.namespace}`, { vdcName: b.vdcName, vdcId: b.vdcId, tenantName: b.tenantName })
+    }
+    return m
+  }, [bindings])
+
+  // Group available namespaces by vDC for the filter dropdown. A namespace can
+  // appear in several vDCs if bound on multiple datastores; in that case it
+  // shows under each vDC group. Namespaces with no binding fall into "Unassigned".
+  const dropdownGroups = useMemo(() => {
+    const groups = new Map() // vdcName -> Set<namespace>
+    const orphans = new Set()
+    for (const ns of availableNamespaces) {
+      const matches = bindings.filter(b => b.namespace === ns)
+      if (matches.length === 0) {
+        orphans.add(ns)
+        continue
+      }
+      const vdcNames = new Set(matches.map(m => m.vdcName))
+      for (const vdcName of vdcNames) {
+        const list = groups.get(vdcName) || new Set()
+        list.add(ns)
+        groups.set(vdcName, list)
+      }
+    }
+    return {
+      groups: Array.from(groups.entries())
+        .sort((a, b) => a[0].localeCompare(b[0]))
+        .map(([vdcName, nss]) => ({
+          vdcName,
+          namespaces: Array.from(nss).sort((a, b) => (a === '' ? -1 : b === '' ? 1 : a.localeCompare(b))),
+        })),
+      orphans: Array.from(orphans).sort((a, b) => (a === '' ? -1 : b === '' ? 1 : a.localeCompare(b))),
+    }
+  }, [availableNamespaces, bindings])
 
   // Colonnes du DataGrid
   const columns = useMemo(() => [
@@ -480,6 +526,38 @@ return () => clearTimeout(timer)
           <Typography variant='body2'>{params.value}</Typography>
         </Box>
       )
+    },
+    {
+      field: 'vdc',
+      headerName: t('backups.vdc'),
+      width: 150,
+      sortable: true,
+      valueGetter: (_, row) => vdcByPair.get(`${row.datastore}|${row.namespace}`)?.vdcName || '',
+      renderCell: params => {
+        const info = vdcByPair.get(`${params.row.datastore}|${params.row.namespace}`)
+        if (!info) {
+          return (
+            <Box sx={{ display: 'flex', alignItems: 'center', height: '100%' }}>
+              <Typography variant='body2' sx={{ opacity: 0.4 }}>--</Typography>
+            </Box>
+          )
+        }
+        const tooltip = info.tenantName ? `${info.vdcName} • ${info.tenantName}` : info.vdcName
+        return (
+          <Box sx={{ display: 'flex', alignItems: 'center', height: '100%' }}>
+            <Tooltip title={tooltip} arrow>
+              <Chip
+                size='small'
+                label={info.vdcName}
+                color='primary'
+                variant='outlined'
+                icon={<Box component='i' className='ri-cloud-line' sx={{ fontSize: 13, ml: '6px !important' }} />}
+                sx={{ height: 22, cursor: 'default' }}
+              />
+            </Tooltip>
+          </Box>
+        )
+      },
     },
     {
       field: 'namespace',
@@ -560,7 +638,7 @@ return () => clearTimeout(timer)
         </Box>
       )
     }
-  ], [t])
+  ], [t, vdcByPair])
 
   // KPI values
   const currentPbs = pbsConnections.find(p => p.id === selectedPbs)
@@ -678,7 +756,7 @@ return () => clearTimeout(timer)
                 </Select>
               </FormControl>
               {availableNamespaces.length > 1 && (
-                <FormControl size='small' sx={{ minWidth: 160 }}>
+                <FormControl size='small' sx={{ minWidth: 200 }}>
                   <InputLabel>Namespace</InputLabel>
                   <Select
                     value={namespaceFilter}
@@ -689,11 +767,46 @@ return () => clearTimeout(timer)
                     label='Namespace'
                   >
                     <MenuItem value='all'>{t('backups.allNamespaces')}</MenuItem>
-                    {availableNamespaces.map(ns => (
-                      <MenuItem key={ns} value={ns}>
-                        {ns || t('backups.rootNamespace')}
-                      </MenuItem>
-                    ))}
+                    {bindings.length === 0
+                      ? availableNamespaces.map(ns => (
+                          <MenuItem key={ns} value={ns}>
+                            {ns || t('backups.rootNamespace')}
+                          </MenuItem>
+                        ))
+                      : [
+                          ...dropdownGroups.groups.flatMap(g => [
+                            <ListSubheader
+                              key={`hdr-${g.vdcName}`}
+                              disableSticky
+                              sx={{ lineHeight: '28px', bgcolor: 'transparent', display: 'flex', alignItems: 'center', gap: 0.5, fontSize: 11, fontWeight: 700, opacity: 0.65, textTransform: 'uppercase' }}
+                            >
+                              <Box component='i' className='ri-cloud-line' sx={{ fontSize: 13 }} />
+                              {t('backups.vdc')}: {g.vdcName}
+                            </ListSubheader>,
+                            ...g.namespaces.map(ns => (
+                              <MenuItem key={`${g.vdcName}-${ns}`} value={ns} sx={{ pl: 3 }}>
+                                {ns || t('backups.rootNamespace')}
+                              </MenuItem>
+                            )),
+                          ]),
+                          ...(dropdownGroups.orphans.length > 0
+                            ? [
+                                <ListSubheader
+                                  key='hdr-unassigned'
+                                  disableSticky
+                                  sx={{ lineHeight: '28px', bgcolor: 'transparent', display: 'flex', alignItems: 'center', gap: 0.5, fontSize: 11, fontWeight: 700, opacity: 0.65, textTransform: 'uppercase' }}
+                                >
+                                  <Box component='i' className='ri-question-line' sx={{ fontSize: 13 }} />
+                                  {t('backups.unassigned')}
+                                </ListSubheader>,
+                                ...dropdownGroups.orphans.map(ns => (
+                                  <MenuItem key={`orphan-${ns}`} value={ns} sx={{ pl: 3 }}>
+                                    {ns || t('backups.rootNamespace')}
+                                  </MenuItem>
+                                )),
+                              ]
+                            : []),
+                        ]}
                   </Select>
                 </FormControl>
               )}

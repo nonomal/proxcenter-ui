@@ -173,9 +173,16 @@ export async function getPbsConnectionById(id: string, tenantId?: string): Promi
 
   if (!c) throw new Error(`PBS Connection not found: ${id}`)
 
-  // Tenant isolation: always verify the connection belongs to the requesting tenant
+  // Tenant isolation: the connection must either belong to the requesting
+  // tenant OR be referenced by one of its vDC PBS bindings. The latter lets
+  // tenants reach provider-owned PBS connections through their vDC scope
+  // (mirrors the assertVdcPbsAccess pattern used in the backups route).
   if (c.tenantId !== resolvedTenantId) {
-    throw new Error(`PBS Connection not found: ${id}`)
+    const { getVdcScope } = await import('@/lib/vdc/scope')
+    const scope = getVdcScope(resolvedTenantId)
+    if (!scope || !scope.pbsConnectionIds.has(id)) {
+      throw new Error(`PBS Connection not found: ${id}`)
+    }
   }
 
   if (c.type !== 'pbs') throw new Error(`Connection ${id} is not a PBS connection`)

@@ -12,8 +12,10 @@ import { DEFAULT_TENANT_ID } from '@/lib/tenant'
 // ---------------------------------------------------------------------------
 
 export interface VdcScope {
-  /** Connection IDs that have vDCs for this tenant */
+  /** PVE connection IDs referenced by the tenant's vDCs */
   connectionIds: Set<string>
+  /** PBS connection IDs the tenant has at least one vDC binding on */
+  pbsConnectionIds: Set<string>
   /** Per-connection: allowed node names */
   nodesByConnection: Map<string, Set<string>>
   /** Per-connection: allowed storage IDs */
@@ -167,6 +169,7 @@ function buildVdcScope(tenantId: string): VdcScope | null {
   }
 
   const pbsNamespacesByConnection = new Map<string, Array<{ datastore: string; namespace: string }>>()
+  const pbsConnectionIds = new Set<string>()
   const stmtPbs = db.prepare(
     `SELECT pbs_connection_id, datastore, namespace FROM vdc_pbs_namespaces WHERE vdc_id = ?`
   )
@@ -175,11 +178,13 @@ function buildVdcScope(tenantId: string): VdcScope | null {
       const list = pbsNamespacesByConnection.get(pr.pbs_connection_id) ?? []
       list.push({ datastore: pr.datastore, namespace: pr.namespace })
       pbsNamespacesByConnection.set(pr.pbs_connection_id, list)
+      pbsConnectionIds.add(pr.pbs_connection_id)
     }
   }
 
   return {
     connectionIds,
+    pbsConnectionIds,
     nodesByConnection,
     storagesByConnection,
     poolsByConnection,
