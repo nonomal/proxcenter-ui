@@ -169,6 +169,10 @@ const NavbarContent = ({ targetLayout } = {}) => {
   const { hasFeature, loading: licenseLoading, status: licenseStatus, isEnterprise } = useLicense()
   const { roles: rbacRoles, hasPermission } = useRBAC()
   const { currentTenant, availableTenants, switchTenant, isMultiTenant } = useTenant()
+  // Provider-only notifications (ProxCenter update, license / node limit
+  // warnings, DRS recommendations) are gated on this flag. Tenant admins
+  // see only the alerts and changes scoped to their own connections.
+  const isProviderTenant = currentTenant?.id === 'default'
 
   // Check if AI feature is available AND enabled in settings
   const [aiEnabled, setAiEnabled] = useState(false)
@@ -212,10 +216,16 @@ const NavbarContent = ({ targetLayout } = {}) => {
 
   // SWR hooks for notifications — gated by permissions to avoid unnecessary fetches
   const { data: alertsResponse, mutate: mutateAlerts } = useActiveAlerts(isEnterprise && canViewAlerts)
-  const { data: drsRecsResponse, mutate: mutateDrsRecs } = useDRSRecommendations(isEnterprise && canViewDrs && hasFeature(Features.DRS))
-  const { data: drsSettingsData } = useDRSSettings(isEnterprise && canViewDrs)
+  // DRS placement is a provider concern in MSP/vDC mode (tenants don't pick
+  // nodes and we just hid the migrate UI for them). Don't fetch DRS recs
+  // for tenants — the messages would expose node names and the tenant has
+  // no actionable button anyway.
+  const { data: drsRecsResponse, mutate: mutateDrsRecs } = useDRSRecommendations(isEnterprise && canViewDrs && hasFeature(Features.DRS) && isProviderTenant)
+  const { data: drsSettingsData } = useDRSSettings(isEnterprise && canViewDrs && isProviderTenant)
   const maxPendingRecs = drsSettingsData?.max_pending_recommendations || 10
-  const { data: updateInfoData } = useVersionCheck(3600000)
+  // Version check / GitHub release lookup is provider-only — skip the
+  // hourly round-trip for tenants instead of fetching and then hiding.
+  const { data: updateInfoData } = useVersionCheck(3600000, isProviderTenant)
   const { data: healthData } = useOrchestratorHealth(isEnterprise)
 
   // Derive notifications from SWR data
@@ -248,8 +258,14 @@ const NavbarContent = ({ targetLayout } = {}) => {
 
   const updateInfo = updateInfoData || null
 
-  // License expiration notification (admin only)
-  const licenseExpirationNotif = canViewAdmin && licenseStatus?.licensed &&
+  // License / version notifications are provider-scoped: they describe the
+  // ProxCenter installation as a whole (license seat usage, software
+  // version), not anything the tenant owns. canViewAdmin alone isn't
+  // enough — a tenant admin still has admin.settings on their own scope
+  // but must not see the global health of the platform.
+
+  // License expiration notification (provider only)
+  const licenseExpirationNotif = isProviderTenant && canViewAdmin && licenseStatus?.licensed &&
     licenseStatus?.expiration_warn &&
     licenseStatus?.days_remaining > 0 ? {
       id: 'license-expiration',
@@ -259,8 +275,8 @@ const NavbarContent = ({ targetLayout } = {}) => {
       isLicenseNotif: true
     } : null
 
-  // Node limit exceeded notification (admin only)
-  const nodeLimitNotif = canViewAdmin && licenseStatus?.node_status?.exceeded ? {
+  // Node limit exceeded notification (provider only)
+  const nodeLimitNotif = isProviderTenant && canViewAdmin && licenseStatus?.node_status?.exceeded ? {
     id: 'node-limit-exceeded',
     message: t('license.nodeLimitExceeded', {
       current: licenseStatus.node_status.current_nodes,
@@ -271,8 +287,8 @@ const NavbarContent = ({ targetLayout } = {}) => {
     isNodeLimitNotif: true
   } : null
 
-  // Update available notification (admin only)
-  const updateNotif = canViewAdmin && updateInfo?.updateAvailable ? {
+  // Update available notification (provider only)
+  const updateNotif = isProviderTenant && canViewAdmin && updateInfo?.updateAvailable ? {
     id: 'version-update',
     message: t('about.newVersionAvailable', { version: updateInfo.latestVersion }),
     severity: 'info',

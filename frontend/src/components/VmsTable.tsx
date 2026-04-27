@@ -4,6 +4,7 @@ import React, { useMemo, useEffect, useLayoutEffect, useRef, useState, useCallba
 import { useTranslations } from 'next-intl'
 import { getOsSvgIcon } from '@/lib/utils/osIcons'
 import { useTagColors } from '@/contexts/TagColorContext'
+import { useTenant } from '@/contexts/TenantContext'
 
 import { createPortal } from 'react-dom'
 import {
@@ -518,6 +519,13 @@ function VmsTable({
   const t = useTranslations()
   const { getColor, getShape, loadConnection } = useTagColors()
   const primaryColor = theme.palette.primary.main
+  // VM placement is provider-only in MSP/vDC mode. Hide migrate icons
+  // (per-row + context menu) for tenant admins. Done at the table level
+  // so every callsite (InventoryDetails right panel, NodeTabs, ClusterTabs)
+  // gets the same gating without touching each one.
+  const { currentTenant, loading: tenantLoading } = useTenant()
+  const canMigrate = !tenantLoading && currentTenant?.id === 'default'
+  const effectiveOnMigrate = canMigrate ? onMigrate : undefined
   
   // Load tag color overrides for all connections in the table
   useEffect(() => {
@@ -635,10 +643,10 @@ return migratingVmIds.has(`${connId}:${vmid}`)
   }, [contextMenu, onVmAction, handleCloseContextMenu])
   
   const handleContextMigrate = useCallback(() => {
-    if (!contextMenu || !onMigrate) return
-    onMigrate(contextMenu.vm)
+    if (!contextMenu || !effectiveOnMigrate) return
+    effectiveOnMigrate(contextMenu.vm)
     handleCloseContextMenu()
-  }, [contextMenu, onMigrate, handleCloseContextMenu])
+  }, [contextMenu, effectiveOnMigrate, handleCloseContextMenu])
   
   // Calculer le pageSize selon la hauteur - remplir l'écran
   const calculatedPageSize = useMemo(() => {
@@ -1435,11 +1443,11 @@ return (
                 </Tooltip>
                 
                 {/* Migrate - toujours disponible (cross-cluster pour standalone) */}
-                {onMigrate && (
+                {effectiveOnMigrate && (
                   <Tooltip title={t('vmActions.migrate')}>
                     <IconButton
                       size='small'
-                      onClick={(e) => { e.stopPropagation(); onMigrate(vm) }}
+                      onClick={(e) => { e.stopPropagation(); effectiveOnMigrate(vm) }}
                       sx={{
                         color: 'text.secondary',
                         p: 0.5,
@@ -1591,11 +1599,11 @@ return (
               </Tooltip>
               
               {/* Migrate - toujours disponible (cross-cluster pour standalone) */}
-              {onMigrate && (
+              {effectiveOnMigrate && (
                 <Tooltip title={t('vmActions.migrate')}>
                   <IconButton
                     size='small'
-                    onClick={(e) => { e.stopPropagation(); onMigrate(vm) }}
+                    onClick={(e) => { e.stopPropagation(); effectiveOnMigrate(vm) }}
                     sx={{
                       color: 'text.secondary',
                       p: 0.5,
@@ -1661,7 +1669,7 @@ return true
       // MUI re-runs flex layout on every columns-prop change and ignores width.
       return { ...col, width: saved, flex: undefined }
     })
-  }, [isCompact, expanded, showNode, showTrends, showActions, showIpSnap, onVmAction, onMigrate, onNodeClick, primaryColor, trendsData, trendsLoading, vms, isMobile, isTablet, isSmallDesktop, isLargeDesktop, favorites, onToggleFavorite, visibleColumns, columnWidths])
+  }, [isCompact, expanded, showNode, showTrends, showActions, showIpSnap, onVmAction, onMigrate, canMigrate, onNodeClick, primaryColor, trendsData, trendsLoading, vms, isMobile, isTablet, isSmallDesktop, isLargeDesktop, favorites, onToggleFavorite, visibleColumns, columnWidths])
 
   return (
     <Box sx={{
@@ -2085,7 +2093,7 @@ return [
 
           <Divider key="divider2" />,
 
-          onMigrate && (
+          effectiveOnMigrate && (
             <MenuItem key="migrate" onClick={handleContextMigrate}>
               <ListItemIcon>
                 <MoveUpIcon fontSize="small" />

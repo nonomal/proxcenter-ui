@@ -3889,7 +3889,11 @@
       "tagsLabel": "Tags",
       "shareWithTenants": "Share with all tenants",
       "shareWithTenantsHelp": "Publish to the catalogue visible by every tenant. Only the provider can flip this flag.",
-      "deleteConfirm": "Delete this custom image from the catalog?"
+      "deleteConfirm": "Delete this custom image from the catalog?",
+      "formatIso": "ISO (install media)",
+      "formatIsoChip": "Manual install",
+      "formatCloudChip": "Cloud-init",
+      "isoUploadNote": "ISO files are boot media. After deploy the VM will stay stopped and you'll run the OS installer manually via the noVNC console — there's no cloud-init at all."
     },
     "blueprints": {
       "image": "Image",
@@ -3964,7 +3968,20 @@
         "showLogs": "Show logs",
         "hideLogs": "Hide logs",
         "speed": "Speed",
-        "eta": "ETA"
+        "eta": "ETA",
+        "minimize": "Minimize — keep deployment running in the taskbar"
+      },
+      "iso": {
+        "isoStorage": "ISO Storage",
+        "noIsoStorage": "No ISO-capable storage available in your vDC. Contact your provider to enable an ISO storage on this connection.",
+        "installOptions": "Install options",
+        "bios": "BIOS",
+        "biosSeabios": "SeaBIOS (Legacy)",
+        "biosOvmf": "UEFI (OVMF + Secure Boot keys)",
+        "diskWarning": "Windows 11 / Server 2025 install requires at least 32 GB. Increase the disk size or the installer will refuse to start.",
+        "reviewAlert": "This image is install media (ISO). After deploy, open the VM console (VNC) and run the installer manually. The VM is not started automatically.",
+        "openConsole": "Open console",
+        "completedHint": "VM created — open the noVNC console to run the OS installer."
       }
     },
     "deployments": {

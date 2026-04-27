@@ -36,6 +36,7 @@ import { MigrateVmDialog, CrossClusterMigrateParams } from '@/components/Migrate
 import { CloneVmDialog } from '@/components/hardware/CloneVmDialog'
 import { crossClusterMigrate } from '@/lib/migration/crossClusterMigrate'
 import { NodeIcon, ClusterIcon, getVmIcon } from './TreeIcons'
+import { useTenant } from '@/contexts/TenantContext'
 
 // RemixIcon replacements used in context menus / dialogs
 const PlayArrowIcon = (props: any) => <i className="ri-play-fill" style={{ fontSize: props?.fontSize === 'small' ? 18 : 20, color: props?.sx?.color, ...props?.style }} />
@@ -231,6 +232,11 @@ export interface TreeDialogsProps {
 
 export default function TreeDialogs(props: TreeDialogsProps) {
   const t = useTranslations()
+  // Migration is a provider-only operation in MSP/vDC mode (placement is
+  // the provider's job — tenants don't choose nodes). Hides the per-VM
+  // Migrate menu entry and the node-level "Migrate all VMs" bulk action.
+  const { currentTenant, loading: tenantLoading } = useTenant()
+  const isProviderTenant = !tenantLoading && currentTenant?.id === 'default'
 
   const {
     contextMenu, handleCloseContextMenu, actionBusy, handleVmAction, unlocking,
@@ -435,7 +441,7 @@ export default function TreeDialogs(props: TreeDialogsProps) {
           <Divider key="divider3" />,
 
           /* --- Console / Migrate / Unlock --- */
-          contextMenu?.isCluster ? (
+          contextMenu?.isCluster && isProviderTenant ? (
             <MenuItem
               key="migrate"
               onClick={() => {
@@ -571,12 +577,14 @@ export default function TreeDialogs(props: TreeDialogsProps) {
             </ListItemIcon>
             <ListItemText>{t('bulkActions.shutdownAllVms')}</ListItemText>
           </MenuItem>,
-          <MenuItem key="bulk-migrate" onClick={() => handleBulkActionClick('migrate-all')}>
-            <ListItemIcon sx={{ minWidth: 36 }}>
-              <MoveUpIcon fontSize="small" />
-            </ListItemIcon>
-            <ListItemText>{t('bulkActions.migrateAllVms')}</ListItemText>
-          </MenuItem>,
+          isProviderTenant ? (
+            <MenuItem key="bulk-migrate" onClick={() => handleBulkActionClick('migrate-all')}>
+              <ListItemIcon sx={{ minWidth: 36 }}>
+                <MoveUpIcon fontSize="small" />
+              </ListItemIcon>
+              <ListItemText>{t('bulkActions.migrateAllVms')}</ListItemText>
+            </MenuItem>
+          ) : null,
           <Divider key="d-power" />,
           <MenuItem key="reboot" onClick={() => {
             if (nodeContextMenu) onNodeAction?.(nodeContextMenu.connId, nodeContextMenu.node, 'reboot')

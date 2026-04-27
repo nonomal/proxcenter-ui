@@ -37,6 +37,10 @@ export default function ImageCatalogTab({ onDeploy }: ImageCatalogTabProps) {
   const [vendors, setVendors] = useState(VENDORS as readonly { id: string; name: string; icon: string }[])
   const [loading, setLoading] = useState(true)
   const [vendorFilter, setVendorFilter] = useState<string>('all')
+  // Format facet — split the catalog into unattended cloud images and
+  // boot ISOs (manual installer). 'all' is the default; ISOs were rare
+  // enough until now that the facet stays compact (3 buttons).
+  const [formatFilter, setFormatFilter] = useState<'all' | 'cloud' | 'iso'>('all')
   const [search, setSearch] = useState('')
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editImage, setEditImage] = useState<any>(null)
@@ -59,6 +63,12 @@ export default function ImageCatalogTab({ onDeploy }: ImageCatalogTabProps) {
     if (vendorFilter !== 'all') {
       result = result.filter(img => img.vendor === vendorFilter)
     }
+    if (formatFilter !== 'all') {
+      result = result.filter(img => {
+        const isIso = String(img.format || '').toLowerCase() === 'iso'
+        return formatFilter === 'iso' ? isIso : !isIso
+      })
+    }
     if (search.trim()) {
       const q = search.toLowerCase()
       result = result.filter(img =>
@@ -68,7 +78,7 @@ export default function ImageCatalogTab({ onDeploy }: ImageCatalogTabProps) {
       )
     }
     return result
-  }, [images, vendorFilter, search])
+  }, [images, vendorFilter, formatFilter, search])
 
   const handleDialogClose = (saved?: boolean) => {
     setDialogOpen(false)
@@ -149,6 +159,25 @@ export default function ImageCatalogTab({ onDeploy }: ImageCatalogTabProps) {
               <Typography variant="caption">{v.name}</Typography>
             </ToggleButton>
           ))}
+        </ToggleButtonGroup>
+
+        <ToggleButtonGroup
+          size="small"
+          value={formatFilter}
+          exclusive
+          onChange={(_, v) => v && setFormatFilter(v)}
+        >
+          <ToggleButton value="all">
+            <Typography variant="caption">{t('common.all')}</Typography>
+          </ToggleButton>
+          <ToggleButton value="cloud" sx={{ gap: 0.5 }}>
+            <Box component="i" className="ri-cloud-line" sx={{ fontSize: 14 }} />
+            <Typography variant="caption">{t('templates.catalog.formatCloudChip')}</Typography>
+          </ToggleButton>
+          <ToggleButton value="iso" sx={{ gap: 0.5 }}>
+            <Box component="i" className="ri-disc-line" sx={{ fontSize: 14 }} />
+            <Typography variant="caption">{t('templates.catalog.formatIsoChip')}</Typography>
+          </ToggleButton>
         </ToggleButtonGroup>
         <Box sx={{ ml: 'auto' }}>
           <Button

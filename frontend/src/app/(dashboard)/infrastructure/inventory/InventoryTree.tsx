@@ -2,7 +2,6 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslations } from 'next-intl'
-import { useRouter } from 'next/navigation'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { isSharedStorage } from '@/lib/proxmox/storage'
 
@@ -428,7 +427,6 @@ function safeJson<T>(x: any): T {
 export default function InventoryTree({ selected, onSelect, onRefreshRef, onOptimisticVmStatusRef, onOptimisticVmTagsRef, viewMode: controlledViewMode, onViewModeChange, onAllVmsChange, onHostsChange, onPoolsChange, onTagsChange, onPbsServersChange, favorites: propFavorites, onToggleFavorite, migratingVmIds, pendingActionVmIds, onRefresh, refreshLoading, onCollapse, isCollapsed, allowedViewModes, onCreateVm, onCreateLxc, onNodeAction, onStoragesChange, onExternalHypervisorsChange, showVmId, onToggleShowVmId }: Props) {
   const t = useTranslations()
   const theme = useTheme()
-  const router = useRouter()
   const { isAdmin } = useRBAC()
   // Tenants other than the provider get the cloud-style abstraction —
   // shared storages on a multi-tenant cluster would leak other tenants'
@@ -2527,11 +2525,6 @@ return favorites.has(vmKey)
               </IconButton>
             </Tooltip>
           )}
-          <Tooltip title={t('settings.connections')}>
-            <IconButton size='small' onClick={() => router.push('/settings?tab=connections')}>
-              <i className='ri-add-circle-line' style={{ fontSize: 18 }} />
-            </IconButton>
-          </Tooltip>
           {onCollapse && (
             <Tooltip title={isCollapsed ? t('common.showMore') : t('common.showLess')}>
               <IconButton

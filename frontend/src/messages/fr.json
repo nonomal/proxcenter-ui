@@ -3889,7 +3889,11 @@
       "tagsLabel": "Tags",
       "shareWithTenants": "Partager avec tous les tenants",
       "shareWithTenantsHelp": "Publier l'image dans le catalogue visible par tous les tenants. Seul le provider peut activer ce flag.",
-      "deleteConfirm": "Supprimer cette image du catalogue ?"
+      "deleteConfirm": "Supprimer cette image du catalogue ?",
+      "formatIso": "ISO (média d'installation)",
+      "formatIsoChip": "Installation manuelle",
+      "formatCloudChip": "Cloud-init",
+      "isoUploadNote": "Les fichiers ISO sont des médias bootables. Après le déploiement, la VM reste arrêtée et vous lancerez l'installeur manuellement via la console noVNC — il n'y a pas de cloud-init du tout."
     },
     "blueprints": {
       "image": "Image",
@@ -3964,7 +3968,20 @@
         "showLogs": "Afficher les logs",
         "hideLogs": "Masquer les logs",
         "speed": "Vitesse",
-        "eta": "Temps restant"
+        "eta": "Temps restant",
+        "minimize": "Réduire — déploiement gardé dans la barre des tâches"
+      },
+      "iso": {
+        "isoStorage": "Stockage ISO",
+        "noIsoStorage": "Aucun stockage compatible ISO disponible dans votre vDC. Contactez votre provider pour activer un stockage ISO sur cette connexion.",
+        "installOptions": "Options d'installation",
+        "bios": "BIOS",
+        "biosSeabios": "SeaBIOS (Legacy)",
+        "biosOvmf": "UEFI (OVMF + clés Secure Boot)",
+        "diskWarning": "L'installation de Windows 11 / Server 2025 nécessite au moins 32 Go. Augmentez la taille du disque ou l'installeur refusera de démarrer.",
+        "reviewAlert": "Cette image est un média d'installation (ISO). Après le déploiement, ouvrez la console de la VM (VNC) et lancez l'installeur manuellement. La VM n'est pas démarrée automatiquement.",
+        "openConsole": "Ouvrir la console",
+        "completedHint": "VM créée — ouvrez la console noVNC pour lancer l'installeur de l'OS."
       }
     },
     "deployments": {

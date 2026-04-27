@@ -228,27 +228,39 @@ export default function CustomImageDialog({ open, onClose, editData }: CustomIma
         <Stack spacing={2.5} sx={{ mt: 1 }}>
           {error && <Alert severity="error">{error}</Alert>}
 
-          {/* Source type toggle */}
-          <Box>
-            <Typography variant="caption" sx={{ opacity: 0.6, mb: 0.5, display: 'block' }}>
-              {t('templates.catalog.sourceType')}
-            </Typography>
-            <ToggleButtonGroup
-              size="small"
-              value={sourceType}
-              exclusive
-              onChange={(_, v) => v && setSourceType(v)}
-            >
-              <ToggleButton value="url" sx={{ gap: 0.5 }}>
-                <i className="ri-link" style={{ fontSize: 16 }} />
-                {t('templates.catalog.sourceUrl')}
-              </ToggleButton>
-              <ToggleButton value="volume" sx={{ gap: 0.5 }}>
-                <i className="ri-hard-drive-2-line" style={{ fontSize: 16 }} />
-                {t('templates.catalog.sourceVolume')}
-              </ToggleButton>
-            </ToggleButtonGroup>
-          </Box>
+          {format === 'iso' && (
+            <Alert severity="info" icon={<i className="ri-disc-line" style={{ fontSize: 18 }} />}>
+              {t('templates.catalog.isoUploadNote')}
+            </Alert>
+          )}
+
+          {/* Source type toggle. The "PVE volume" mode lets the caller
+              point at an already-uploaded qcow2 on a PVE storage; it's
+              irrelevant for tenants (no storage browser access) and we
+              keep it provider-only. The "URL" mode covers 99% of cases
+              and is the only one shown to tenants. */}
+          {isProviderTenant && (
+            <Box>
+              <Typography variant="caption" sx={{ opacity: 0.6, mb: 0.5, display: 'block' }}>
+                {t('templates.catalog.sourceType')}
+              </Typography>
+              <ToggleButtonGroup
+                size="small"
+                value={sourceType}
+                exclusive
+                onChange={(_, v) => v && setSourceType(v)}
+              >
+                <ToggleButton value="url" sx={{ gap: 0.5 }}>
+                  <i className="ri-link" style={{ fontSize: 16 }} />
+                  {t('templates.catalog.sourceUrl')}
+                </ToggleButton>
+                <ToggleButton value="volume" sx={{ gap: 0.5 }}>
+                  <i className="ri-hard-drive-2-line" style={{ fontSize: 16 }} />
+                  {t('templates.catalog.sourceVolume')}
+                </ToggleButton>
+              </ToggleButtonGroup>
+            </Box>
+          )}
 
           {/* Name + vendor row */}
           <Box sx={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 2 }}>
@@ -417,6 +429,7 @@ export default function CustomImageDialog({ open, onClose, editData }: CustomIma
                 <MenuItem value="raw">raw</MenuItem>
                 <MenuItem value="vmdk">vmdk</MenuItem>
                 <MenuItem value="img">img</MenuItem>
+                <MenuItem value="iso">{t('templates.catalog.formatIso')}</MenuItem>
               </Select>
             </FormControl>
             <FormControl size="small">

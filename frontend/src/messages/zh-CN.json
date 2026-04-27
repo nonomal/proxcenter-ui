@@ -3851,7 +3851,11 @@
       "tagsLabel": "标签",
       "shareWithTenants": "与所有租户共享",
       "shareWithTenantsHelp": "将镜像发布到所有租户可见的目录。只有服务提供方可以启用此选项。",
-      "deleteConfirm": "从目录中删除此自定义镜像？"
+      "deleteConfirm": "从目录中删除此自定义镜像？",
+      "formatIso": "ISO（安装介质）",
+      "formatIsoChip": "手动安装",
+      "formatCloudChip": "Cloud-init",
+      "isoUploadNote": "ISO 文件是可启动安装介质。部署后 VM 将保持停止状态，需通过 noVNC 控制台手动运行操作系统安装程序，不会执行 cloud-init。"
     },
     "blueprints": {
       "image": "镜像",
@@ -3926,7 +3930,20 @@
         "showLogs": "显示日志",
         "hideLogs": "隐藏日志",
         "speed": "速度",
-        "eta": "预计剩余时间"
+        "eta": "预计剩余时间",
+        "minimize": "最小化 — 部署将在任务栏中继续运行"
+      },
+      "iso": {
+        "isoStorage": "ISO 存储",
+        "noIsoStorage": "您的 vDC 中没有可用的 ISO 存储。请联系服务提供方，在此连接上启用 ISO 存储。",
+        "installOptions": "安装选项",
+        "bios": "BIOS",
+        "biosSeabios": "SeaBIOS（传统）",
+        "biosOvmf": "UEFI（OVMF + Secure Boot 密钥）",
+        "diskWarning": "Windows 11 / Server 2025 安装至少需要 32 GB 磁盘空间。请增加磁盘大小，否则安装程序将拒绝启动。",
+        "reviewAlert": "此镜像为安装介质（ISO）。部署后请打开 VM 控制台（VNC）并手动运行安装程序。VM 不会自动启动。",
+        "openConsole": "打开控制台",
+        "completedHint": "VM 已创建 — 打开 noVNC 控制台运行操作系统安装程序。"
       }
     },
     "deployments": {

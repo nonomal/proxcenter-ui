@@ -4,6 +4,7 @@ import React, { useState } from 'react'
 import { useTranslations } from 'next-intl'
 import { useBranding } from '@/contexts/BrandingContext'
 import { useRBAC } from '@/contexts/RBACContext'
+import { useTenant } from '@/contexts/TenantContext'
 
 import {
   Accordion,
@@ -46,10 +47,14 @@ import NodeUpdateDialog from '@/components/NodeUpdateDialog'
 
 const HA_STATES = ['started', 'stopped', 'enabled', 'disabled', 'ignored'] as const
 
-function HaStateSelector({ haState, haGroup, vmInfo, t }: {
+function HaStateSelector({ haState, haGroup, vmInfo, readOnly, t }: {
   haState?: string | null
   haGroup?: string | null
   vmInfo?: { connId: string; node: string; type: string; vmid: string } | null
+  // Tenant admins see HA as informational — they can't change state or
+  // group. The chip stays visible (read-only) with an explicit lock icon
+  // so the policy is obvious instead of mysteriously non-clickable.
+  readOnly?: boolean
   t: (key: string, values?: any) => string
 }) {
   const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null)
@@ -60,7 +65,7 @@ function HaStateSelector({ haState, haGroup, vmInfo, t }: {
 
   const handleChange = async (newState: string) => {
     setAnchorEl(null)
-    if (!vmInfo || newState === displayState) return
+    if (readOnly || !vmInfo || newState === displayState) return
     setDisplayState(newState)
     setSaving(true)
     const haSid = `${vmInfo.type === 'lxc' ? 'ct' : 'vm'}:${vmInfo.vmid}`
@@ -84,9 +89,14 @@ function HaStateSelector({ haState, haGroup, vmInfo, t }: {
     return 'warning'
   }
 
+  // Treat readOnly as "no vmInfo for write": skip menu/click handlers and
+  // drop the dropdown caret. Keeps a single source of truth for the
+  // interactive vs informational rendering.
+  const interactive = !!vmInfo && !readOnly
+
   return (
     <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-      <i className="ri-shield-check-line" style={{ fontSize: 14, opacity: 0.6 }} />
+      <i className={readOnly ? 'ri-shield-keyhole-line' : 'ri-shield-check-line'} style={{ fontSize: 14, opacity: 0.6 }} />
       <Typography variant="body2" sx={{ opacity: 0.7 }}>HA:</Typography>
       {displayState ? (
         <>
@@ -96,10 +106,10 @@ function HaStateSelector({ haState, haGroup, vmInfo, t }: {
             label={`${displayState}${haGroup ? ` (${haGroup})` : ''}`}
             color={stateColor(displayState) as any}
             variant="outlined"
-            onClick={vmInfo ? (e) => setAnchorEl(e.currentTarget) : undefined}
-            deleteIcon={vmInfo ? <i className="ri-arrow-down-s-line" style={{ fontSize: 14 }} /> : undefined}
-            onDelete={vmInfo ? (e: any) => setAnchorEl(e.currentTarget.closest('.MuiChip-root')) : undefined}
-            sx={{ height: 20, fontSize: '0.75rem', cursor: vmInfo ? 'pointer' : 'default', '& .MuiChip-deleteIcon': { fontSize: 14, ml: -0.25, color: 'inherit', opacity: 0.6 } }}
+            onClick={interactive ? (e) => setAnchorEl(e.currentTarget) : undefined}
+            deleteIcon={interactive ? <i className="ri-arrow-down-s-line" style={{ fontSize: 14 }} /> : undefined}
+            onDelete={interactive ? (e: any) => setAnchorEl(e.currentTarget.closest('.MuiChip-root')) : undefined}
+            sx={{ height: 20, fontSize: '0.75rem', cursor: interactive ? 'pointer' : 'default', '& .MuiChip-deleteIcon': { fontSize: 14, ml: -0.25, color: 'inherit', opacity: 0.6 } }}
           />
           {saving && <CircularProgress size={12} />}
           <Menu
@@ -133,7 +143,7 @@ function HaStateSelector({ haState, haGroup, vmInfo, t }: {
             })}
           </Menu>
         </>
-      ) : vmInfo ? (
+      ) : interactive ? (
         <>
           <Chip
             size="small"
@@ -277,6 +287,10 @@ function InventorySummary({
 
   const consoleWidth = { xs: '100%', md: 360 }
   const { isAdmin } = useRBAC()
+  // HA management is provider-only — tenant admins see HA state but
+  // can't change it (cluster-level concern, not vDC-scoped).
+  const { currentTenant, loading: tenantLoading } = useTenant()
+  const isProviderTenant = !tenantLoading && currentTenant?.id === 'default'
 
   // État pour les blocs collapsibles dans la vue host
   const [hostBlocksCollapsed, setHostBlocksCollapsed] = useState<{
@@ -512,7 +526,7 @@ return `${mins}m`
                       sx={{ height: 20, fontSize: '0.75rem' }}
                     />
                   </Box>
-                  <HaStateSelector haState={haState} haGroup={haGroup} vmInfo={vmInfo} t={t} />
+                  <HaStateSelector haState={haState} haGroup={haGroup} vmInfo={vmInfo} readOnly={!isProviderTenant} t={t} />
                 </Box>
               </Box>
             </Box>

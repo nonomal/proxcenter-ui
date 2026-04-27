@@ -21,6 +21,12 @@ export default function ImageCard({ image, onDeploy, isCustom, onEdit, onDelete 
     ? (image as any).volumeId || 'volume'
     : (() => { try { return new URL(image.downloadUrl).hostname } catch { return image.downloadUrl } })()
 
+  // ISO install media is rendered with a clearly different cue than cloud
+  // images: distinct icon + chip so the tenant sees at a glance whether
+  // they're picking an unattended cloud-init image or boot media that
+  // requires a manual install.
+  const isIso = String(image.format || '').toLowerCase() === 'iso'
+
   return (
     <Card
       variant="outlined"
@@ -47,9 +53,32 @@ export default function ImageCard({ image, onDeploy, isCustom, onEdit, onDelete 
               alignItems: 'center',
               justifyContent: 'center',
               flexShrink: 0,
+              position: 'relative',
             }}
           >
             <VendorLogo vendor={image.vendor} size={36} />
+            {/* Format badge — disc for ISO, cloud for cloud-images. Tucked
+                in the bottom-right corner of the vendor logo so it's
+                visible without dominating the card. */}
+            <Box
+              sx={{
+                position: 'absolute',
+                right: -4,
+                bottom: -4,
+                width: 18,
+                height: 18,
+                borderRadius: '50%',
+                bgcolor: isIso ? 'warning.main' : 'info.main',
+                color: '#fff',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                border: '2px solid',
+                borderColor: 'background.paper',
+              }}
+            >
+              <Box component="i" className={isIso ? 'ri-disc-line' : 'ri-cloud-line'} sx={{ fontSize: 10 }} />
+            </Box>
           </Box>
           <Box sx={{ flex: 1, minWidth: 0 }}>
             <Typography variant="subtitle2" sx={{ fontWeight: 600, lineHeight: 1.3 }} noWrap>
@@ -86,8 +115,18 @@ export default function ImageCard({ image, onDeploy, isCustom, onEdit, onDelete 
           )}
         </Box>
 
-        {/* Tags */}
+        {/* Tags + format chip. The format chip is the primary signal —
+            'Manual install' (ISO) vs 'Cloud-init' (qcow2/raw/…). It sits
+            first so it's the eye's first stop in the chip row. */}
         <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
+          <Chip
+            icon={<Box component="i" className={isIso ? 'ri-disc-line' : 'ri-cloud-line'} sx={{ fontSize: 12, ml: 0.5 }} />}
+            label={isIso ? t('templates.catalog.formatIsoChip') : t('templates.catalog.formatCloudChip')}
+            size="small"
+            color={isIso ? 'warning' : 'info'}
+            variant="outlined"
+            sx={{ height: 20, fontSize: '0.65rem', '& .MuiChip-icon': { color: 'inherit' } }}
+          />
           {image.tags.map(tag => (
             <Chip
               key={tag}

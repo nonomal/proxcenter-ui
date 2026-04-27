@@ -2878,29 +2878,36 @@ return vm?.isCluster ?? false
                       />
                     </MuiTooltip>
                   )}
-                  <Typography variant="body2" noWrap sx={{ color: 'text.secondary', flexShrink: 0 }}>
-                    {'- '}
-                    <span style={{ position: 'relative', display: 'inline-block', verticalAlign: 'text-bottom', marginRight: 4, width: 14, height: 14 }}>
-                      <img src={theme.palette.mode === 'dark' ? '/images/proxmox-logo-dark.svg' : '/images/proxmox-logo.svg'} alt="" width={14} height={14} style={{ opacity: 0.7, display: 'block' }} />
-                      <span style={{ position: 'absolute', bottom: -1, right: -1, width: 6, height: 6, borderRadius: '50%', backgroundColor: '#4caf50', border: '1.5px solid var(--mui-palette-background-paper)' }} />
-                    </span>
-                    <Typography
-                      component="span"
-                      variant="body2"
-                      sx={{
-                        color: 'primary.main',
-                        cursor: 'pointer',
-                        fontWeight: 600,
-                        '&:hover': { textDecoration: 'underline' }
-                      }}
-                      onClick={() => {
-                        onViewModeChange?.('hosts')
-                        onSelect?.({ type: 'node', id: `${connId}:${node}` })
-                      }}
-                    >
-                      {node}
+                  {/* Node chip — provider only. Tenants see a vDC abstraction
+                      where the underlying PVE node is an implementation detail
+                      they don't manage; exposing it would also make the host
+                      view clickable from a tenant admin (we hide /hosts for
+                      them). The cluster icon link goes away with it. */}
+                  {isProviderTenant && (
+                    <Typography variant="body2" noWrap sx={{ color: 'text.secondary', flexShrink: 0 }}>
+                      {'- '}
+                      <span style={{ position: 'relative', display: 'inline-block', verticalAlign: 'text-bottom', marginRight: 4, width: 14, height: 14 }}>
+                        <img src={theme.palette.mode === 'dark' ? '/images/proxmox-logo-dark.svg' : '/images/proxmox-logo.svg'} alt="" width={14} height={14} style={{ opacity: 0.7, display: 'block' }} />
+                        <span style={{ position: 'absolute', bottom: -1, right: -1, width: 6, height: 6, borderRadius: '50%', backgroundColor: '#4caf50', border: '1.5px solid var(--mui-palette-background-paper)' }} />
+                      </span>
+                      <Typography
+                        component="span"
+                        variant="body2"
+                        sx={{
+                          color: 'primary.main',
+                          cursor: 'pointer',
+                          fontWeight: 600,
+                          '&:hover': { textDecoration: 'underline' }
+                        }}
+                        onClick={() => {
+                          onViewModeChange?.('hosts')
+                          onSelect?.({ type: 'node', id: `${connId}:${node}` })
+                        }}
+                      >
+                        {node}
+                      </Typography>
                     </Typography>
-                  </Typography>
+                  )}
 
                   {/* Tags */}
                   <TagManager
@@ -2942,6 +2949,7 @@ return vm?.isCluster ?? false
                         isCluster={data.isCluster}
                         isLocked={vmLock.locked}
                         lockType={vmLock.lockType}
+                        canMigrate={isProviderTenant}
                         onStart={onStart}
                         onShutdown={onShutdown}
                         onStop={onStop}

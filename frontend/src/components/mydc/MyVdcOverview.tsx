@@ -110,7 +110,7 @@ export default function MyVdcOverview({ vdc }: Props) {
       {/* Geographic map of datacentres hosting the vDC's resources. */}
       <MyDatacentersMapCard vdcId={vdc.id} />
 
-      {/* Blocks 2-6 in a 2-column grid. Nodes are deliberately abstracted
+      {/* Blocks 2-5 in a 2-column grid. Nodes are deliberately abstracted
           away from the tenant view (cloud-style) — the provider manages the
           underlying hosts via /infrastructure/inventory. */}
       <Box
@@ -124,8 +124,12 @@ export default function MyVdcOverview({ vdc }: Props) {
         <VnetList vdcId={vdc.id} quota={{ maxVnets: quota.maxVnets ?? null }} />
         <MyStoragesCard connectionIds={connectionIds} allowedStorages={allowedStorages} />
         <UplinksCard vdcId={vdc.id} />
-        <MyBackupsCard pbsBindings={pbsBindings} />
       </Box>
+
+      {/* Backups card — full width below the grid. PBS namespaces and
+          retention timelines need horizontal real estate the half-width
+          column was clipping. */}
+      <MyBackupsCard pbsBindings={pbsBindings} />
 
       {/* Green-IT card at the bottom — full width so the 3 sub-papers have
           room without clipping. */}

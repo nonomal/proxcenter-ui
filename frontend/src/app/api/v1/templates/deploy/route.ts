@@ -113,9 +113,40 @@ export async function POST(req: Request) {
       }).catch(() => {}) // Non-blocking
     }
 
+    // True when the resolved image is an install-media ISO. We branch the
+    // pipeline below: no cloud-init disk import, no auto-start — the VM is
+    // created stopped with the ISO mounted on a CD-ROM drive so the tenant
+    // can run the installer manually via the noVNC console.
+    const isIsoMode = String(image?.format || '').toLowerCase() === 'iso'
+
+    if (isIsoMode && !body.isoStorage) {
+      return NextResponse.json(
+        { error: "isoStorage is required when deploying from an ISO image" },
+        { status: 400 }
+      )
+    }
+
     // Run the deployment pipeline asynchronously after the response is sent
     after(async () => {
       try {
+        // ─────────── ISO branch ───────────────────────────────────────
+        // Stops at the "creating" step (no cloud-init, no start). The VM
+        // boots from CD-ROM on first power-up and the user installs the
+        // OS manually via the console.
+        if (isIsoMode) {
+          await runIsoDeploy({
+            deploymentId: deployment.id,
+            conn,
+            body,
+            image,
+            isCustom,
+            sourceType,
+            volumeId,
+            vdcInfo,
+          })
+          return
+        }
+
         let importVolume: string
 
         if (sourceType === 'volume' && volumeId) {
@@ -375,6 +406,166 @@ export async function POST(req: Request) {
   } catch (e: any) {
     return NextResponse.json({ error: e?.message || String(e) }, { status: 500 })
   }
+}
+
+/**
+ * ISO deployment pipeline. Creates a stopped VM with:
+ *  - empty data disk on `body.storage`
+ *  - boot ISO mounted on ide2 from `body.isoStorage`
+ *  - SeaBIOS or OVMF+efidisk0 (pre-enrolled-keys=1 for Windows Secure Boot)
+ *  - q35 machine, std VGA (graphical install via noVNC)
+ *
+ * The VM is NOT started — the user runs the installer manually.
+ */
+async function runIsoDeploy(args: {
+  deploymentId: string
+  conn: any
+  body: any
+  image: any
+  isCustom: boolean
+  sourceType: string
+  volumeId: string | null
+  vdcInfo: { poolName?: string | null } | null
+}): Promise<void> {
+  const { deploymentId, conn, body, image, isCustom, sourceType, volumeId, vdcInfo } = args
+  const hw = body.hardware
+  const isoStorage: string = body.isoStorage
+
+  // ── Step 1: Resolve / download the ISO ──
+  await updateDeployment(deploymentId, "downloading")
+
+  let isoVolume: string
+
+  if (sourceType === 'volume' && volumeId) {
+    // ISO already on a PVE storage. Keep its volid as-is — PVE accepts
+    // `<storage>:iso/<file>.iso` directly on the ide2 line.
+    isoVolume = volumeId
+  } else {
+    // URL mode: download to the user-selected ISO storage with content=iso.
+    const rawFilename = isCustom
+      ? `${image.slug}.iso`
+      : (image.downloadUrl?.split("/").pop() || `${image.slug}.iso`)
+    const isoFilename = rawFilename.toLowerCase().endsWith('.iso') ? rawFilename : `${rawFilename}.iso`
+
+    const isoStorageConfig = await pveFetch<any>(
+      conn,
+      `/storage/${encodeURIComponent(isoStorage)}`
+    )
+    const isoContent = String(isoStorageConfig?.content || '')
+    if (!isoContent.split(',').map((s: string) => s.trim()).includes('iso')) {
+      throw new Error(
+        `Storage '${isoStorage}' is not configured for ISO images ` +
+        `(content="${isoContent || 'unknown'}"). Pick another ISO-capable storage in your vDC.`
+      )
+    }
+
+    // Skip download if the ISO is already there
+    const existing = await pveFetch<any[]>(
+      conn,
+      `/nodes/${encodeURIComponent(body.node)}/storage/${encodeURIComponent(isoStorage)}/content?content=iso`
+    ).catch(() => [])
+
+    const alreadyPresent = (existing || []).some(
+      (item: any) => item.volid?.endsWith(`:iso/${isoFilename}`) || item.volid?.endsWith(`/${isoFilename}`)
+    )
+
+    if (!alreadyPresent) {
+      const downloadParams = new URLSearchParams({
+        url: image.downloadUrl,
+        content: "iso",
+        filename: isoFilename,
+        node: body.node,
+        storage: isoStorage,
+        "verify-certificates": "0",
+      })
+      const downloadResult = await pveFetch<any>(
+        conn,
+        `/nodes/${encodeURIComponent(body.node)}/storage/${encodeURIComponent(isoStorage)}/download-url`,
+        { method: "POST", body: downloadParams }
+      )
+      if (downloadResult) {
+        await updateDeployment(deploymentId, "downloading", { taskUpid: String(downloadResult) })
+        await waitForTask(conn, body.node, String(downloadResult))
+      }
+    }
+
+    isoVolume = `${isoStorage}:iso/${isoFilename}`
+  }
+
+  // ── Step 2: Create VM with empty disk + ISO on ide2 ──
+  await updateDeployment(deploymentId, "creating", { taskUpid: null })
+
+  const diskSizeGb = String(hw.diskSize).replace(/G$/i, '') // "32G" → "32"
+  const useUefi = hw.bios === 'ovmf'
+
+  const createParams = new URLSearchParams({
+    vmid: String(body.vmid),
+    name: body.vmName || `${image.slug}-${body.vmid}`,
+    ostype: hw.ostype,
+    cores: String(hw.cores),
+    sockets: String(hw.sockets),
+    memory: String(hw.memory),
+    cpu: hw.cpu,
+    scsihw: hw.scsihw,
+    // Empty data disk (no import-from). Format defaults to qcow2 on
+    // file-based storage; on block-based storage PVE picks raw automatically.
+    scsi0: `${body.storage}:${diskSizeGb}`,
+    net0: `${hw.networkModel},bridge=${hw.networkBridge}${hw.vlanTag ? `,tag=${hw.vlanTag}` : ""}`,
+    // Boot ISO on the secondary IDE bus (PVE convention for install media).
+    ide2: `${isoVolume},media=cdrom`,
+    // CD-ROM first, fall back to the empty disk once the OS is installed.
+    boot: 'order=ide2;scsi0',
+    // Graphical install — VNC console. Serial0/serial0 (used by cloud-init)
+    // would leave Windows install with no usable display.
+    vga: 'std',
+    agent: hw.agent ? "1" : "0",
+    // q35 is mandatory for OVMF and a sensible default for modern guests
+    // (PCIe, NVMe, VirtIO 1.x). Forced silently per spec.
+    machine: 'q35',
+  })
+
+  if (useUefi) {
+    createParams.set('bios', 'ovmf')
+    // pre-enrolled-keys=1 ships the Microsoft Secure Boot keys into the
+    // EFI vars from the start — required for Windows 11 / Server 2025.
+    // efitype=4m matches OVMF_VARS_4M used by PVE.
+    createParams.set('efidisk0', `${body.storage}:1,efitype=4m,pre-enrolled-keys=1`)
+  }
+
+  if (vdcInfo?.poolName) {
+    createParams.set('pool', vdcInfo.poolName)
+  }
+
+  const createResult = await pveFetch<any>(
+    conn,
+    `/nodes/${encodeURIComponent(body.node)}/qemu`,
+    { method: "POST", body: createParams }
+  )
+
+  if (createResult) {
+    await updateDeployment(deploymentId, "creating", { taskUpid: String(createResult) })
+    await waitForTask(conn, body.node, String(createResult))
+  }
+
+  // ── Step 3: Done — VM stays stopped, user installs via console ──
+  await updateDeployment(deploymentId, "completed", { taskUpid: null })
+
+  const { audit } = await import("@/lib/audit")
+  await audit({
+    action: "create",
+    category: "templates",
+    resourceType: "vm",
+    resourceId: String(body.vmid),
+    resourceName: body.vmName || `${image.slug}-${body.vmid}`,
+    details: {
+      imageSlug: body.imageSlug,
+      node: body.node,
+      connectionId: body.connectionId,
+      mode: 'iso',
+      bios: useUefi ? 'ovmf' : 'seabios',
+    },
+    status: "success",
+  })
 }
 
 /** Poll a PVE task until it completes or fails */

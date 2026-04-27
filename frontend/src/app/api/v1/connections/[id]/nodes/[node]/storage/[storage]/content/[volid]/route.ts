@@ -3,9 +3,16 @@ import { NextResponse } from "next/server"
 import { pveFetch } from "@/lib/proxmox/client"
 import { getConnectionById } from "@/lib/connections/getConnection"
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
-import { guardTenantStorageWrite } from "@/lib/vdc/scope"
+import { getVdcScope, guardTenantStorageWrite } from "@/lib/vdc/scope"
+import { getCurrentTenantId } from "@/lib/tenant"
+import { getDb } from "@/lib/db/sqlite"
 
 export const runtime = "nodejs"
+
+// Content types where we enforce filename-prefix ownership for tenants —
+// kept in sync with the listing route so a tenant can't delete a sibling
+// tenant's ISO/import even by guessing the volid.
+const TENANT_FILTERED_CONTENT = new Set(['iso', 'import'])
 
 // DELETE /api/v1/connections/{id}/nodes/{node}/storage/{storage}/content/{volid}
 // Delete a volume from Proxmox storage
@@ -26,6 +33,25 @@ export async function DELETE(
 
     // The volid is URL-encoded; Proxmox expects the full volid (storage:path)
     const decodedVolid = decodeURIComponent(volid)
+
+    // Tenant-ownership guard for the controlled content types. Volid format
+    // is "<storage>:<contentType>/<filename>" — extract contentType and the
+    // filename, refuse delete on iso/import volumes whose filename doesn't
+    // match `custom-<tenantSlug>-*`. Super admins (scope===null) skip this.
+    const tenantId = await getCurrentTenantId()
+    const scope = getVdcScope(tenantId)
+    if (scope) {
+      const m = decodedVolid.match(/^[^:]+:([^/]+)\/(.+)$/)
+      const itemContent = m?.[1] || ''
+      const filename = m?.[2] || ''
+      if (TENANT_FILTERED_CONTENT.has(itemContent)) {
+        const row = getDb().prepare('SELECT slug FROM tenants WHERE id = ?').get(tenantId) as { slug?: string } | undefined
+        const tenantSlug = row?.slug || tenantId.replace(/[^a-z0-9-]/gi, '').toLowerCase()
+        if (!filename.startsWith(`custom-${tenantSlug}-`)) {
+          return NextResponse.json({ error: "Volume not accessible" }, { status: 403 })
+        }
+      }
+    }
 
     await pveFetch<any>(
       conn,

@@ -2,7 +2,8 @@ import { NextResponse } from 'next/server'
 
 import { pveFetch } from '@/lib/proxmox/client'
 import { getConnectionById } from '@/lib/connections/getConnection'
-import { getSessionPrisma } from "@/lib/tenant"
+import { getTenantConnectionIds } from "@/lib/tenant"
+import { prisma } from "@/lib/db/prisma"
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
 
 export const runtime = 'nodejs'
@@ -97,12 +98,23 @@ export async function GET() {
     const { getVdcScope } = await import('@/lib/vdc/scope')
     const vdcScope = getVdcScope(await getCurrentTenantId())
 
-    const prisma = await getSessionPrisma()
-    // Récupérer uniquement les connexions PVE
+    // Reachable connection IDs = directly owned ∪ vDC-bound. The previous
+    // tenant-scoped prisma query returned an empty set in MSP mode (tenants
+    // don't own connections directly), so the dropdown was permanently
+    // empty for them — same bug as /changes and /orchestrator/alerts.
+    const tenantConnectionIds = await getTenantConnectionIds()
+
+    if (tenantConnectionIds.size === 0) {
+      return NextResponse.json({ data: [], count: 0 })
+    }
+
+    // Use the global prisma (not tenant-scoped) since vDC-bound connections
+    // are owned by the provider tenant; we still safety-filter against the
+    // reachable set above.
     const connections = await prisma.connection.findMany({
-      where: { type: 'pve' }
+      where: { type: 'pve', id: { in: Array.from(tenantConnectionIds) } },
     })
-    
+
     if (connections.length === 0) {
       return NextResponse.json({ data: [], count: 0 })
     }

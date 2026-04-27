@@ -239,13 +239,39 @@ export async function getSessionPrisma() {
 }
 
 /**
- * Get the set of connection IDs belonging to the current tenant.
- * Used to filter orchestrator data that is not tenant-aware.
+ * Get the set of connection IDs reachable by the current tenant.
+ *
+ * Includes BOTH:
+ *  - connections owned directly via the `Connection` table (legacy
+ *    multi-tenancy or provider tenant)
+ *  - PVE & PBS connection IDs referenced by the tenant's vDC bindings
+ *    (MSP/IaaS mode, where the provider owns the connection but exposes
+ *    a slice via vDC)
+ *
+ * Without the vDC union, tenants in MSP mode would get an empty set and
+ * any orchestrator-proxy filter built on top of this helper would drop
+ * every event (changes feed, replication plans, rolling updates, DRS
+ * migration checks, …). Provider tenant returns all owned connections;
+ * getVdcScope returns null for them so no extra union happens.
  */
 export async function getTenantConnectionIds(): Promise<Set<string>> {
   const tenantPrisma = await getSessionPrisma()
   const connections = await tenantPrisma.connection.findMany({ select: { id: true } })
-  return new Set(connections.map((c: any) => c.id))
+  const ids = new Set(connections.map((c: any) => c.id))
+
+  // Union with vDC bindings — PVE under .connectionIds, PBS under
+  // .pbsConnectionIds. Imported lazily to keep the dependency direction
+  // tenant → vdc only at call time (vdc/scope.ts depends on this module
+  // for DEFAULT_TENANT_ID, so a top-level import would cycle).
+  const { getVdcScope } = await import('@/lib/vdc/scope')
+  const tenantId = await getCurrentTenantId()
+  const scope = getVdcScope(tenantId)
+  if (scope) {
+    for (const cid of scope.connectionIds) ids.add(cid)
+    for (const cid of scope.pbsConnectionIds) ids.add(cid)
+  }
+
+  return ids
 }
 
 /**

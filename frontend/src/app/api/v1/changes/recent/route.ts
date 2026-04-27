@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server'
 
 import { orchestratorFetch } from '@/lib/orchestrator/client'
 import { checkPermission, PERMISSIONS } from '@/lib/rbac'
-import { getSessionPrisma } from '@/lib/tenant'
+import { getTenantConnectionIds } from '@/lib/tenant'
 
 export const runtime = 'nodejs'
 
@@ -16,10 +16,11 @@ export async function GET(req: Request) {
     const { searchParams } = new URL(req.url)
     const limit = Number.parseInt(searchParams.get('limit') || '10')
 
-    // Get tenant's connection IDs for filtering
-    const prisma = await getSessionPrisma()
-    const tenantConnections = await prisma.connection.findMany({ select: { id: true } })
-    const tenantConnectionIds = new Set(tenantConnections.map((c: any) => c.id))
+    // Reachable connections = directly owned ∪ vDC-bound. Going through
+    // the helper instead of an inline prisma.connection.findMany so MSP
+    // tenants (who own no connections directly, only vDC bindings) get
+    // their changes feed populated.
+    const tenantConnectionIds = await getTenantConnectionIds()
 
     const data = await orchestratorFetch<any>(`/changes/recent?limit=100`)
 

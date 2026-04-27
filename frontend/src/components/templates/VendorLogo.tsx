@@ -12,6 +12,12 @@ const VENDOR_LOGOS: Record<string, string> = {
   alma: '/images/vendors/alma.svg',
   fedora: '/images/vendors/fedora.svg',
   opensuse: '/images/vendors/opensuse.svg',
+  alpine: '/images/vendors/alpine.svg',
+  arch: '/images/vendors/arch.svg',
+  // PNG instead of SVG when the upstream brand kit doesn't ship a vector
+  // version we can use freely. <img> handles both transparently.
+  centos: '/images/vendors/centos.png',
+  freebsd: '/images/vendors/freebsd.png',
 }
 
 export default function VendorLogo({ vendor, size = 28 }: VendorLogoProps) {

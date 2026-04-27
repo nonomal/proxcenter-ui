@@ -30,6 +30,7 @@ import {
 import { formatBytes } from '@/utils/format'
 import AppDialogTitle from '@/components/ui/AppDialogTitle'
 import { type NodeInfo, calculateNodeScore, formatMemory } from './utils'
+import { useTenant } from '@/contexts/TenantContext'
 
 // ==================== CLONE VM DIALOG ====================
 type CloneVmDialogProps = {
@@ -49,6 +50,12 @@ export function CloneVmDialog({ open, onClose, onClone, connId, currentNode, vmN
   const t = useTranslations()
   const theme = useTheme()
   const isDark = theme.palette.mode === 'dark'
+  // Tenant admins get a single-field "name only" form. Placement,
+  // storage, VMID and pool are auto-resolved server-side (clone route
+  // already calls resolveVdcForTenant + forces pool to vDC pool), so
+  // we just hide the controls and ship sensible defaults.
+  const { currentTenant, loading: tenantLoading } = useTenant()
+  const isProviderTenant = !tenantLoading && currentTenant?.id === 'default'
   const [cloning, setCloning] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [nodes, setNodes] = useState<NodeInfo[]>([])
@@ -200,7 +207,12 @@ export function CloneVmDialog({ open, onClose, onClone, connId, currentNode, vmN
   useEffect(() => {
     if (open) {
       setTargetNode(currentNode)
-      setNewVmid('')
+      // Tenant: prefill VMID with the cluster's next free id (passed in by
+      // the caller via /cluster/nextid). The form input is hidden so the
+      // user never sees it, but handleClone needs a valid number to send.
+      // Fallback to '' for the provider so the existing UX (dice button)
+      // is unchanged.
+      setNewVmid(isProviderTenant ? '' : (nextVmid || ''))
       setName('')
       setTargetStorage('')
       setFormat('qcow2')
@@ -208,7 +220,29 @@ export function CloneVmDialog({ open, onClose, onClone, connId, currentNode, vmN
       setFullClone(true)
       setError(null)
     }
-  }, [open, currentNode, nextVmid])
+  }, [open, currentNode, nextVmid, isProviderTenant])
+
+  // Tenant: hit /cluster/nextid for a cluster-validated VMID instead of
+  // relying on Math.max(allVms) computed at the parent — that snapshot
+  // can be stale or local-cluster-only and would collide with VMIDs on
+  // another node we never saw. Falls back to the parent's nextVmid if
+  // the API fails (e.g. orchestrator hiccup).
+  useEffect(() => {
+    if (!open || isProviderTenant || !connId) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        const res = await fetch(`/api/v1/connections/${encodeURIComponent(connId)}/cluster/nextid`)
+        const json = await res.json()
+        const id = Number(json?.data) || 0
+        if (!cancelled && id >= 100) setNewVmid(id)
+        else if (!cancelled && nextVmid) setNewVmid(nextVmid)
+      } catch {
+        if (!cancelled && nextVmid) setNewVmid(nextVmid)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [open, isProviderTenant, connId, nextVmid])
 
   const getRecommendedNodeLocal = (nodeList: NodeInfo[]): NodeInfo | null => {
     if (nodeList.length === 0) return null
@@ -260,6 +294,23 @@ return currentScore > bestScore ? current : best
       <DialogContent>
         {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
 
+        {/* Tenant view — single name field. Target node stays the source
+            node, target storage falls back to "same as source", VMID is
+            auto-picked from /cluster/nextid (passed in via nextVmid prop),
+            and the pool is forced server-side from the tenant's vDC. */}
+        {!isProviderTenant ? (
+          <Box sx={{ py: 3 }}>
+            <TextField
+              size="small"
+              fullWidth
+              label="Name"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder={t('hardware.optional')}
+              autoFocus
+            />
+          </Box>
+        ) : (
         <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 2, mt: 1 }}>
           {/* Target Node */}
           <FormControl fullWidth size="small">
@@ -447,8 +498,13 @@ return currentScore > bestScore ? current : best
             </Select>
           </FormControl>
         </Box>
+        )}
 
-        {/* Mode de clonage */}
+        {/* Mode de clonage — provider only. Tenants get a silent
+            fullClone=true (set in the reset effect) since the linked-clone
+            distinction depends on the source being a template, which is a
+            placement detail abstracted away from the tenant view. */}
+        {isProviderTenant && (
         <Box sx={{ mt: 2 }}>
           <FormControlLabel
             control={
@@ -470,6 +526,7 @@ return currentScore > bestScore ? current : best
             }
           />
         </Box>
+        )}
       </DialogContent>
 
       <DialogActions sx={{ px: 3, pb: 2 }}>

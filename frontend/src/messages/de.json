@@ -3849,7 +3849,11 @@
       "tagsLabel": "Tags",
       "shareWithTenants": "Mit allen Mandanten teilen",
       "shareWithTenantsHelp": "Image in den von allen Mandanten sichtbaren Katalog veröffentlichen. Nur der Provider kann dieses Flag setzen.",
-      "deleteConfirm": "Dieses benutzerdefinierte Image aus dem Katalog löschen?"
+      "deleteConfirm": "Dieses benutzerdefinierte Image aus dem Katalog löschen?",
+      "formatIso": "ISO (Installationsmedium)",
+      "formatIsoChip": "Manuelle Installation",
+      "formatCloudChip": "Cloud-Init",
+      "isoUploadNote": "ISO-Dateien sind Bootmedien. Nach der Bereitstellung bleibt die VM gestoppt und Sie führen das OS-Installationsprogramm manuell über die noVNC-Konsole aus — kein Cloud-Init."
     },
     "blueprints": {
       "image": "Image",
@@ -3924,7 +3928,20 @@
         "showLogs": "Logs anzeigen",
         "hideLogs": "Logs ausblenden",
         "speed": "Geschwindigkeit",
-        "eta": "Voraussichtl. Dauer"
+        "eta": "Voraussichtl. Dauer",
+        "minimize": "Minimieren — Bereitstellung läuft in der Taskleiste weiter"
+      },
+      "iso": {
+        "isoStorage": "ISO-Storage",
+        "noIsoStorage": "Kein ISO-fähiger Storage in Ihrem vDC verfügbar. Wenden Sie sich an Ihren Provider, um einen ISO-Storage für diese Verbindung zu aktivieren.",
+        "installOptions": "Installationsoptionen",
+        "bios": "BIOS",
+        "biosSeabios": "SeaBIOS (Legacy)",
+        "biosOvmf": "UEFI (OVMF + Secure-Boot-Schlüssel)",
+        "diskWarning": "Die Installation von Windows 11 / Server 2025 erfordert mindestens 32 GB. Erhöhen Sie die Festplattengröße, sonst verweigert das Installationsprogramm den Start.",
+        "reviewAlert": "Dieses Image ist ein Installationsmedium (ISO). Öffnen Sie nach der Bereitstellung die VM-Konsole (VNC) und starten Sie das Installationsprogramm manuell. Die VM wird nicht automatisch gestartet.",
+        "openConsole": "Konsole öffnen",
+        "completedHint": "VM erstellt — öffnen Sie die noVNC-Konsole, um das OS-Installationsprogramm zu starten."
       }
     },
     "deployments": {

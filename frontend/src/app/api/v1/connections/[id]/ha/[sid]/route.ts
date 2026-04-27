@@ -3,6 +3,7 @@ import { NextResponse } from "next/server"
 import { pveFetch } from "@/lib/proxmox/client"
 import { getConnectionById } from "@/lib/connections/getConnection"
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
+import { requireProviderTenant } from "@/lib/tenant"
 
 export const runtime = "nodejs"
 
@@ -52,6 +53,13 @@ export async function POST(
 
     const denied = await checkPermission(PERMISSIONS.NODE_MANAGE, "connection", id)
     if (denied) return denied
+
+    // HA configuration is a cluster-level concern (governs failover policy
+    // across nodes the tenant doesn't manage individually). Tenant admins
+    // can READ the state but never write — gate at the API layer too so
+    // crafted POSTs don't bypass the read-only UI.
+    const providerOnly = await requireProviderTenant()
+    if (providerOnly) return providerOnly
 
     const conn = await getConnectionById(id)
     const body = await req.json()
@@ -120,6 +128,11 @@ export async function DELETE(
 
     const denied = await checkPermission(PERMISSIONS.NODE_MANAGE, "connection", id)
     if (denied) return denied
+
+    // Same provider-only gate as POST — HA write surface stays out of
+    // tenant reach even with NODE_MANAGE on their vDC connections.
+    const providerOnly = await requireProviderTenant()
+    if (providerOnly) return providerOnly
 
     const conn = await getConnectionById(id)
 

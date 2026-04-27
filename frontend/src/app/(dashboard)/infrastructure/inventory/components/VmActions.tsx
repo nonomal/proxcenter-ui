@@ -24,6 +24,7 @@ function VmActions({
   isCluster,
   isLocked,
   lockType,
+  canMigrate = true,
   onStart,
   onShutdown,
   onStop,
@@ -39,6 +40,11 @@ function VmActions({
   isCluster?: boolean
   isLocked?: boolean
   lockType?: string
+  // Tenant admins don't manage placement — the provider does. Hide the
+  // migrate icon entirely (and its divider when nothing else needs it)
+  // rather than disabling, since there's no useful "informational" value
+  // in a non-clickable migrate button.
+  canMigrate?: boolean
   onStart: () => void
   onShutdown: () => void
   onStop: () => void
@@ -114,18 +120,20 @@ function VmActions({
       <Divider orientation="vertical" flexItem sx={{ mx: 0.5 }} />
 
       {/* Migrate - toujours visible (cross-cluster disponible même pour standalone) */}
-      <MuiTooltip title={t('audit.actions.migrate')}>
-        <span>
-          <IconButton
-            size="small"
-            onClick={onMigrate}
-            disabled={disabled}
-            sx={{ color: 'text.secondary', '&:hover': { bgcolor: 'action.hover' } }}
-          >
-            <MoveUpIcon fontSize="small" />
-          </IconButton>
-        </span>
-      </MuiTooltip>
+      {canMigrate && (
+        <MuiTooltip title={t('audit.actions.migrate')}>
+          <span>
+            <IconButton
+              size="small"
+              onClick={onMigrate}
+              disabled={disabled}
+              sx={{ color: 'text.secondary', '&:hover': { bgcolor: 'action.hover' } }}
+            >
+              <MoveUpIcon fontSize="small" />
+            </IconButton>
+          </span>
+        </MuiTooltip>
+      )}
 
       {/* Clone */}
       <MuiTooltip title={t('audit.actions.clone')}>

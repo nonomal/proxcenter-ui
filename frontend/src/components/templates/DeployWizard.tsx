@@ -15,6 +15,7 @@ import {
   Divider,
   FormControl,
   FormControlLabel,
+  IconButton,
   InputLabel,
   ListSubheader,
   MenuItem,
@@ -25,6 +26,7 @@ import {
   Stepper,
   Switch,
   TextField,
+  Tooltip,
   Typography,
 } from '@mui/material'
 
@@ -40,6 +42,11 @@ interface DeployWizardProps {
   onClose: () => void
   image: CloudImage | null
   prefillBlueprint?: any | null
+  // When set, the wizard reopens directly at the Progress step attached
+  // to an existing deployment (resuming a job that was minimized to the
+  // taskbar). Mutually exclusive with the regular new-deploy flow — if
+  // both are present, resume wins.
+  resumeDeploymentId?: string | null
 }
 
 const STEP_LABELS = [
@@ -75,7 +82,7 @@ interface StorageInfo {
   type: string
 }
 
-export default function DeployWizard({ open, onClose, image, prefillBlueprint }: DeployWizardProps) {
+export default function DeployWizard({ open, onClose, image, prefillBlueprint, resumeDeploymentId }: DeployWizardProps) {
   const t = useTranslations()
   // Tenants get cloud-style abstraction in step "Target": no connection /
   // node / storage / VMID picker. They only enter a name. Selections are
@@ -95,6 +102,10 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint }:
   const [node, setNode] = useState('')
   const [storages, setStorages] = useState<StorageInfo[]>([])
   const [storage, setStorage] = useState('')
+  // ISO-mode only: storages on the node that have content=iso. The boot ISO
+  // is downloaded here (separate from the disk storage above).
+  const [isoStorages, setIsoStorages] = useState<StorageInfo[]>([])
+  const [isoStorage, setIsoStorage] = useState('')
   const [vmid, setVmid] = useState<number>(100)
   const [vmName, setVmName] = useState('')
 
@@ -108,6 +119,11 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint }:
   const [networkBridge, setNetworkBridge] = useState('vmbr0')
   const [vlanTag, setVlanTag] = useState<number | ''>('')
   const [cpu, setCpu] = useState('host')
+  // ISO-mode only: BIOS firmware + OS type override. Cloud-images keep
+  // ostype from the catalog and seabios silently; ISO installs need an
+  // explicit choice (ovmf+pre-enrolled-keys for Windows 10/11/Server 2025).
+  const [bios, setBios] = useState<'seabios' | 'ovmf'>('seabios')
+  const [ostypeOverride, setOstypeOverride] = useState<string | null>(null)
 
   // vDC quota (tenant only — provider has no vDC scope so banner stays hidden)
   const [vdcQuota, setVdcQuota] = useState<{ maxVcpus: number | null; maxRamMb: number | null; maxStorageMb: number | null; maxVms: number | null } | null>(null)
@@ -133,9 +149,37 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint }:
   const [saveAsBlueprint, setSaveAsBlueprint] = useState(false)
   const [blueprintName, setBlueprintName] = useState('')
 
+  // True when the selected image is an install-media ISO (not a cloud
+  // image). Used to gate the ISO storage picker on Target, the BIOS/OS
+  // controls on Hardware, the cloud-init step skip, and the post-deploy
+  // console link on Progress.
+  const isIsoMode = String(image?.format || '').toLowerCase() === 'iso'
+
+  // Best-effort guess of "this ISO is a Windows installer" — drives the
+  // OVMF/pre-enrolled-keys default. We check ostype first (most reliable
+  // if the uploader filled it in), then vendor/tags as fallbacks.
+  const windowsHint = (() => {
+    if (!image) return false
+    const ot = String(image.ostype || '').toLowerCase()
+    if (ot === 'win10' || ot === 'win11' || ot.startsWith('win')) return true
+    const vendor = String(image.vendor || '').toLowerCase()
+    if (vendor.includes('microsoft') || vendor.includes('windows')) return true
+    return image.tags?.some(tg => /windows|win-?\d+|win2k|server2025/i.test(String(tg))) || false
+  })()
+
   // Reset state on open
   useEffect(() => {
     if (!open) return
+    // Resume path: jump straight to the Progress step bound to an existing
+    // deployment. Skip the form reset since none of the form fields will
+    // be shown; DeploymentProgress drives the rest from the deploymentId.
+    if (resumeDeploymentId) {
+      setActiveStep(5)
+      setDeploying(true)
+      setDeploymentId(resumeDeploymentId)
+      setDeployError(null)
+      return
+    }
     setActiveStep(0)
     setDeploying(false)
     setDeploymentId(null)
@@ -146,6 +190,21 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint }:
       setMemory(image.recommendedMemory)
       setDiskSize(image.defaultDiskSize)
       setVmName('')
+      // ISO defaults: pre-set Windows install media to win11 + OVMF
+      // (Secure Boot enrolled), other ISOs to ostype='other' + SeaBIOS.
+      // Cloud images keep their catalog ostype (no override).
+      if (isIsoMode) {
+        if (windowsHint) {
+          setOstypeOverride('win11')
+          setBios('ovmf')
+        } else {
+          setOstypeOverride(image.ostype || 'other')
+          setBios('seabios')
+        }
+      } else {
+        setOstypeOverride(null)
+        setBios('seabios')
+      }
     }
 
     // Prefill from blueprint
@@ -191,7 +250,7 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint }:
         if (rf.vmName) setVmName(rf.vmName)
       }
     }
-  }, [open, image, prefillBlueprint])
+  }, [open, image, prefillBlueprint, resumeDeploymentId])
 
   // Fetch connections
   useEffect(() => {
@@ -237,17 +296,19 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint }:
 
   // Fetch storages + next VMID when node changes
   useEffect(() => {
-    if (!connectionId || !node) { setStorages([]); return }
+    if (!connectionId || !node) { setStorages([]); setIsoStorages([]); return }
 
     // Fetch file-based storages (content types are auto-enabled by the deploy route)
     fetch(`/api/v1/connections/${encodeURIComponent(connectionId)}/nodes/${encodeURIComponent(node)}/storages`)
       .then(r => r.json())
       .then(res => {
+        const all = (res.data || []) as any[]
+
         // Filter on BOTH type AND content. supportsVmDisks() only checks the
         // backing technology (dir, NFS, RBD, …); we still need the storage
         // to be configured for `images` (or `rootdir`) — otherwise PVE
         // rejects the VM creation with "storage X does not support vm images".
-        const stList = (res.data || []).filter((s: any) =>
+        const stList = all.filter((s: any) =>
           supportsVmDisks(s.type)
           && s.enabled !== 0
           && (s.content?.includes('images') || s.content?.includes('rootdir')),
@@ -266,8 +327,24 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint }:
         } else {
           setStorage('')
         }
+
+        // ISO-capable storages — separate selector on Target step. PVE only
+        // lets you mount an ISO from a storage advertising content=iso, so
+        // we can't just reuse the disk storage list.
+        const isoList = all.filter((s: any) => s.enabled !== 0 && s.content?.includes('iso'))
+        setIsoStorages(isoList)
+        if (isoList.length > 0) {
+          if (hideInfra) {
+            const shared = isoList.find((s: any) => s.shared)
+            setIsoStorage((shared || isoList[0]).storage)
+          } else {
+            setIsoStorage(isoList[0].storage)
+          }
+        } else {
+          setIsoStorage('')
+        }
       })
-      .catch(() => setStorages([]))
+      .catch(() => { setStorages([]); setIsoStorages([]) })
 
     // Try to get next available VMID
     fetch(`/api/v1/connections/${encodeURIComponent(connectionId)}/cluster/nextid`)
@@ -340,12 +417,22 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint }:
   }, [open, connectionId])
 
   const handleNext = useCallback(() => {
-    setActiveStep(s => Math.min(s + 1, STEP_LABELS.length - 1))
-  }, [])
+    setActiveStep(s => {
+      const next = Math.min(s + 1, STEP_LABELS.length - 1)
+      // ISO mode skips the cloud-init step (index 3) — install media has
+      // no notion of cloud-init, the user runs the OS installer manually.
+      if (isIsoMode && next === 3) return 4
+      return next
+    })
+  }, [isIsoMode])
 
   const handleBack = useCallback(() => {
-    setActiveStep(s => Math.max(s - 1, 0))
-  }, [])
+    setActiveStep(s => {
+      const prev = Math.max(s - 1, 0)
+      if (isIsoMode && prev === 3) return 2
+      return prev
+    })
+  }, [isIsoMode])
 
   const handleDeploy = useCallback(async () => {
     if (!image) return
@@ -354,7 +441,7 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint }:
     setActiveStep(5) // Progress step
 
     try {
-      const body = {
+      const body: any = {
         connectionId,
         node,
         storage,
@@ -371,11 +458,17 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint }:
           networkModel,
           networkBridge,
           vlanTag: vlanTag || null,
-          ostype: image.ostype,
+          // ISO mode lets the user override ostype (Windows install media
+          // pre-selects win11) — fall back to the catalog ostype otherwise.
+          ostype: isIsoMode ? (ostypeOverride || image.ostype) : image.ostype,
           agent,
           cpu,
+          bios: isIsoMode ? bios : 'seabios',
         },
-        cloudInit: {
+        // ISO deployments don't run cloud-init: omit the block entirely so
+        // the backend skips the configure step. Cloud-image deployments
+        // keep their existing cloud-init payload.
+        cloudInit: isIsoMode ? null : {
           ciuser: ciuser || undefined,
           cipassword: cipassword || undefined,
           sshKeys: sshKeys || undefined,
@@ -386,6 +479,7 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint }:
         saveAsBlueprint,
         blueprintName: saveAsBlueprint ? blueprintName : undefined,
       }
+      if (isIsoMode) body.isoStorage = isoStorage
 
       const res = await fetch('/api/v1/templates/deploy', {
         method: 'POST',
@@ -417,8 +511,9 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint }:
       setDeploying(false)
     }
   }, [
-    image, connectionId, node, storage, vmid, vmName, cores, sockets, memory,
+    image, connectionId, node, storage, isoStorage, vmid, vmName, cores, sockets, memory,
     diskSize, scsihw, networkModel, networkBridge, vlanTag, cpu, agent,
+    bios, ostypeOverride, isIsoMode,
     ciuser, cipassword, sshKeys, ipconfig0, nameserver, searchdomain,
     saveAsBlueprint, blueprintName, prefillBlueprint,
   ])
@@ -431,14 +526,21 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint }:
   const canProceed = useMemo(() => {
     switch (activeStep) {
       case 0: return !!image
-      case 1: return !!connectionId && !!node && !!storage && vmid >= 100
+      case 1: {
+        const baseOk = !!connectionId && !!node && !!storage && vmid >= 100
+        // ISO mode also requires an ISO-capable storage on the node — if
+        // the tenant's vDC has none we surface a blocking message instead
+        // of the picker, and the wizard can't advance.
+        if (isIsoMode) return baseOk && !!isoStorage
+        return baseOk
+      }
       // Hardware step: also block while the vDC quota would be exceeded.
       case 2: return cores >= 1 && memory >= 128 && !!diskSize && !quotaBlocked
       case 3: return true
       case 4: return !quotaBlocked
       default: return false
     }
-  }, [activeStep, image, connectionId, node, storage, vmid, cores, memory, diskSize, quotaBlocked])
+  }, [activeStep, image, connectionId, node, storage, vmid, cores, memory, diskSize, quotaBlocked, isIsoMode, isoStorage])
 
   // ─── Step renderers ────────────────────────────────────────────────
 
@@ -487,6 +589,16 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint }:
   }
 
   const renderTargetStep = () => {
+    // Block ISO deployments when the resolved vDC has no ISO-capable
+    // storage. Tenant view doesn't expose the picker (auto-resolved), so
+    // we still need to surface this — otherwise the wizard would let the
+    // user click Next and fail in the backend.
+    const isoBlocker = isIsoMode && !!node && isoStorages.length === 0 ? (
+      <Alert severity="error" variant="outlined" icon={<i className="ri-error-warning-line" style={{ fontSize: 18 }} />}>
+        {t('templates.deploy.iso.noIsoStorage')}
+      </Alert>
+    ) : null
+
     // Tenant-facing simplified target: VM name only, the rest auto-resolved.
     if (hideInfra) {
       return (
@@ -500,6 +612,7 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint }:
             placeholder={image ? `${image.slug}-${vmid}` : ''}
             autoFocus
           />
+          {isoBlocker}
         </Stack>
       )
     }
@@ -510,7 +623,7 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint }:
         <InputLabel>{t('templates.deploy.target.connection')}</InputLabel>
         <Select
           value={connectionId}
-          onChange={e => { setConnectionId(e.target.value); setNode(''); setStorage('') }}
+          onChange={e => { setConnectionId(e.target.value); setNode(''); setStorage(''); setIsoStorage('') }}
           label={t('templates.deploy.target.connection')}
         >
           {connections.map(c => (
@@ -523,7 +636,7 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint }:
         <InputLabel>{t('templates.deploy.target.node')}</InputLabel>
         <Select
           value={node}
-          onChange={e => { setNode(e.target.value); setStorage('') }}
+          onChange={e => { setNode(e.target.value); setStorage(''); setIsoStorage('') }}
           label={t('templates.deploy.target.node')}
         >
           {nodes.map(n => (
@@ -564,6 +677,31 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint }:
           {t('templates.deploy.target.noFileStorage')}
         </Alert>
       )}
+
+      {isIsoMode && isoStorages.length > 0 && (
+        <FormControl size="small" fullWidth required disabled={!node}>
+          <InputLabel>{t('templates.deploy.iso.isoStorage')}</InputLabel>
+          <Select
+            value={isoStorage}
+            onChange={e => setIsoStorage(e.target.value)}
+            label={t('templates.deploy.iso.isoStorage')}
+          >
+            {isoStorages.map(s => (
+              <MenuItem key={s.storage} value={s.storage}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, width: '100%' }}>
+                  <Box component="i" className="ri-disc-line" sx={{ fontSize: 14, opacity: 0.7 }} />
+                  <Typography variant="body2">{s.storage}</Typography>
+                  <Typography variant="caption" sx={{ opacity: 0.5, ml: 'auto' }}>
+                    {s.type} &middot; {((s.avail || 0) / 1073741824).toFixed(1)} GB {t('templates.deploy.target.available')}
+                  </Typography>
+                </Box>
+              </MenuItem>
+            ))}
+          </Select>
+        </FormControl>
+      )}
+
+      {isoBlocker}
 
       <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 2 }}>
         <TextField
@@ -725,6 +863,59 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint }:
         sx={{ gridColumn: 'span 2' }}
       />
       </Box>
+
+      {/* ISO-only extras: OS type override, BIOS firmware, disk size hint.
+          Cloud-image deployments don't expose any of these — ostype is
+          fixed by the catalog and SeaBIOS is fine for every supported
+          distro. Machine type stays q35 silently (sent server-side). */}
+      {isIsoMode && (
+        <Box sx={{ mt: 2 }}>
+          <Typography variant="overline" sx={{ opacity: 0.6, display: 'block', mb: 1 }}>
+            {t('templates.deploy.iso.installOptions')}
+          </Typography>
+          <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 2 }}>
+            <FormControl size="small">
+              <InputLabel>{t('templates.catalog.ostypeLabel')}</InputLabel>
+              <Select
+                value={ostypeOverride || image?.ostype || 'other'}
+                onChange={e => setOstypeOverride(String(e.target.value))}
+                label={t('templates.catalog.ostypeLabel')}
+              >
+                <MenuItem value="l26">Linux 2.6+</MenuItem>
+                <MenuItem value="win10">Windows 10</MenuItem>
+                <MenuItem value="win11">Windows 11 / Server 2022+</MenuItem>
+                <MenuItem value="w2k19">Windows Server 2019</MenuItem>
+                <MenuItem value="w2k16">Windows Server 2016</MenuItem>
+                <MenuItem value="other">Other</MenuItem>
+              </Select>
+            </FormControl>
+            <FormControl size="small">
+              <InputLabel>{t('templates.deploy.iso.bios')}</InputLabel>
+              <Select
+                value={bios}
+                onChange={e => setBios(e.target.value as 'seabios' | 'ovmf')}
+                label={t('templates.deploy.iso.bios')}
+              >
+                <MenuItem value="seabios">{t('templates.deploy.iso.biosSeabios')}</MenuItem>
+                <MenuItem value="ovmf">{t('templates.deploy.iso.biosOvmf')}</MenuItem>
+              </Select>
+            </FormControl>
+          </Box>
+          {/* Windows Server 2025 / Win11 install footprint won't fit in
+              <32 GB. Surface a soft warning rather than blocking — small
+              edge installs (eval, embedded) may legitimately want less. */}
+          {(() => {
+            const sizeNum = Number.parseInt(String(diskSize).replace(/G$/i, ''), 10) || 0
+            const ot = ostypeOverride || image?.ostype || ''
+            const isWin2025OrLater = ot === 'win11'
+            return (isWin2025OrLater && sizeNum > 0 && sizeNum < 32) ? (
+              <Alert severity="warning" variant="outlined" sx={{ mt: 1.5 }} icon={<i className="ri-error-warning-line" style={{ fontSize: 18 }} />}>
+                {t('templates.deploy.iso.diskWarning')}
+              </Alert>
+            ) : null
+          })()}
+        </Box>
+      )}
     </Box>
   )
 
@@ -791,6 +982,12 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint }:
 
     return (
       <Stack spacing={2}>
+        {isIsoMode && (
+          <Alert severity="info" icon={<i className="ri-disc-line" style={{ fontSize: 18 }} />}>
+            {t('templates.deploy.iso.reviewAlert')}
+          </Alert>
+        )}
+
         {/* Image */}
         <Box>
           <Typography variant="overline" sx={{ opacity: 0.6 }}>{t('templates.deploy.steps.image')}</Typography>
@@ -803,6 +1000,7 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint }:
           <Typography variant="overline" sx={{ opacity: 0.6 }}>{t('templates.deploy.steps.target')}</Typography>
           <Typography variant="body2">
             {selectedConn?.name} &rarr; {node} &rarr; {storage}
+            {isIsoMode && isoStorage && <> &middot; ISO: {isoStorage}</>}
           </Typography>
           <Typography variant="body2">
             VMID: {vmid} {vmName && `(${vmName})`}
@@ -815,25 +1013,32 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint }:
           <Typography variant="overline" sx={{ opacity: 0.6 }}>{t('templates.deploy.steps.hardware')}</Typography>
           <Typography variant="body2">
             {cores}C &times; {sockets}S / {memory >= 1024 ? `${memory / 1024} GB` : `${memory} MB`} RAM / {diskSize} / {networkBridge}{vlanTag ? ` (VLAN ${vlanTag})` : ''}
+            {isIsoMode && <> &middot; {bios === 'ovmf' ? 'UEFI' : 'BIOS'} &middot; {ostypeOverride || image.ostype}</>}
           </Typography>
         </Box>
         <Divider />
 
-        {/* Cloud-Init */}
-        <Box>
-          <Typography variant="overline" sx={{ opacity: 0.6 }}>{t('templates.deploy.steps.cloudInit')}</Typography>
-          <Typography variant="body2">
-            {ciuser ? `${t('templates.deploy.cloudInit.user')}: ${ciuser}` : t('templates.deploy.cloudInit.noUser')}
-            {cipassword ? ` · ${t('templates.deploy.cloudInit.password')}: ••••••` : ''}
-            {' · '}{ipconfig0}
-          </Typography>
-          {sshKeys && (
-            <Typography variant="caption" sx={{ opacity: 0.6 }}>
-              {sshKeys.split('\n').filter(Boolean).length} SSH key(s)
-            </Typography>
-          )}
-        </Box>
-        <Divider />
+        {/* Cloud-Init — only relevant for cloud-image deployments. ISO
+            installs hide this section: the field is meaningless and we
+            already alerted the user above. */}
+        {!isIsoMode && (
+          <>
+            <Box>
+              <Typography variant="overline" sx={{ opacity: 0.6 }}>{t('templates.deploy.steps.cloudInit')}</Typography>
+              <Typography variant="body2">
+                {ciuser ? `${t('templates.deploy.cloudInit.user')}: ${ciuser}` : t('templates.deploy.cloudInit.noUser')}
+                {cipassword ? ` · ${t('templates.deploy.cloudInit.password')}: ••••••` : ''}
+                {' · '}{ipconfig0}
+              </Typography>
+              {sshKeys && (
+                <Typography variant="caption" sx={{ opacity: 0.6 }}>
+                  {sshKeys.split('\n').filter(Boolean).length} SSH key(s)
+                </Typography>
+              )}
+            </Box>
+            <Divider />
+          </>
+        )}
 
         {/* Save as blueprint option */}
         <FormControlLabel
@@ -856,7 +1061,38 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint }:
 
   const renderProgressStep = () => {
     if (deploymentId) {
-      return <DeploymentProgress deploymentId={deploymentId} onComplete={handleDeployComplete} />
+      // Console link surfaces only for completed ISO deployments — the
+      // VM is sitting at the boot prompt waiting for the user to drive
+      // the OS installer through noVNC. Cloud-image deployments boot
+      // unattended and don't need this affordance.
+      const consoleHref = (isIsoMode && !deploying && !deployError && connectionId)
+        ? `/novnc/console.html?connId=${encodeURIComponent(connectionId)}&type=qemu&node=${encodeURIComponent(node)}&vmid=${encodeURIComponent(String(vmid))}`
+        : null
+      return (
+        <>
+          <DeploymentProgress deploymentId={deploymentId} onComplete={handleDeployComplete} />
+          {consoleHref && (
+            <Alert
+              severity="success"
+              icon={<i className="ri-disc-line" style={{ fontSize: 18 }} />}
+              sx={{ mt: 2 }}
+              action={
+                <Button
+                  size="small"
+                  variant="contained"
+                  color="success"
+                  onClick={() => window.open(consoleHref, `console-${vmid}`, 'width=1024,height=768,resizable,scrollbars')}
+                  startIcon={<i className="ri-computer-line" style={{ fontSize: 16 }} />}
+                >
+                  {t('templates.deploy.iso.openConsole')}
+                </Button>
+              }
+            >
+              {t('templates.deploy.iso.completedHint')}
+            </Alert>
+          )}
+        </>
+      )
     }
 
     if (deployError) {
@@ -886,27 +1122,49 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint }:
     }
   }, [
     activeStep, image, connections, connectionId, nodes, node, storages, storage,
-    vmid, vmName, cores, sockets, memory, diskSize, scsihw, networkModel,
-    networkBridge, vlanTag, cpu, agent, ciuser, cipassword, sshKeys, ipconfig0, nameserver,
-    searchdomain, saveAsBlueprint, blueprintName, deploymentId, deployError, deploying, t,
+    isoStorages, isoStorage, vmid, vmName, cores, sockets, memory, diskSize, scsihw, networkModel,
+    networkBridge, vlanTag, cpu, agent, bios, ostypeOverride, isIsoMode,
+    ciuser, cipassword, sshKeys, ipconfig0, nameserver,
+    searchdomain, saveAsBlueprint, blueprintName, deploymentId, deployError, deploying,
+    quotaBlocked, vdcQuota, vdcUsage, bridges, t,
   ])
 
   const isProgressStep = activeStep === 5
+  // Minimize is only meaningful while a deploy is in flight — at that
+  // point the pipeline runs server-side independently of the dialog.
+  // Closing the wizard via the minimize button leaves the deployment
+  // visible in the navbar TasksDropdown for follow-up.
+  const canMinimize = isProgressStep && deploying && !!deploymentId
 
   return (
     <Dialog open={open} onClose={isProgressStep && deploying ? undefined : onClose} maxWidth="md" fullWidth>
       <DialogTitle sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
         <i className="ri-rocket-2-line" style={{ fontSize: 22 }} />
         {t('templates.deploy.title')}
+        {canMinimize && (
+          <Box sx={{ ml: 'auto' }}>
+            <Tooltip title={t('templates.deploy.progress.minimize')}>
+              <IconButton size="small" onClick={onClose} aria-label="minimize">
+                <i className="ri-subtract-line" style={{ fontSize: 20 }} />
+              </IconButton>
+            </Tooltip>
+          </Box>
+        )}
       </DialogTitle>
 
       <DialogContent>
-        <Stepper activeStep={activeStep} sx={{ mb: 3 }} alternativeLabel>
-          {STEP_LABELS.map(label => (
-            <Step key={label}>
-              <StepLabel>{t(label as any)}</StepLabel>
-            </Step>
-          ))}
+        <Stepper
+          activeStep={isIsoMode && activeStep > 3 ? activeStep - 1 : activeStep}
+          sx={{ mb: 3 }}
+          alternativeLabel
+        >
+          {STEP_LABELS
+            .filter(label => !isIsoMode || label !== 'templates.deploy.steps.cloudInit')
+            .map(label => (
+              <Step key={label}>
+                <StepLabel>{t(label as any)}</StepLabel>
+              </Step>
+            ))}
         </Stepper>
 
         <Box sx={{ minHeight: 300 }}>

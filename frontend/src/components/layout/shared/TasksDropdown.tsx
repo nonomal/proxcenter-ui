@@ -24,6 +24,9 @@ import {
 import { useRunningTasks } from '@/hooks/useRunningTasks'
 import { useRecentChanges } from '@/hooks/useChanges'
 import { useRollingUpdates } from '@/contexts/RollingUpdateContext'
+import { useTenant } from '@/contexts/TenantContext'
+import { useActiveDeployments } from '@/hooks/useNavbarNotifications'
+import { useRouter } from 'next/navigation'
 
 type RunningTask = {
   id: string
@@ -199,8 +202,21 @@ export default function TasksDropdown() {
   const { data: changesResponse } = useRecentChanges(5)
   const recentChanges: RecentChange[] = changesResponse?.data || []
 
-  // Rolling updates
-  const { activeUpdates, openMonitor } = useRollingUpdates()
+  // Rolling updates are a cluster-wide / provider concern (rolling reboot
+  // of all PVE nodes for an upgrade). Tenant admins can't act on them and
+  // exposing them re-leaks node names, so we hide the section entirely
+  // for non-providers.
+  const { currentTenant, loading: tenantLoading } = useTenant()
+  const isProviderTenant = !tenantLoading && currentTenant?.id === 'default'
+  const { activeUpdates: rawActiveUpdates, openMonitor } = useRollingUpdates()
+  const activeUpdates = isProviderTenant ? rawActiveUpdates : []
+
+  // Template/blueprint deployments minimized from the wizard. Already
+  // tenant-scoped by getSessionPrisma in the API; we surface them here
+  // so a tenant who minimized the deploy dialog can re-enter it.
+  const { data: deploymentsResponse } = useActiveDeployments()
+  const activeDeployments: any[] = Array.isArray(deploymentsResponse?.data) ? deploymentsResponse.data : []
+  const router = useRouter()
 
   // Sync SWR data to local state and handle notifications
   useEffect(() => {
@@ -343,7 +359,7 @@ return () => window.removeEventListener('focus', handleFocus)
     setAnchorEl(null)
   }
 
-  const taskCount = tasks.length + activeUpdates.length
+  const taskCount = tasks.length + activeUpdates.length + activeDeployments.length
 
   return (
     <>
@@ -571,6 +587,76 @@ return () => window.removeEventListener('focus', handleFocus)
                   <i className="ri-arrow-right-s-line" style={{ fontSize: 18, opacity: 0.4 }} />
                 </Box>
                 {idx < activeUpdates.length - 1 && <Divider />}
+              </Box>
+            ))}
+          </Box>
+        )}
+
+        {/* Active deployments — VMs being deployed from a template or
+            blueprint. Click navigates to /automation/templates with a
+            deployment query param so the wizard reopens at the Progress
+            step bound to that deployment id. */}
+        {activeDeployments.length > 0 && (
+          <Box>
+            <Box sx={{ px: 2, py: 1, borderTop: 1, borderColor: 'divider', display: 'flex', alignItems: 'center', gap: 1 }}>
+              <i className="ri-rocket-2-line" style={{ fontSize: 16, opacity: 0.6 }} />
+              <Typography variant="subtitle2" fontWeight={600} sx={{ opacity: 0.8 }}>
+                {t('templates.deploy.title')}
+              </Typography>
+              <Chip label={activeDeployments.length} size="small" color="primary" sx={{ height: 18, fontSize: '0.65rem' }} />
+            </Box>
+            {activeDeployments.map((dep, idx) => (
+              <Box key={dep.id}>
+                <Box
+                  sx={{
+                    px: 2,
+                    py: 1.5,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 2,
+                    cursor: 'pointer',
+                    '&:hover': { bgcolor: 'action.hover' }
+                  }}
+                  onClick={() => {
+                    router.push(`/automation/templates?deployment=${encodeURIComponent(dep.id)}`)
+                    handleClose()
+                  }}
+                >
+                  <Box sx={{
+                    width: 32,
+                    height: 32,
+                    flexShrink: 0,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    bgcolor: 'primary.main',
+                    color: 'primary.contrastText',
+                    borderRadius: 1,
+                    position: 'relative'
+                  }}>
+                    <i className="ri-rocket-2-line" style={{ fontSize: 16 }} />
+                    <CircularProgress size={32} thickness={2} sx={{ position: 'absolute', color: 'primary.light', opacity: 0.5 }} />
+                  </Box>
+                  <Box sx={{ flex: 1, minWidth: 0 }}>
+                    <Typography variant="body2" fontWeight={500} noWrap>
+                      {dep.vmName || `VM ${dep.vmid}`}
+                    </Typography>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mt: 0.25 }}>
+                      <Chip
+                        label={t(`templates.deployments.status.${dep.status}` as any)}
+                        size="small"
+                        sx={{ height: 18, fontSize: '0.65rem' }}
+                      />
+                      {dep.imageSlug && (
+                        <Typography variant="caption" sx={{ opacity: 0.6 }} noWrap>
+                          {dep.imageSlug}
+                        </Typography>
+                      )}
+                    </Box>
+                  </Box>
+                  <i className="ri-arrow-right-s-line" style={{ fontSize: 18, opacity: 0.4 }} />
+                </Box>
+                {idx < activeDeployments.length - 1 && <Divider />}
               </Box>
             ))}
           </Box>

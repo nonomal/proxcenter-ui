@@ -43,10 +43,12 @@ export async function GET(req: Request) {
     const limit = searchParams.get('limit') ? Number.parseInt(searchParams.get('limit')!) : 100
     const offset = searchParams.get('offset') ? Number.parseInt(searchParams.get('offset')!) : 0
 
-    // Get tenant's connection IDs for filtering
+    // Reachable connections = directly owned ∪ vDC-bound. Going through
+    // the helper instead of the inline prisma.connection query so MSP
+    // tenants (who own no connections directly, only vDC bindings) get
+    // their alerts populated. Same fix as /api/v1/changes.
     const prisma = await getSessionPrisma()
-    const tenantConnections = await prisma.connection.findMany({ select: { id: true } })
-    const tenantConnectionIds = new Set(tenantConnections.map((c: any) => c.id))
+    const tenantConnectionIds = await getTenantConnectionIds()
 
     const response = await alertsApi.getAlerts({
       connection_id: connectionId,
