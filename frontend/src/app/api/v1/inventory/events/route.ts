@@ -1,7 +1,8 @@
 import { NextRequest } from "next/server"
 
 import { subscribe, type InventoryEvent } from "@/lib/cache/inventoryPoller"
-import { getTenantConnectionIds } from "@/lib/tenant"
+import { getCurrentTenantId, getTenantConnectionIds } from "@/lib/tenant"
+import { getVdcScope } from "@/lib/vdc/scope"
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
 import { demoResponse } from "@/lib/demo/demo-api"
 
@@ -40,6 +41,13 @@ export async function GET(request: NextRequest) {
     tenantConnIds = new Set()
   }
 
+  // Resolve vDC scope (per-pool allowlist). When non-null, vm:* events on a
+  // shared connection must additionally match the tenant's allowed pools —
+  // otherwise vmid=X from vDC A leaks to vDC B because they share a PVE
+  // cluster (same connId). node:* events stay connection-scoped only.
+  const tenantId = await getCurrentTenantId()
+  const vdcScope = getVdcScope(tenantId)
+
   const encoder = new TextEncoder()
 
   let unsubscribe: (() => void) | null = null
@@ -66,13 +74,29 @@ export async function GET(request: NextRequest) {
         send('heartbeat', { ts: Date.now() })
       }, 30_000)
 
-      // Subscribe to inventory changes — filter by tenant connections
+      // Subscribe to inventory changes — filter by tenant connections AND,
+      // for VM events on a vDC-scoped tenant, by allowed pools.
       unsubscribe = subscribe((events: InventoryEvent[]) => {
         if (closed) return
         for (const ev of events) {
-          if (tenantConnIds.has(ev.connId)) {
+          if (!tenantConnIds.has(ev.connId)) continue
+
+          // node:update isn't pool-bound — pass through.
+          if (ev.event === 'node:update') {
             send(ev.event, ev)
+            continue
           }
+
+          // vm:* events: enforce vDC pool boundary when scope active.
+          if (vdcScope) {
+            const allowedPools = vdcScope.poolsByConnection.get(ev.connId)
+            const evPool = (ev as any).pool as string | undefined
+            // No pool on the event = ambient/legacy state; safer to drop than
+            // leak across vDCs sharing the same connection.
+            if (!evPool || !allowedPools || !allowedPools.has(evPool)) continue
+          }
+
+          send(ev.event, ev)
         }
       })
     },

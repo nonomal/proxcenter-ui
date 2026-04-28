@@ -82,6 +82,48 @@ export async function GET(req: NextRequest) {
 
     const assignments = db.prepare(query).all(...params) as any[]
 
+    // Surface the global role_super_admin assignment for super-admins who are
+    // members of the current tenant. Without this they appear with no role in
+    // /security/users of any non-default tenant — their assignment lives on
+    // the provider tenant only. Visible to super-admin callers only (the hide
+    // filter above already strips protected roles for everyone else).
+    if (callerIsSuperAdmin) {
+      const superAdminFilter = userId ? "AND ur.user_id = ?" : ""
+      const crossTenantParams: any[] = [tenantId, tenantId]
+      if (userId) crossTenantParams.push(userId)
+      const crossTenant = db.prepare(`
+        SELECT
+          ur.id,
+          ur.user_id,
+          ur.role_id,
+          ur.scope_type,
+          ur.scope_target,
+          ur.granted_at,
+          ur.expires_at,
+          u.email as user_email,
+          u.name as user_name,
+          r.name as role_name,
+          r.color as role_color,
+          r.is_system as role_is_system,
+          g.email as granted_by_email
+        FROM rbac_user_roles ur
+        JOIN users u ON u.id = ur.user_id
+        JOIN rbac_roles r ON r.id = ur.role_id
+        LEFT JOIN users g ON g.id = ur.granted_by
+        JOIN user_tenants ut ON ut.user_id = ur.user_id AND ut.tenant_id = ?
+        WHERE ur.role_id = 'role_super_admin'
+          AND ur.tenant_id != ?
+          AND (ur.expires_at IS NULL OR ur.expires_at > datetime('now'))
+          ${superAdminFilter}
+      `).all(...crossTenantParams) as any[]
+
+      // Prepend so RoleChip (which picks roles[0]) shows "Super Admin" first.
+      const seen = new Set(assignments.map(a => a.id))
+      for (const row of crossTenant) {
+        if (!seen.has(row.id)) assignments.unshift(row)
+      }
+    }
+
     // Transformer les résultats
     const data = assignments.map(a => ({
       id: a.id,

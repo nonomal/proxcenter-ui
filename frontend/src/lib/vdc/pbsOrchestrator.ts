@@ -5,6 +5,7 @@ import { prisma } from '@/lib/db/prisma'
 import { decryptSecret } from '@/lib/crypto/secret'
 import {
   ensureNamespacePath, ensureSubToken, setNamespaceAcl, setDatastoreAuditAcl, deleteSubToken,
+  waitForPbsTokenReady,
 } from '@/lib/proxmox/pbsNamespace'
 import {
   createPbsStorage, deletePbsStorage, sanitizeStorageName,
@@ -148,8 +149,11 @@ export async function bindPbsToVdc(args: BindAutoArgs): Promise<{ binding: PbsBi
     console.log(`[pbs-orchestrator] ACLs set on ${args.datastore} for ${effectiveTokenId}`)
     steps.acl = 'ok'
 
-    // Give PBS a moment to propagate ACLs before PVE's pbs: storage probe hits.
-    await new Promise(r => setTimeout(r, 2000))
+    // Wait for PBS to propagate the just-set ACLs to the point where the
+    // sub-token's own /admin/datastore/{store}/status returns 200. That's the
+    // same call PVE's pbs: storage probe ends up making, so once it's green
+    // here the POST /storage probe will be too. Empirically takes 3-5s.
+    await waitForPbsTokenReady(pbs.conn, args.datastore, effectiveTokenId, effectiveSecret)
 
     const binding = insertBinding({
       vdcId: args.vdcId,

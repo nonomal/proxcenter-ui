@@ -32,7 +32,10 @@ interface DatacenterAggregate {
   nodeCount: number
   vmCount: number
   runningVmCount: number
-  /** Derived health: all running → online, some stopped → degraded, none → offline. */
+  /** Derived health from underlying PVE nodes — all online → online, some
+   *  offline → degraded, all offline → offline. VM run state is intentionally
+   *  ignored: a tenant may legitimately keep VMs stopped (cost, maintenance)
+   *  and that's not a DC-level degradation. */
   status: 'online' | 'degraded' | 'offline'
   /** Live node breakdown so popups can render Proxmox icons per node. */
   nodes: DatacenterNode[]
@@ -156,17 +159,16 @@ export async function GET(_req: Request, ctx: RouteContext) {
       }
     }
 
-    // Derive status: any non-running VM yields degraded, all-stopped → offline.
+    // Derive status from PVE node health only. Stopped VMs ≠ degraded DC.
     for (const entry of acc.values()) {
-      if (entry.vmCount === 0) {
+      if (entry.nodes.length === 0) {
         entry.status = 'online'
-      } else if (entry.runningVmCount === 0) {
-        entry.status = 'offline'
-      } else if (entry.runningVmCount < entry.vmCount) {
-        entry.status = 'degraded'
-      } else {
-        entry.status = 'online'
+        continue
       }
+      const onlineNodes = entry.nodes.filter(n => n.status === 'online').length
+      if (onlineNodes === 0) entry.status = 'offline'
+      else if (onlineNodes < entry.nodes.length) entry.status = 'degraded'
+      else entry.status = 'online'
     }
 
     const data = Array.from(acc.values())

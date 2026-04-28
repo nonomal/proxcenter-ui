@@ -1,6 +1,6 @@
 export const dynamic = "force-dynamic"
 import { NextRequest, NextResponse } from "next/server"
-import { checkPermission, PERMISSIONS } from "@/lib/rbac"
+import { checkPermission, PERMISSIONS, isUserSuperAdmin } from "@/lib/rbac"
 import { getTenantUsers, addUserToTenant, removeUserFromTenant, TenantMembershipError, requireProviderTenant } from "@/lib/tenant"
 import { getDb } from "@/lib/db/sqlite"
 import { audit } from "@/lib/audit"
@@ -38,18 +38,21 @@ export async function POST(req: NextRequest, ctx: Ctx) {
 
   addUserToTenant(body.userId, id, body.isDefault || false)
 
-  // Grant a default role in this tenant (role from body, or viewer)
+  // Grant a default role in this tenant (role from body, or viewer).
+  // Super-admins are excluded: their global role_super_admin already grants
+  // wildcard access in every tenant, so a per-tenant role would either be
+  // misleading (role_viewer chip on a super-admin) or redundant.
   const db = getDb()
   const now = new Date().toISOString()
   const roleId = body.roleId || 'role_viewer'
   const roleAssignId = `tenant_add_${id}_${body.userId}_${Date.now()}`
 
-  // Only add if user doesn't already have a role in this tenant
+  const targetIsSuperAdmin = isUserSuperAdmin(body.userId)
   const existingRole = db.prepare(
     "SELECT 1 FROM rbac_user_roles WHERE user_id = ? AND tenant_id = ? LIMIT 1"
   ).get(body.userId, id)
 
-  if (!existingRole) {
+  if (!existingRole && !targetIsSuperAdmin) {
     db.prepare(
       `INSERT INTO rbac_user_roles (id, user_id, role_id, scope_type, tenant_id, granted_by, granted_at)
        VALUES (?, ?, ?, 'global', ?, ?, ?)`

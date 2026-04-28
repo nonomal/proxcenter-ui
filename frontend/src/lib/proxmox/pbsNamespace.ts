@@ -111,6 +111,47 @@ export async function setDatastoreAuditAcl(
   })
 }
 
+/**
+ * Wait until a freshly-minted sub-token + ACL combination is visible from the
+ * sub-token's own POV. Polls `/admin/datastore/{store}/status` — the same call
+ * PVE's `pbs:` storage probe ends up making. Empirically PBS takes ~3-5s to
+ * propagate ACLs to where this endpoint succeeds; without this wait, PVE's
+ * probe surfaces a misleading "Cannot find datastore" 500.
+ */
+export async function waitForPbsTokenReady(
+  rootConn: PbsClientOptions,
+  datastore: string,
+  tokenId: string,
+  secret: string,
+  opts: { timeoutMs?: number; intervalMs?: number } = {},
+): Promise<void> {
+  const timeoutMs = opts.timeoutMs ?? 15_000
+  const intervalMs = opts.intervalMs ?? 250
+  const subConn: PbsClientOptions = {
+    baseUrl: rootConn.baseUrl,
+    apiToken: `${tokenId}:${secret}`,
+    insecureDev: rootConn.insecureDev,
+  }
+  const deadline = Date.now() + timeoutMs
+  let lastErr: any = null
+  let attempts = 0
+  const t0 = Date.now()
+  while (Date.now() < deadline) {
+    attempts++
+    try {
+      await pbsFetch(subConn, `/admin/datastore/${encodeURIComponent(datastore)}/status`)
+      console.log(`[pbs-ready] sub-token ${tokenId} ready after ${Date.now() - t0}ms (${attempts} polls)`)
+      return
+    } catch (e) {
+      lastErr = e
+      await new Promise(r => setTimeout(r, intervalMs))
+    }
+  }
+  throw new Error(
+    `PBS sub-token ${tokenId} not ready on /admin/datastore/${datastore}/status after ${timeoutMs}ms (${attempts} polls): ${lastErr?.message ?? 'unknown'}`,
+  )
+}
+
 export async function deleteSubToken(
   conn: PbsClientOptions,
   user: string,

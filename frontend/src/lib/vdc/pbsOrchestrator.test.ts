@@ -14,6 +14,7 @@ vi.mock('@/lib/proxmox/pbsNamespace', () => ({
   setNamespaceAcl: vi.fn(),
   setDatastoreAuditAcl: vi.fn(),
   deleteSubToken: vi.fn(),
+  waitForPbsTokenReady: vi.fn(async () => undefined),
 }))
 vi.mock('@/lib/proxmox/pvePbsStorage', () => ({
   createPbsStorage: vi.fn(),
