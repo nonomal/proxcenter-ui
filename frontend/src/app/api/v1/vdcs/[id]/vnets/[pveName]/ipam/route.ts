@@ -1,0 +1,145 @@
+import { NextResponse } from "next/server"
+
+import { getCurrentTenantId } from "@/lib/tenant"
+import { checkPermission } from "@/lib/rbac"
+import { getDb } from "@/lib/db/sqlite"
+import { prisma } from "@/lib/db/prisma"
+import { listAllocationsForSubnet } from "@/lib/vdc/ipam"
+import { parseCidr } from "@/lib/vdc/network"
+import { getConnectionById } from "@/lib/connections/getConnection"
+import { pveFetch } from "@/lib/proxmox/client"
+
+export const runtime = "nodejs"
+
+// GET /api/v1/vdcs/{id}/vnets/{displayName}/ipam
+//
+// Lists every IPAM allocation tied to the VNet's subnet, plus a small
+// usage summary so the panel can show "X / Y allocated" without a second
+// round-trip. Tenant-scoped (the JOIN on tenant_id keeps tenants from
+// peeking at other vDCs).
+type RouteContext = { params: Promise<{ id: string; pveName: string }> | { id: string; pveName: string } }
+
+export async function GET(_req: Request, ctx: RouteContext) {
+  try {
+    const params = await Promise.resolve(ctx.params)
+    const vdcId = (params as any)?.id
+    const displayName = (params as any)?.pveName
+    if (!vdcId || !displayName) {
+      return NextResponse.json({ error: "Missing params" }, { status: 400 })
+    }
+
+    const denied = await checkPermission("sdn.vnet.view")
+    if (denied) return denied
+
+    const tenantId = await getCurrentTenantId()
+    const db = getDb()
+
+    // Resolve the VNet → subnet, scoped to the caller's tenant. We pull
+    // both rows in one query so we can fail-fast on a missing/foreign vDC.
+    const row = db
+      .prepare(
+        `SELECT s.id AS subnet_id, s.cidr, s.gateway, s.dhcp_range_start, s.dhcp_range_end,
+                d.connection_id
+         FROM vdc_vnets v
+         JOIN vdcs       d ON d.id = v.vdc_id
+         JOIN vdc_subnets s ON s.vnet_id = v.id
+         WHERE v.vdc_id = ? AND v.display_name = ? AND d.tenant_id = ?
+         LIMIT 1`,
+      )
+      .get(vdcId, displayName, tenantId) as
+        | { subnet_id: string; cidr: string; gateway: string; dhcp_range_start: string | null; dhcp_range_end: string | null; connection_id: string }
+        | undefined
+    if (!row) return NextResponse.json({ error: "VNet not found" }, { status: 404 })
+
+    const allocations = listAllocationsForSubnet(row.subnet_id)
+
+    // Enrich each allocation with the live PVE state (name, node, status,
+    // type). This lets the frontend show an icon + status pastille without
+    // a second round-trip per row. /cluster/resources is the canonical
+    // place to get all of those at once. If the lookup fails (provider
+    // connection unreachable, RBAC, transient PVE error) we degrade
+    // gracefully and return the IPAM rows alone — the IP/MAC are still
+    // useful even without the live state.
+    const vmIndex = new Map<number, { name: string; node: string; status: string; type: string }>()
+    try {
+      const connMeta = await prisma.connection.findUnique({
+        where: { id: row.connection_id },
+        select: { tenantId: true },
+      })
+      if (!connMeta) {
+        console.warn(`[ipam-list] connection ${row.connection_id} not found via prisma`)
+      } else {
+        const conn = await getConnectionById(row.connection_id, connMeta.tenantId)
+        const resources = await pveFetch<any[]>(conn, '/cluster/resources?type=vm')
+        for (const r of resources ?? []) {
+          // PVE returns vmid as a number on /cluster/resources, but be
+          // defensive: some older versions / proxies stringify it. Always
+          // normalise to Number so the Map lookup matches the IPAM row's
+          // numeric vmid.
+          const vmidNum = Number(r?.vmid)
+          if (!Number.isFinite(vmidNum)) continue
+          vmIndex.set(vmidNum, {
+            name: String(r.name ?? `vm-${vmidNum}`),
+            node: String(r.node ?? ''),
+            status: String(r.status ?? 'unknown'),
+            type: String(r.type ?? 'qemu'),
+          })
+        }
+        console.log(`[ipam-list] enriched ${vmIndex.size} VMs from /cluster/resources for connection ${row.connection_id}`)
+      }
+    } catch (err) {
+      console.warn(`[ipam-list] /cluster/resources lookup failed: ${(err as any)?.message ?? err}`)
+    }
+
+    // Compute usable IPs in the subnet's allocation range. Mirrors the
+    // logic in lib/vdc/ipam.ts → buildRangeBounds, kept inline here to
+    // avoid exporting a private helper just for this read-only summary.
+    const parsed = parseCidr(row.cidr)
+    let usable = 0
+    if (parsed) {
+      let low = parsed.firstUsableInt
+      let high = parsed.lastUsableInt
+      if (row.dhcp_range_start && row.dhcp_range_end) {
+        // We rely on parseCidr's int form: parsing host strings to compare
+        // ranges would duplicate ipToInt logic; reusing the helper:
+        const startInt = parseCidr(`${row.dhcp_range_start}/32`)?.networkInt
+        const endInt = parseCidr(`${row.dhcp_range_end}/32`)?.networkInt
+        if (typeof startInt === 'number' && typeof endInt === 'number' && startInt <= endInt) {
+          low = Math.max(low, startInt)
+          high = Math.min(high, endInt)
+        }
+      }
+      // Subtract the gateway when it falls inside the range.
+      const gatewayInt = parseCidr(`${row.gateway}/32`)?.networkInt
+      const gatewayInRange = typeof gatewayInt === 'number' && gatewayInt >= low && gatewayInt <= high
+      usable = Math.max(0, high - low + 1 - (gatewayInRange ? 1 : 0))
+    }
+
+    return NextResponse.json({
+      data: {
+        connectionId: row.connection_id,
+        subnetId: row.subnet_id,
+        cidr: row.cidr,
+        gateway: row.gateway,
+        rangeStart: row.dhcp_range_start,
+        rangeEnd: row.dhcp_range_end,
+        usable,
+        used: allocations.length,
+        allocations: allocations.map((a) => {
+          const vm = a.vmid != null ? vmIndex.get(a.vmid) ?? null : null
+          return {
+            id: a.id,
+            ip: a.ip,
+            mac: a.mac,
+            vmid: a.vmid,
+            hostname: a.hostname,
+            createdAt: a.createdAt,
+            vm,
+          }
+        }),
+      },
+    })
+  } catch (e: any) {
+    return NextResponse.json({ error: e?.message || String(e) }, { status: 500 })
+  }
+}

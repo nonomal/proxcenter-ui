@@ -11,6 +11,10 @@ import { pveFetch } from "@/lib/proxmox/client"
 import { getImageBySlug, customImageToCloudImage } from "@/lib/templates/cloudImages"
 import { isFileBasedStorage, supportsVmDisks } from "@/lib/proxmox/storage"
 import { resolveVdcForTenant } from "@/lib/vdc/quota"
+import { resolveSubnetForBridge } from "@/lib/vdc/vnets"
+import { generatePveMacAddress } from "@/lib/vdc/sdn"
+import { allocateIp, releaseIp, IpamExhaustedError } from "@/lib/vdc/ipam"
+import { parseCidr } from "@/lib/vdc/network"
 
 export const runtime = "nodejs"
 
@@ -128,6 +132,10 @@ export async function POST(req: Request) {
 
     // Run the deployment pipeline asynchronously after the response is sent
     after(async () => {
+      // Hoisted so the catch below can release the IPAM reservation if
+      // the pipeline throws after we've claimed an IP. `let` inside the
+      // try wouldn't be visible from the sibling catch block.
+      let ipamAllocation: { subnetId: string; ip: string } | null = null
       try {
         // ─────────── ISO branch ───────────────────────────────────────
         // Stops at the "creating" step (no cloud-init, no start). The VM
@@ -291,6 +299,54 @@ export async function POST(req: Request) {
 
         const hw = body.hardware
 
+        // IPAM auto-allocation via our own SQLite-backed IPAM. The deploy
+        // wizard restricts the bridge picker to SDN VNets, so when the
+        // chosen VNet has an IPAM-enabled subnet we mint a stable MAC,
+        // claim an IP from the IPAM, and inject the matching ipconfig0 —
+        // without this the VM hangs at systemd-networkd-wait-online
+        // because PVE-native DHCP isn't available on VXLAN.
+        //
+        // Lookup uses connectionId+bridge (no tenant filter) so a
+        // super-admin (default tenant) deploying into a tenant-owned
+        // vDC still hits the IPAM path. Authorisation was already done
+        // upstream by resolveVdcForTenant + RBAC.
+        let netSpec = `${hw.networkModel},bridge=${hw.networkBridge}${hw.vlanTag ? `,tag=${hw.vlanTag}` : ""}`
+        let ipamIpconfig0: string | null = null
+        let ipamDns: string[] = []
+
+        const subnet = resolveSubnetForBridge(body.connectionId, hw.networkBridge)
+        if (subnet) {
+          const mac = generatePveMacAddress()
+          // Pin the MAC into the model token so PVE doesn't roll its own
+          // and our IPAM record stays in sync across rebuilds.
+          netSpec = `${hw.networkModel}=${mac},bridge=${hw.networkBridge}${hw.vlanTag ? `,tag=${hw.vlanTag}` : ""}`
+          try {
+            const allocated = allocateIp({
+              vdcId: subnet.vdcId,
+              subnetId: subnet.subnetId,
+              vnetId: subnet.vnetId,
+              connectionId: body.connectionId,
+              mac,
+              vmid: body.vmid,
+              hostname: body.vmName || `vm-${body.vmid}`,
+            })
+            ipamAllocation = { subnetId: subnet.subnetId, ip: allocated.ip }
+            const cidrInfo = parseCidr(subnet.cidr)
+            const prefix = cidrInfo?.prefix
+            ipamIpconfig0 = [
+              `ip=${allocated.ip}${prefix !== undefined ? `/${prefix}` : ''}`,
+              `gw=${subnet.gateway}`,
+            ].join(',')
+            ipamDns = subnet.dnsServers
+          } catch (err: any) {
+            const msg = err instanceof IpamExhaustedError
+              ? `Subnet ${subnet.cidr} is full — no free IP available`
+              : `IPAM allocation failed: ${err?.message ?? String(err)}`
+            await updateDeployment(deployment.id, "failed", { errorMessage: msg })
+            throw err
+          }
+        }
+
         const createParams = new URLSearchParams({
           vmid: String(body.vmid),
           name: body.vmName || `${image.slug}-${body.vmid}`,
@@ -301,7 +357,7 @@ export async function POST(req: Request) {
           cpu: hw.cpu,
           scsihw: hw.scsihw,
           scsi0: `${body.storage}:0,import-from=${importVolume}`,
-          net0: `${hw.networkModel},bridge=${hw.networkBridge}${hw.vlanTag ? `,tag=${hw.vlanTag}` : ""}`,
+          net0: netSpec,
           ide2: `${body.storage}:cloudinit`,
           boot: "order=scsi0",
           serial0: "socket",
@@ -339,12 +395,23 @@ export async function POST(req: Request) {
           if (ci.ciuser) ciParts.push(`ciuser=${encodeURIComponent(ci.ciuser)}`)
           if (ci.cipassword) ciParts.push(`cipassword=${encodeURIComponent(ci.cipassword)}`)
           if (ci.sshKeys) ciParts.push(`sshkeys=${encodeURIComponent(encodeURIComponent(ci.sshKeys))}`)
-          if (ci.ipconfig0) {
+          // Resolve ipconfig0: prefer the IPAM-allocated static config when
+          // we have one, unless the user explicitly typed a non-default
+          // value (anything other than the wizard's `ip=dhcp` default).
+          // Without this, IPAM-managed VNets (no DHCP server) leave the VM
+          // hanging at systemd-networkd-wait-online.
+          const userIpconfig0 = (ci.ipconfig0 || '').trim()
+          const userPickedDefault = userIpconfig0 === '' || userIpconfig0 === 'ip=dhcp'
+          const effectiveIpconfig0 = ipamIpconfig0 && userPickedDefault ? ipamIpconfig0 : ci.ipconfig0
+          if (effectiveIpconfig0) {
             // Sanitize: trim spaces around commas (PVE rejects " ip" vs "ip")
-            const sanitized = ci.ipconfig0.split(',').map((s: string) => s.trim()).filter(Boolean).join(',')
+            const sanitized = effectiveIpconfig0.split(',').map((s: string) => s.trim()).filter(Boolean).join(',')
             ciParts.push(`ipconfig0=${encodeURIComponent(sanitized)}`)
           }
-          if (ci.nameserver) ciParts.push(`nameserver=${encodeURIComponent(ci.nameserver)}`)
+          // Same logic for DNS — let the subnet's resolvers in unless the
+          // user already pointed at a specific server.
+          const effectiveNameserver = ci.nameserver || (ipamDns.length > 0 ? ipamDns.join(' ') : '')
+          if (effectiveNameserver) ciParts.push(`nameserver=${encodeURIComponent(effectiveNameserver)}`)
           if (ci.searchdomain) ciParts.push(`searchdomain=${encodeURIComponent(ci.searchdomain)}`)
 
           if (ciParts.length > 0) {
@@ -397,6 +464,17 @@ export async function POST(req: Request) {
           status: "success",
         })
       } catch (err: any) {
+        // Roll back the IPAM allocation when the deploy pipeline fails after
+        // we've claimed an IP — otherwise it sits reserved against a VM
+        // that never finished creating (or got cleaned up by PVE on error).
+        if (ipamAllocation) {
+          try {
+            releaseIp({
+              subnetId: ipamAllocation.subnetId,
+              ip: ipamAllocation.ip,
+            })
+          } catch { /* tolerate */ }
+        }
         await updateDeployment(deployment.id, "failed", { error: err?.message || String(err) })
       }
     })

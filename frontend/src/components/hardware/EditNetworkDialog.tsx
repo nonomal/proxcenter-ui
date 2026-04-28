@@ -21,6 +21,7 @@ import {
   Alert,
   CircularProgress,
   Divider,
+  Tooltip,
 } from '@mui/material'
 
 import AppDialogTitle from '@/components/ui/AppDialogTitle'
@@ -55,9 +56,11 @@ export function EditNetworkDialog({ open, onClose, onSave, onDelete, connId, nod
   const [showAdvanced, setShowAdvanced] = useState(false)
 
   // Bridges disponibles
-  // {iface,label}: iface is the actual PVE bridge name (hashed for tenant
-  // VNets); label is the user-friendly display name we show in the dropdown.
-  const [bridges, setBridges] = useState<Array<{ iface: string; label: string }>>([])
+  // {iface,label,kind}: iface is the actual PVE bridge name (hashed for tenant
+  // VNets); label is the user-friendly display name; kind tells us whether
+  // this is a SDN VNet, a shared bridge, or a raw physical bridge — used to
+  // gate the per-NIC VLAN tag field which PVE rejects on VXLAN VNets.
+  const [bridges, setBridges] = useState<Array<{ iface: string; label: string; kind: 'vnet' | 'shared' | 'bridge' }>>([])
 
   // Network config
   const [bridge, setBridge] = useState('vmbr0')
@@ -89,14 +92,25 @@ export function EditNetworkDialog({ open, onClose, onSave, onDelete, connId, nod
               : c.kind === 'shared'
                 ? (c.label ?? c.name)
                 : c.name,
+            kind: (c.kind === 'vnet' || c.kind === 'shared' ? c.kind : 'bridge') as 'vnet' | 'shared' | 'bridge',
           }))
 
-          setBridges(bridgeList.length > 0 ? bridgeList : [{ iface: 'vmbr0', label: 'vmbr0' }, { iface: 'vmbr1', label: 'vmbr1' }])
+          const fallback = [
+            { iface: 'vmbr0', label: 'vmbr0', kind: 'bridge' as const },
+            { iface: 'vmbr1', label: 'vmbr1', kind: 'bridge' as const },
+          ]
+          setBridges(bridgeList.length > 0 ? bridgeList : fallback)
         } else {
-          setBridges([{ iface: 'vmbr0', label: 'vmbr0' }, { iface: 'vmbr1', label: 'vmbr1' }])
+          setBridges([
+            { iface: 'vmbr0', label: 'vmbr0', kind: 'bridge' },
+            { iface: 'vmbr1', label: 'vmbr1', kind: 'bridge' },
+          ])
         }
       } catch (e) {
-        setBridges([{ iface: 'vmbr0', label: 'vmbr0' }, { iface: 'vmbr1', label: 'vmbr1' }])
+        setBridges([
+          { iface: 'vmbr0', label: 'vmbr0', kind: 'bridge' },
+          { iface: 'vmbr1', label: 'vmbr1', kind: 'bridge' },
+        ])
       }
     }
 
@@ -125,10 +139,16 @@ export function EditNetworkDialog({ open, onClose, onSave, onDelete, connId, nod
     setError(null)
 
     try {
+      // SDN VXLAN VNets reject per-NIC VLAN tags — drop the tag client-side
+      // even if the field somehow holds a stale value from a prior bridge
+      // selection, so the user doesn't hit a 400 from PVE.
+      const selectedBridge = bridges.find(b => b.iface === bridge)
+      const isSdnVnet = selectedBridge?.kind === 'vnet'
+
       let netConfig = `${model},bridge=${bridge}`
 
       if (macAddress) netConfig += `,macaddr=${macAddress}`
-      if (vlanTag) netConfig += `,tag=${vlanTag}`
+      if (!isSdnVnet && vlanTag) netConfig += `,tag=${vlanTag}`
       if (firewall) netConfig += ',firewall=1'
       if (disconnect) netConfig += ',link_down=1'
       if (rateLimit) netConfig += `,rate=${rateLimit}`
@@ -182,7 +202,7 @@ export function EditNetworkDialog({ open, onClose, onSave, onDelete, connId, nod
                   <MenuItem key={b.iface} value={b.iface}>
                     {b.label}
                     {b.label !== b.iface && (
-                      <span style={{ opacity: 0.45, marginLeft: 8, fontSize: '0.75em', fontFamily: 'JetBrains Mono, monospace' }}>{b.iface}</span>
+                      <span style={{ opacity: 0.45, marginLeft: 8, fontSize: '0.75em' }}>{b.iface}</span>
                     )}
                   </MenuItem>
                 ))}
@@ -201,22 +221,48 @@ export function EditNetworkDialog({ open, onClose, onSave, onDelete, connId, nod
           </Box>
 
           {/* VLAN & MAC */}
-          <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 2 }}>
-            <TextField
-              size="small"
-              label="VLAN Tag"
-              placeholder="no VLAN"
-              value={vlanTag}
-              onChange={(e) => setVlanTag(e.target.value)}
-              type="number"
-            />
-            <TextField
-              size="small"
-              label="MAC address"
-              value={macAddress}
-              onChange={(e) => setMacAddress(e.target.value)}
-            />
-          </Box>
+          {(() => {
+            const selectedBridge = bridges.find(b => b.iface === bridge)
+            const isSdnVnet = selectedBridge?.kind === 'vnet'
+            // PVE rejects per-NIC VLAN tags on VXLAN SDN VNets unless the
+            // VNet has VLAN aware enabled (which is mutually exclusive with
+            // an attached subnet, so almost never the case in our flow).
+            // Surface this constraint inline instead of letting the user hit
+            // a 400 from PVE.
+            const tagField = (
+              <TextField
+                size="small"
+                label="VLAN Tag"
+                placeholder={isSdnVnet ? '— SDN VNet, tag ignored' : 'no VLAN'}
+                value={isSdnVnet ? '' : vlanTag}
+                onChange={(e) => setVlanTag(e.target.value)}
+                type="number"
+                disabled={isSdnVnet}
+                helperText={isSdnVnet ? 'Use a separate VNet to segment traffic' : undefined}
+              />
+            )
+            return (
+              <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 2 }}>
+                {isSdnVnet ? (
+                  <Tooltip
+                    arrow
+                    placement="top"
+                    title="VLAN tagging on a NIC isn't supported on VXLAN SDN VNets — each VNet is already its own isolated L2 domain (VNI). To split traffic, create a second VNet instead of tagging a NIC here."
+                  >
+                    <span>{tagField}</span>
+                  </Tooltip>
+                ) : (
+                  tagField
+                )}
+                <TextField
+                  size="small"
+                  label="MAC address"
+                  value={macAddress}
+                  onChange={(e) => setMacAddress(e.target.value)}
+                />
+              </Box>
+            )
+          })()}
 
           {/* Checkboxes */}
           <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 1 }}>

@@ -472,25 +472,41 @@ function ConnectionsTab() {
     }
   }
 
-  const deleteConnection = async (id, type) => {
+  // Connection delete confirmation. Native window.confirm() was leaking
+  // through here — see feedback_modals_mui rule. State holds the pending
+  // deletion target until the user clicks Delete or Cancel in the MUI
+  // dialog rendered below.
+  const [deleteConnectionDialog, setDeleteConnectionDialog] = useState(null)
+  const [deletingConnection, setDeletingConnection] = useState(false)
+
+  const deleteConnection = (id, type) => {
     const typeName = type === 'pbs' ? 'PBS' : type === 'vmware' ? 'VMware ESXi' : type === 'xcpng' ? 'XCP-ng' : type === 'nutanix' ? 'Nutanix' : type === 'hyperv' ? 'Hyper-V' : 'PVE'
-    const ok = window.confirm(t('settings.deleteConnectionConfirm', { type: typeName }))
+    setDeleteConnectionDialog({ id, type, typeName })
+  }
 
-    if (!ok) return
-    await fetchJson(`/api/v1/connections/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  const confirmDeleteConnection = async () => {
+    if (!deleteConnectionDialog) return
+    const { id, type } = deleteConnectionDialog
+    setDeletingConnection(true)
+    try {
+      await fetchJson(`/api/v1/connections/${encodeURIComponent(id)}`, { method: 'DELETE' })
 
-    if (type === 'pve') {
-      await loadPveConnections()
-    } else if (type === 'pbs') {
-      await loadPbsConnections()
-    } else if (type === 'vmware') {
-      await loadVmwareConnections()
-    } else if (type === 'xcpng') {
-      await loadXcpngConnections()
-    } else if (type === 'nutanix') {
-      await loadNutanixConnections()
-    } else if (type === 'hyperv') {
-      await loadHypervConnections()
+      if (type === 'pve') {
+        await loadPveConnections()
+      } else if (type === 'pbs') {
+        await loadPbsConnections()
+      } else if (type === 'vmware') {
+        await loadVmwareConnections()
+      } else if (type === 'xcpng') {
+        await loadXcpngConnections()
+      } else if (type === 'nutanix') {
+        await loadNutanixConnections()
+      } else if (type === 'hyperv') {
+        await loadHypervConnections()
+      }
+      setDeleteConnectionDialog(null)
+    } finally {
+      setDeletingConnection(false)
     }
   }
 
@@ -1444,6 +1460,39 @@ function ConnectionsTab() {
         initialData={editingConn}
         mode={editingConn ? 'edit' : 'create'}
       />
+
+      {/* Dialog confirmation suppression connexion — remplace l'ancien
+          window.confirm. Le titre i18n existant t('settings.deleteConnectionConfirm')
+          est interpolé avec le typeName (PVE / PBS / VMware / …). */}
+      <Dialog
+        open={!!deleteConnectionDialog}
+        onClose={() => !deletingConnection && setDeleteConnectionDialog(null)}
+        maxWidth='xs'
+        fullWidth
+      >
+        <DialogTitle sx={{ display: 'flex', alignItems: 'center', gap: 1, color: 'error.main' }}>
+          <i className='ri-delete-bin-line' style={{ fontSize: 20 }} />
+          {t('settings.deleteConnectionConfirm', { type: deleteConnectionDialog?.typeName || '' })}
+        </DialogTitle>
+        <DialogContent>
+          <Alert severity='warning' sx={{ mt: 1 }}>
+            {t('common.deleteConfirmation')}
+          </Alert>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setDeleteConnectionDialog(null)} disabled={deletingConnection}>
+            {t('common.cancel')}
+          </Button>
+          <Button
+            variant='contained'
+            color='error'
+            onClick={confirmDeleteConnection}
+            disabled={deletingConnection}
+          >
+            {deletingConnection ? t('common.loading') : t('common.delete')}
+          </Button>
+        </DialogActions>
+      </Dialog>
     </>
   )
 }

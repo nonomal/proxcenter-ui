@@ -1934,7 +1934,7 @@ return
                                   <MenuItem key={b.iface} value={b.iface}>
                                     {primary}{tag ? ` (${tag})` : ''}
                                     {showHash && (
-                                      <span style={{ opacity: 0.45, marginLeft: 6, fontSize: '0.75em', fontFamily: 'JetBrains Mono, monospace' }}>{b.iface}</span>
+                                      <span style={{ opacity: 0.45, marginLeft: 6, fontSize: '0.75em' }}>{b.iface}</span>
                                     )}
                                     {!showHash && b.label && b.label !== b.iface ? ` — ${b.label}` : ''}
                                     {b.vdc && b.vdc !== '*' ? ` — ${b.vdc}` : ''}

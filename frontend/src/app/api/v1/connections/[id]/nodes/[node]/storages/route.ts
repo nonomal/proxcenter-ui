@@ -46,14 +46,32 @@ return contents.includes(contentFilter)
     }
 
     // Tenant filtering: restrict to storages assigned to the tenant's vDC
-    // AND drop shared storages (ceph/nfs/cifs/…) to avoid cross-tenant leaks
-    // on common backends. Super admin (scope === null) sees everything.
+    // AND drop shared storages (ceph/nfs/cifs/…) to avoid cross-tenant
+    // leaks on common backends. Super admin (scope === null) sees
+    // everything.
+    //
+    // Exception 1 — PVE-PBS storages (type === 'pbs'): they are flagged
+    // shared (network-attached) but isolation between tenants happens at
+    // the namespace level (vdc_pbs_namespaces binding), enforced when
+    // listing snapshots / files. Hiding them here breaks the VM backup
+    // tab — the "New backup" dropdown filtered on content=backup would
+    // never include the PBS target the tenant's vDC is bound to.
+    //
+    // Exception 2 — when the caller asks for content=backup, tenants see
+    // ONLY PBS targets. Local PVE storages with content=backup (vzdump
+    // tarballs on `local`, NFS-backup, …) are deliberately hidden so a
+    // tenant can't dump a backup onto a non-isolated provider storage —
+    // PBS namespace isolation is the only supported tenant backup path.
     const tenantId = await getCurrentTenantId()
     const scope = getVdcScope(tenantId)
     if (scope && storages) {
       const allowed = scope.storagesByConnection.get(id)
       storages = allowed
-        ? storages.filter((s: any) => allowed.has(s.storage) && s.shared !== 1)
+        ? storages.filter((s: any) => {
+            if (!allowed.has(s.storage)) return false
+            if (contentFilter === 'backup') return s.type === 'pbs'
+            return s.shared !== 1 || s.type === 'pbs'
+          })
         : []
     }
 

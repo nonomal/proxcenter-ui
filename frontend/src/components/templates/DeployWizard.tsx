@@ -16,10 +16,11 @@ import {
   FormControl,
   FormControlLabel,
   IconButton,
+  InputAdornment,
   InputLabel,
-  ListSubheader,
   MenuItem,
   Select,
+  Slider,
   Stack,
   Step,
   StepLabel,
@@ -117,7 +118,10 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint, r
   const [scsihw, setScsihw] = useState('virtio-scsi-single')
   const [networkModel, setNetworkModel] = useState('virtio')
   const [networkBridge, setNetworkBridge] = useState('vmbr0')
-  const [vlanTag, setVlanTag] = useState<number | ''>('')
+  // VLAN tag is gone from the wizard: deployments here always land on a
+  // SDN VNet (see the bridge picker below) which carries its own VNI, so
+  // PVE rejects per-NIC tags. The blueprint loader and deploy payload
+  // both ignore vlanTag for this reason.
   const [cpu, setCpu] = useState('host')
   // ISO-mode only: BIOS firmware + OS type override. Cloud-images keep
   // ostype from the catalog and seabios silently; ISO installs need an
@@ -130,18 +134,39 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint, r
   const [vdcUsage, setVdcUsage] = useState<{ usedVcpus: number; usedRamMb: number; usedStorageMb: number; usedVms: number } | null>(null)
   const [quotaBlocked, setQuotaBlocked] = useState(false)
 
+  // The picker also keeps the VNet's display name so we can render the
+  // tenant-friendly alias ("public-net") next to PVE's hashed VNet ID
+  // (e.g. "v7f83c9"). The bridge value sent to PVE stays the iface
+  // (PVE only knows about pve_name); the alias is purely cosmetic.
   // Bridges + VNets for the network picker. Mirrors the shape used by
   // CreateVmDialog so we hit the same `/network-choices` endpoint.
   // type values: 'vnet' (tenant SDN), 'shared' (provider uplink), or a
   // PVE bridge type (e.g. 'bridge', 'OVSBridge').
-  const [bridges, setBridges] = useState<Array<{ iface: string; type: string; label?: string | null; vdc?: string | null }>>([])
+  // bridges carry their VNet's subnet config (CIDR, gateway, DNS) when
+  // available, so the CloudInit step can pre-fill the IP/gateway/DNS fields
+  // straight from IPAM context — the user only types an override IP if
+  // they want a specific one, otherwise the backend auto-allocates.
+  type BridgeChoice = {
+    iface: string
+    type: string
+    label?: string | null
+    vdc?: string | null
+    displayName?: string | null
+    subnet?: { cidr: string; gateway: string; dnsServers: string[]; subnetId: string } | null
+  }
+  const [bridges, setBridges] = useState<BridgeChoice[]>([])
   const [agent, setAgent] = useState(true)
 
-  // Cloud-init step
+  // Cloud-init step.
+  // - ipOverride: optional IP the user wants pinned (else IPAM auto-allocates).
+  //   Empty string is the canonical "auto" state.
+  // - We don't carry an `ipconfig0` raw string anymore — the wizard composes
+  //   it at submit time from (subnet.gateway + ipOverride or "" → backend
+  //   IPAM injects the static config server-side).
   const [ciuser, setCiuser] = useState('')
   const [cipassword, setCipassword] = useState('')
   const [sshKeys, setSshKeys] = useState('')
-  const [ipconfig0, setIpconfig0] = useState('ip=dhcp')
+  const [ipOverride, setIpOverride] = useState('')
   const [nameserver, setNameserver] = useState('')
   const [searchdomain, setSearchdomain] = useState('')
 
@@ -220,7 +245,6 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint, r
         setScsihw(hw.scsihw || 'virtio-scsi-single')
         setNetworkModel(hw.networkModel || 'virtio')
         setNetworkBridge(hw.networkBridge || 'vmbr0')
-        setVlanTag(hw.vlanTag || '')
         setCpu(hw.cpu || 'host')
         setAgent(hw.agent !== false)
       } catch { /* ignore */ }
@@ -235,7 +259,10 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint, r
           setCiuser(ci.ciuser || '')
           setCipassword(ci.cipassword || '')
           setSshKeys(ci.sshKeys || '')
-          setIpconfig0(ci.ipconfig0 || 'ip=dhcp')
+          // Try to extract a manual IP from a saved blueprint's ipconfig0;
+          // anything else (dhcp, manual, empty) → leave empty so IPAM wins.
+          const m = String(ci.ipconfig0 || '').match(/(?:^|,)\s*ip=([0-9.]+)(?:\/\d+)?/)
+          setIpOverride(m ? m[1] : '')
           setNameserver(ci.nameserver || '')
           setSearchdomain(ci.searchdomain || '')
         }
@@ -362,15 +389,24 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint, r
       .then(r => r.json())
       .then(res => {
         const choices = Array.isArray(res?.data) ? res.data : []
-        const list = choices.map((c: any) => ({
+        const list: BridgeChoice[] = choices.map((c: any) => ({
           iface: c.name,
           type: c.kind === 'vnet' ? 'vnet' : c.kind === 'shared' ? 'shared' : (c.type || 'bridge'),
           label: c.label ?? null,
           vdc: c.vdc ?? null,
+          displayName: c.displayName ?? null,
+          subnet: c.subnet ?? null,
         }))
         setBridges(list)
-        if (list.length > 0 && !list.some(b => b.iface === networkBridge)) {
-          setNetworkBridge(list[0].iface)
+        // Auto-pick the first VNet so the displayed picker value and
+        // the deploy payload stay in sync — the wizard now restricts
+        // the bridge to SDN VNets only, so non-VNet pre-fills (e.g.
+        // 'vmbr0' from initial state, or a stale blueprint value)
+        // would otherwise leave networkBridge pointing at something the
+        // dropdown no longer surfaces.
+        const vnets = list.filter((b: { type: string }) => b.type === 'vnet')
+        if (vnets.length > 0 && !vnets.some((b: { iface: string }) => b.iface === networkBridge)) {
+          setNetworkBridge(vnets[0].iface)
         }
       })
       .catch(() => setBridges([]))
@@ -457,7 +493,11 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint, r
           scsihw,
           networkModel,
           networkBridge,
-          vlanTag: vlanTag || null,
+          // Hard-null: the bridge picker only exposes SDN VNets which
+          // already segment traffic via their own VNI. PVE rejects per-NIC
+          // VLAN tags on VXLAN VNets, and the form's VLAN field is locked
+          // to match — so we drop any stale value loaded from a blueprint.
+          vlanTag: null,
           // ISO mode lets the user override ostype (Windows install media
           // pre-selects win11) — fall back to the catalog ostype otherwise.
           ostype: isIsoMode ? (ostypeOverride || image.ostype) : image.ostype,
@@ -468,14 +508,29 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint, r
         // ISO deployments don't run cloud-init: omit the block entirely so
         // the backend skips the configure step. Cloud-image deployments
         // keep their existing cloud-init payload.
-        cloudInit: isIsoMode ? null : {
-          ciuser: ciuser || undefined,
-          cipassword: cipassword || undefined,
-          sshKeys: sshKeys || undefined,
-          ipconfig0,
-          nameserver: nameserver || undefined,
-          searchdomain: searchdomain || undefined,
-        },
+        cloudInit: isIsoMode ? null : (() => {
+          // Build ipconfig0 from the structured fields:
+          //   - ipOverride empty → send empty so the backend's IPAM hook
+          //     auto-allocates and injects the static config server-side
+          //   - ipOverride set   → compose `ip=<ip>/<prefix>,gw=<gateway>`
+          //     using the bridge's subnet (gateway is read-only in the UI)
+          const selectedBridge = bridges.find(b => b.iface === networkBridge)
+          const subnet = selectedBridge?.subnet ?? null
+          let ipconfig0 = ''
+          if (ipOverride && subnet) {
+            const prefixMatch = subnet.cidr.match(/\/(\d+)$/)
+            const prefix = prefixMatch ? prefixMatch[1] : '24'
+            ipconfig0 = `ip=${ipOverride}/${prefix},gw=${subnet.gateway}`
+          }
+          return {
+            ciuser: ciuser || undefined,
+            cipassword: cipassword || undefined,
+            sshKeys: sshKeys || undefined,
+            ipconfig0,
+            nameserver: nameserver || undefined,
+            searchdomain: searchdomain || undefined,
+          }
+        })(),
         saveAsBlueprint,
         blueprintName: saveAsBlueprint ? blueprintName : undefined,
       }
@@ -512,9 +567,10 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint, r
     }
   }, [
     image, connectionId, node, storage, isoStorage, vmid, vmName, cores, sockets, memory,
-    diskSize, scsihw, networkModel, networkBridge, vlanTag, cpu, agent,
+    diskSize, scsihw, networkModel, networkBridge, cpu, agent,
     bios, ostypeOverride, isIsoMode,
-    ciuser, cipassword, sshKeys, ipconfig0, nameserver, searchdomain,
+    ciuser, cipassword, sshKeys, ipOverride, nameserver, searchdomain,
+    bridges,
     saveAsBlueprint, blueprintName, prefillBlueprint,
   ])
 
@@ -753,110 +809,259 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint, r
           }}
         />
       )}
-      <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 2 }}>
-      {/* Cores + Memory only — sockets / SCSI controller / CPU type are
-          implementation details that the deploy wizard hides for clarity.
-          Defaults stay sensible (1 socket, virtio-scsi-single, host CPU)
-          and the provider can still tweak them via the bare-metal
-          CreateVmDialog if a specific need arises. */}
-      <TextField
-        size="small"
-        label={t('templates.deploy.hardware.cores')}
-        type="number"
-        value={cores}
-        onChange={e => setCores(Number.parseInt(e.target.value) || 1)}
-        slotProps={{ htmlInput: { min: 1, max: 128 } }}
-      />
-      <TextField
-        size="small"
-        label={t('templates.deploy.hardware.memory')}
-        type="number"
-        value={memory}
-        onChange={e => setMemory(Number.parseInt(e.target.value) || 512)}
-        helperText="MB"
-        slotProps={{ htmlInput: { min: 128, step: 256 } }}
-      />
-      <TextField
-        size="small"
-        label={t('templates.deploy.hardware.diskSize')}
-        value={diskSize}
-        onChange={e => setDiskSize(e.target.value)}
-      />
-      <FormControl size="small">
+      <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 2, rowGap: 3 }}>
+      {/* Cores / Memory / Disk — exposed as sliders with log-scale marks
+          so the user picks from sensible quantities (powers of two for
+          RAM, common SKUs for disk) without having to type a free-form
+          number that could land on something PVE later refuses. The
+          sockets / SCSI controller / CPU type knobs stay defaulted (1
+          socket, virtio-scsi-single, host CPU); providers who need to
+          tweak them can still go through the bare-metal CreateVmDialog. */}
+      {(() => {
+        // Cores: linear, with marks on classic VM sizings. The slider
+        // tops out at 32 — the manual override on the right lets users
+        // go beyond when their vDC quota allows it (PVE itself caps at
+        // 128 per VM).
+        const coresMarks = [1, 2, 4, 8, 16, 32]
+        const coresSliderMax = 32
+        return (
+          <Box sx={{ gridColumn: '1 / -1', px: 1.5 }}>
+            <Stack direction="row" alignItems="baseline" spacing={1} sx={{ mb: 0.5 }}>
+              <Typography variant="caption" sx={{ opacity: 0.7, fontWeight: 600 }}>
+                {t('templates.deploy.hardware.cores')}
+              </Typography>
+              <Typography variant="body2" sx={{ fontWeight: 700 }}>
+                {cores} {cores > 1 ? 'vCPUs' : 'vCPU'}
+              </Typography>
+            </Stack>
+            <Stack direction="row" alignItems="center" spacing={5}>
+              <Box sx={{ flex: 1, pr: 2 }}>
+                <Slider
+                  size="small"
+                  value={Math.min(cores, coresSliderMax)}
+                  min={1}
+                  max={coresSliderMax}
+                  step={1}
+                  onChange={(_, v) => setCores(v as number)}
+                  marks={coresMarks.map(m => ({ value: m, label: String(m) }))}
+                  valueLabelDisplay="auto"
+                  sx={{ '& .MuiSlider-markLabel': { fontSize: '0.7rem' } }}
+                />
+              </Box>
+              <TextField
+                size="small"
+                type="number"
+                value={cores}
+                onChange={e => setCores(Math.max(1, Number.parseInt(e.target.value) || 1))}
+                slotProps={{ htmlInput: { min: 1, max: 128 } }}
+                sx={{ width: 120 }}
+              />
+            </Stack>
+          </Box>
+        )
+      })()}
+      {(() => {
+        // Memory: log-style picker — marks span 512 MB → 64 GB. The
+        // helpers map a continuous slider position into the canonical
+        // values so users land on round powers of two (with finer
+        // granularity in between if they really want it). Mirrors
+        // CreateVmDialog so the two flows feel consistent.
+        const memoryMarks = [512, 1024, 2048, 4096, 8192, 16384, 32768, 65536]
+        const memoryToSlider = (mib: number) => {
+          for (let i = memoryMarks.length - 1; i >= 0; i--) {
+            if (mib >= memoryMarks[i]) {
+              return i + (mib - memoryMarks[i]) / (memoryMarks[Math.min(i + 1, memoryMarks.length - 1)] - memoryMarks[i])
+            }
+          }
+          return 0
+        }
+        const sliderToMemory = (val: number) => {
+          const idx = Math.floor(val)
+          const frac = val - idx
+          if (idx >= memoryMarks.length - 1) return memoryMarks[memoryMarks.length - 1]
+          const raw = memoryMarks[idx] + frac * (memoryMarks[idx + 1] - memoryMarks[idx])
+          return Math.round(raw / 128) * 128 || 128
+        }
+        const formatMem = (mib: number) => mib >= 1024 ? `${(mib / 1024).toFixed(mib % 1024 === 0 ? 0 : 1)} GB` : `${mib} MB`
+        // The slider caps at 64 GiB; the manual override accepts anything
+        // ≥128 MiB so users can go higher if their vDC quota allows.
+        const memorySliderMax = memoryMarks[memoryMarks.length - 1]
+        return (
+          <Box sx={{ gridColumn: '1 / -1', px: 1.5 }}>
+            <Stack direction="row" alignItems="baseline" spacing={1} sx={{ mb: 0.5 }}>
+              <Typography variant="caption" sx={{ opacity: 0.7, fontWeight: 600 }}>
+                {t('templates.deploy.hardware.memory')}
+              </Typography>
+              <Typography variant="body2" sx={{ fontWeight: 700 }}>
+                {formatMem(memory)}
+              </Typography>
+            </Stack>
+            <Stack direction="row" alignItems="center" spacing={5}>
+              <Box sx={{ flex: 1, pr: 2 }}>
+                <Slider
+                  size="small"
+                  value={memoryToSlider(Math.min(memory, memorySliderMax))}
+                  min={0}
+                  max={memoryMarks.length - 1}
+                  step={0.01}
+                  onChange={(_, v) => setMemory(sliderToMemory(v as number))}
+                  marks={memoryMarks.map((m, i) => ({ value: i, label: formatMem(m) }))}
+                  valueLabelDisplay="auto"
+                  valueLabelFormat={() => formatMem(memory)}
+                  sx={{ '& .MuiSlider-markLabel': { fontSize: '0.65rem' } }}
+                />
+              </Box>
+              <TextField
+                size="small"
+                type="number"
+                value={memory}
+                onChange={e => setMemory(Math.max(128, Number.parseInt(e.target.value) || 128))}
+                slotProps={{
+                  htmlInput: { min: 128, step: 128 },
+                  input: { endAdornment: <InputAdornment position="end" sx={{ '& p': { fontSize: 11, opacity: 0.6 } }}>MB</InputAdornment> },
+                }}
+                sx={{ width: 120 }}
+              />
+            </Stack>
+          </Box>
+        )
+      })()}
+      {(() => {
+        // Disk: state stays as the PVE-flavoured string ('20G') so the
+        // existing payload + parseDiskSizeMb keeps working unchanged.
+        // Slider operates in GiB ints; conversions are trivial.
+        const diskMarks = [10, 20, 50, 100, 250, 500, 1000]
+        const diskGiB = Math.max(diskMarks[0], Number.parseInt(String(diskSize).replace(/G$/i, ''), 10) || diskMarks[0])
+        const diskGiBToSlider = (gib: number) => {
+          for (let i = diskMarks.length - 1; i >= 0; i--) {
+            if (gib >= diskMarks[i]) {
+              return i + (gib - diskMarks[i]) / (diskMarks[Math.min(i + 1, diskMarks.length - 1)] - diskMarks[i])
+            }
+          }
+          return 0
+        }
+        const sliderToDiskGiB = (val: number) => {
+          const idx = Math.floor(val)
+          const frac = val - idx
+          if (idx >= diskMarks.length - 1) return diskMarks[diskMarks.length - 1]
+          const raw = diskMarks[idx] + frac * (diskMarks[idx + 1] - diskMarks[idx])
+          // Round to 5 GiB so users land on tidy values.
+          return Math.max(diskMarks[0], Math.round(raw / 5) * 5)
+        }
+        // The slider caps at 1000 GiB; the manual override on the right
+        // accepts anything ≥1 GiB (PVE itself takes much larger volumes).
+        const diskSliderMax = diskMarks[diskMarks.length - 1]
+        return (
+          <Box sx={{ gridColumn: '1 / -1', px: 1.5 }}>
+            <Stack direction="row" alignItems="baseline" spacing={1} sx={{ mb: 0.5 }}>
+              <Typography variant="caption" sx={{ opacity: 0.7, fontWeight: 600 }}>
+                {t('templates.deploy.hardware.diskSize')}
+              </Typography>
+              <Typography variant="body2" sx={{ fontWeight: 700 }}>
+                {diskGiB} GB
+              </Typography>
+            </Stack>
+            <Stack direction="row" alignItems="center" spacing={5}>
+              <Box sx={{ flex: 1, pr: 2 }}>
+                <Slider
+                  size="small"
+                  value={diskGiBToSlider(Math.min(diskGiB, diskSliderMax))}
+                  min={0}
+                  max={diskMarks.length - 1}
+                  step={0.01}
+                  onChange={(_, v) => setDiskSize(`${sliderToDiskGiB(v as number)}G`)}
+                  marks={diskMarks.map((m, i) => ({ value: i, label: `${m} GB` }))}
+                  valueLabelDisplay="auto"
+                  valueLabelFormat={() => `${diskGiB} GB`}
+                  sx={{ '& .MuiSlider-markLabel': { fontSize: '0.65rem' } }}
+                />
+              </Box>
+              <TextField
+                size="small"
+                type="number"
+                value={diskGiB}
+                onChange={e => setDiskSize(`${Math.max(1, Number.parseInt(e.target.value) || 1)}G`)}
+                slotProps={{
+                  htmlInput: { min: 1, step: 1 },
+                  input: { endAdornment: <InputAdornment position="end" sx={{ '& p': { fontSize: 11, opacity: 0.6 } }}>GB</InputAdornment> },
+                }}
+                sx={{ width: 120 }}
+              />
+            </Stack>
+          </Box>
+        )
+      })()}
+      {/* Bridge picker: restricted to SDN VNets. Shared bridges and raw
+          PVE bridges are intentionally hidden — deployments here always
+          land on a tenant VNet so traffic stays inside the vDC's L2
+          domain (VXLAN VNI).
+          Each option also surfaces the VNet's subnet (CIDR + gateway)
+          when one is configured, so the user knows up-front which
+          subnet the VM will land on without having to navigate away.
+          For tenant admins we span the picker full-width and drop the
+          VLAN Tag field (always disabled in this wizard); super-admins
+          keep the disabled VLAN field for parity with the
+          CreateVmDialog they may also use. */}
+      <FormControl size="small" sx={hideInfra ? { gridColumn: '1 / -1' } : undefined}>
         <InputLabel>{t('templates.deploy.hardware.bridge')}</InputLabel>
         <Select
-          value={bridges.some(b => b.iface === networkBridge) ? networkBridge : (bridges[0]?.iface || networkBridge)}
+          value={bridges.some(b => b.iface === networkBridge && b.type === 'vnet') ? networkBridge : (bridges.find(b => b.type === 'vnet')?.iface || '')}
           onChange={e => setNetworkBridge(String(e.target.value))}
           label={t('templates.deploy.hardware.bridge')}
         >
-          {bridges.length === 0 && (
-            <MenuItem value={networkBridge}>{networkBridge}</MenuItem>
-          )}
-          {/* VNets first — these are the tenant's SDN networks (per vDC).
-              Provider-managed shared bridges next, raw PVE bridges last. */}
-          {bridges.filter(b => b.type === 'vnet').length > 0 && (
-            <ListSubheader sx={{ lineHeight: '28px', fontSize: 11, fontWeight: 700, opacity: 0.7, textTransform: 'uppercase' }}>
-              {t('templates.deploy.hardware.bridgeGroupVnets')}
-            </ListSubheader>
+          {bridges.filter(b => b.type === 'vnet').length === 0 && (
+            <MenuItem value="" disabled>
+              <Typography variant="body2" sx={{ fontStyle: 'italic', opacity: 0.6 }}>
+                {t('templates.deploy.hardware.bridgeNoVnet')}
+              </Typography>
+            </MenuItem>
           )}
           {bridges.filter(b => b.type === 'vnet').map(b => (
-            <MenuItem key={b.iface} value={b.iface} sx={{ pl: 3 }}>
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, width: '100%' }}>
+            <MenuItem key={b.iface} value={b.iface}>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, width: '100%' }}>
                 <Box component="i" className="ri-shield-keyhole-line" sx={{ fontSize: 14, color: 'primary.main' }} />
-                <Typography variant="body2">{b.iface}</Typography>
-                {b.vdc && (
-                  <Typography variant="caption" sx={{ opacity: 0.55, ml: 'auto' }}>
-                    {b.vdc}
-                  </Typography>
+                <Typography variant="body2">{b.displayName || b.iface}</Typography>
+                {b.subnet && (
+                  <Stack direction="row" spacing={0.5} alignItems="center" sx={{ ml: 'auto', opacity: 0.7 }}>
+                    <Chip
+                      size="small"
+                      label={b.subnet.cidr}
+                      sx={{ height: 18, fontSize: 10 }}
+                    />
+                    <Typography variant="caption" sx={{ fontSize: 10 }}>
+                      gw {b.subnet.gateway}
+                    </Typography>
+                  </Stack>
                 )}
-              </Box>
-            </MenuItem>
-          ))}
-          {bridges.filter(b => b.type === 'shared').length > 0 && (
-            <ListSubheader sx={{ lineHeight: '28px', fontSize: 11, fontWeight: 700, opacity: 0.7, textTransform: 'uppercase' }}>
-              {t('templates.deploy.hardware.bridgeGroupShared')}
-            </ListSubheader>
-          )}
-          {bridges.filter(b => b.type === 'shared').map(b => (
-            <MenuItem key={b.iface} value={b.iface} sx={{ pl: 3 }}>
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, width: '100%' }}>
-                <Box component="i" className="ri-share-line" sx={{ fontSize: 14, opacity: 0.7 }} />
-                <Typography variant="body2">{b.iface}</Typography>
-                {b.label && (
-                  <Typography variant="caption" sx={{ opacity: 0.55, ml: 'auto' }}>
-                    {b.label}
-                  </Typography>
-                )}
-              </Box>
-            </MenuItem>
-          ))}
-          {bridges.filter(b => b.type !== 'vnet' && b.type !== 'shared').length > 0 && (
-            <ListSubheader sx={{ lineHeight: '28px', fontSize: 11, fontWeight: 700, opacity: 0.7, textTransform: 'uppercase' }}>
-              {t('templates.deploy.hardware.bridgeGroupBridges')}
-            </ListSubheader>
-          )}
-          {bridges.filter(b => b.type !== 'vnet' && b.type !== 'shared').map(b => (
-            <MenuItem key={b.iface} value={b.iface} sx={{ pl: 3 }}>
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, width: '100%' }}>
-                <Box component="i" className="ri-bridge-line" sx={{ fontSize: 14, opacity: 0.7 }} />
-                <Typography variant="body2">{b.iface}</Typography>
               </Box>
             </MenuItem>
           ))}
         </Select>
       </FormControl>
-      <TextField
-        size="small"
-        label={t('templates.deploy.hardware.vlan')}
-        type="number"
-        value={vlanTag}
-        onChange={e => setVlanTag(e.target.value ? Number.parseInt(e.target.value) : '')}
-        placeholder={t('templates.deploy.hardware.vlanPlaceholder')}
-        slotProps={{ htmlInput: { min: 1, max: 4094 } }}
-        // VNets carry their own intrinsic tag — disable the manual override
-        // when a VNet is selected to prevent confusion / conflicts.
-        disabled={bridges.find(b => b.iface === networkBridge)?.type === 'vnet'}
-      />
+      {/* Super-admin keeps the (disabled) VLAN Tag field for visual parity
+          with the bare-metal CreateVmDialog. Tenant admins don't see it —
+          the picker spans full-width above and the cell stays uncluttered. */}
+      {!hideInfra && (
+        <Tooltip
+          arrow
+          placement="top"
+          title={t('templates.deploy.hardware.vlanDisabledOnVnetTooltip')}
+        >
+          <span>
+            <TextField
+              size="small"
+              label={t('templates.deploy.hardware.vlan')}
+              type="number"
+              value=""
+              placeholder={t('templates.deploy.hardware.vlanDisabledOnVnet')}
+              slotProps={{ htmlInput: { min: 1, max: 4094 } }}
+              disabled
+              helperText={t('templates.deploy.hardware.vlanDisabledOnVnetHelp')}
+              fullWidth
+            />
+          </span>
+        </Tooltip>
+      )}
       <FormControlLabel
         control={<Switch checked={agent} onChange={(_, v) => setAgent(v)} size="small" />}
         label={t('templates.deploy.hardware.qemuAgent')}
@@ -919,7 +1124,34 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint, r
     </Box>
   )
 
-  const renderCloudInitStep = () => (
+  const renderCloudInitStep = () => {
+    // The CloudInit step is now subnet-aware: when the chosen VNet has an
+    // IPAM-managed subnet (always the case in this wizard since we restrict
+    // the bridge picker to VNets), we surface the subnet's CIDR + gateway
+    // as read-only context and turn the "IP" field into an *override only*
+    // — empty means "let IPAM auto-allocate". Gateway is no longer typed
+    // by hand because it must match the subnet, otherwise the route would
+    // never come up.
+    const selectedBridge = bridges.find(b => b.iface === networkBridge)
+    const subnet = selectedBridge?.subnet ?? null
+    // Validate the optional override IP: must be IPv4-shaped and not equal
+    // to the gateway. Range bounds are enforced server-side by IPAM, but
+    // this catch-22 ("user typed gateway as VM IP") is worth flagging in
+    // the UI before submit.
+    const ipOverrideValid = !ipOverride
+      || (/^\d{1,3}(\.\d{1,3}){3}$/.test(ipOverride) && ipOverride !== subnet?.gateway)
+
+    // Pre-fill nameserver from the subnet's DNS servers the first time the
+    // user lands on this step with a subnet attached and hasn't typed
+    // anything yet. We don't overwrite an explicit value.
+    if (subnet && !nameserver && subnet.dnsServers.length > 0) {
+      // Defer the setState to avoid mutating during render.
+      queueMicrotask(() => {
+        if (!nameserver) setNameserver(subnet.dnsServers.join(' '))
+      })
+    }
+
+    return (
     <Stack spacing={2}>
       <TextField
         size="small"
@@ -948,14 +1180,46 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint, r
         fullWidth
         placeholder="ssh-ed25519 AAAA... user@host"
       />
-      <TextField
-        size="small"
-        label={t('templates.deploy.cloudInit.ipConfig')}
-        value={ipconfig0}
-        onChange={e => setIpconfig0(e.target.value)}
-        fullWidth
-        helperText={t('templates.deploy.cloudInit.ipConfigHelp')}
-      />
+      {/* Subnet context + IP override. Gateway is read-only (must match
+          the subnet). Empty IP = "auto-allocate from IPAM" — the most
+          common case. */}
+      {subnet && (
+        <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 2 }}>
+          <TextField
+            size="small"
+            label={t('templates.deploy.cloudInit.ipAddress')}
+            value={ipOverride}
+            onChange={e => setIpOverride(e.target.value.trim())}
+            placeholder={t('templates.deploy.cloudInit.ipAutoFromCidr', { cidr: subnet.cidr })}
+            error={!!ipOverride && !ipOverrideValid}
+            helperText={
+              !!ipOverride && !ipOverrideValid
+                ? t('templates.deploy.cloudInit.ipInvalid')
+                : t('templates.deploy.cloudInit.ipAutoHelp')
+            }
+            fullWidth
+          />
+          <TextField
+            size="small"
+            label={t('templates.deploy.cloudInit.gateway')}
+            value={subnet.gateway}
+            InputProps={{ readOnly: true }}
+            helperText={t('templates.deploy.cloudInit.gatewayFromSubnet')}
+            fullWidth
+          />
+        </Box>
+      )}
+      {!subnet && (
+        <TextField
+          size="small"
+          label={t('templates.deploy.cloudInit.ipAddress')}
+          value={ipOverride}
+          onChange={e => setIpOverride(e.target.value.trim())}
+          placeholder="ip=dhcp"
+          helperText={t('templates.deploy.cloudInit.ipNoSubnet')}
+          fullWidth
+        />
+      )}
       <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 2 }}>
         <TextField
           size="small"
@@ -973,7 +1237,8 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint, r
         />
       </Box>
     </Stack>
-  )
+    )
+  }
 
   const renderReviewStep = () => {
     if (!image) return null
@@ -1012,7 +1277,7 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint, r
         <Box>
           <Typography variant="overline" sx={{ opacity: 0.6 }}>{t('templates.deploy.steps.hardware')}</Typography>
           <Typography variant="body2">
-            {cores}C &times; {sockets}S / {memory >= 1024 ? `${memory / 1024} GB` : `${memory} MB`} RAM / {diskSize} / {networkBridge}{vlanTag ? ` (VLAN ${vlanTag})` : ''}
+            {cores}C &times; {sockets}S / {memory >= 1024 ? `${memory / 1024} GB` : `${memory} MB`} RAM / {diskSize} / {bridges.find(b => b.iface === networkBridge)?.displayName || networkBridge}
             {isIsoMode && <> &middot; {bios === 'ovmf' ? 'UEFI' : 'BIOS'} &middot; {ostypeOverride || image.ostype}</>}
           </Typography>
         </Box>
@@ -1028,7 +1293,10 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint, r
               <Typography variant="body2">
                 {ciuser ? `${t('templates.deploy.cloudInit.user')}: ${ciuser}` : t('templates.deploy.cloudInit.noUser')}
                 {cipassword ? ` · ${t('templates.deploy.cloudInit.password')}: ••••••` : ''}
-                {' · '}{ipconfig0}
+                {' · '}
+                {ipOverride
+                  ? `${t('templates.deploy.cloudInit.ipAddress')}: ${ipOverride}`
+                  : t('templates.deploy.cloudInit.ipAutoSummary')}
               </Typography>
               {sshKeys && (
                 <Typography variant="caption" sx={{ opacity: 0.6 }}>
@@ -1123,8 +1391,8 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint, r
   }, [
     activeStep, image, connections, connectionId, nodes, node, storages, storage,
     isoStorages, isoStorage, vmid, vmName, cores, sockets, memory, diskSize, scsihw, networkModel,
-    networkBridge, vlanTag, cpu, agent, bios, ostypeOverride, isIsoMode,
-    ciuser, cipassword, sshKeys, ipconfig0, nameserver,
+    networkBridge, cpu, agent, bios, ostypeOverride, isIsoMode,
+    ciuser, cipassword, sshKeys, ipOverride, nameserver,
     searchdomain, saveAsBlueprint, blueprintName, deploymentId, deployError, deploying,
     quotaBlocked, vdcQuota, vdcUsage, bridges, t,
   ])

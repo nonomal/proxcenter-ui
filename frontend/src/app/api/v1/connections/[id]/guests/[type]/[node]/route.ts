@@ -5,7 +5,10 @@ import { getConnectionById } from "@/lib/connections/getConnection"
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
 import { getCurrentTenantId } from "@/lib/tenant"
 import { resolveVdcForTenant, checkVdcQuota } from "@/lib/vdc/quota"
-import { getAllowedBridgesForTenant, parseBridgeFromNet } from "@/lib/vdc/vnets"
+import { getAllowedBridgesForTenant, resolveSubnetForBridge, parseBridgeFromNet } from "@/lib/vdc/vnets"
+import { generatePveMacAddress } from "@/lib/vdc/sdn"
+import { allocateIp, releaseIp, IpamExhaustedError } from "@/lib/vdc/ipam"
+import { parseCidr } from "@/lib/vdc/network"
 
 export const runtime = "nodejs"
 
@@ -115,25 +118,128 @@ export async function POST(
       }
     }
 
+    // IPAM auto-allocation: for each NIC bound to a SDN VNet that has a
+    // ProxCenter-managed subnet, claim an IP from our IPAM and inject the
+    // matching ipconfigN into the body. Only fires for QEMU (LXC has its
+    // own ip-by-net0 syntax, treated separately if/when needed). Skipped
+    // when the user explicitly set ipconfigN already (e.g. ip=dhcp for
+    // PXE / non-cloud-init OS).
+    //
+    // Subnet lookup is keyed on (connectionId, bridge) — no tenant filter,
+    // because the tenant authorisation already happened upstream via
+    // resolveVdcForTenant + allowed bridges check.
+    const allocations: Array<{ subnetId: string; ip: string }> = []
+    let injectedDns: string[] = []
+    if (type === 'qemu') {
+      for (const key of Object.keys(body || {})) {
+        const m = key.match(/^net(\d+)$/)
+        if (!m) continue
+        const idx = m[1]
+        const ipconfigKey = `ipconfig${idx}`
+        if (typeof body[ipconfigKey] === 'string' && body[ipconfigKey].trim()) {
+          // User-provided ipconfigN — respect their choice (manual IP, dhcp, …).
+          continue
+        }
+        const netStr = String(body[key] || '')
+        const bridge = parseBridgeFromNet(netStr)
+        if (!bridge) continue
+        const subnet = resolveSubnetForBridge(id, bridge)
+        if (!subnet) continue
+
+        // Make sure netN carries an explicit MAC so our IPAM can key on
+        // it and a future re-create of the same VM with the same MAC
+        // reuses the same IP. PVE accepts both "<model>=MAC,bridge=…" and
+        // "<model>,bridge=…,macaddr=…" syntaxes; we normalise to the first.
+        const existingMacMatch = netStr.match(/(?:^|=)(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}/)
+        let mac = existingMacMatch ? existingMacMatch[0].replace(/^=/, '').toUpperCase() : null
+        if (!mac) {
+          mac = generatePveMacAddress()
+          // Inject the MAC into the model=… part so PVE doesn't roll its
+          // own and our IPAM record stays in sync.
+          const parts = netStr.split(',')
+          // Replace first part (model token) — handle "virtio" or "virtio=AA:..".
+          const head = parts[0] ?? 'virtio'
+          const headModel = head.includes('=') ? head.split('=')[0] : head
+          parts[0] = `${headModel}=${mac}`
+          body[key] = parts.join(',')
+        }
+
+        try {
+          const vmidNum = body.vmid != null ? Number(body.vmid) : null
+          const allocated = allocateIp({
+            vdcId: subnet.vdcId,
+            subnetId: subnet.subnetId,
+            vnetId: subnet.vnetId,
+            connectionId: id,
+            mac,
+            vmid: Number.isFinite(vmidNum) ? vmidNum : null,
+            hostname: body.name || `vm-${body.vmid}`,
+          })
+          const cidrInfo = parseCidr(subnet.cidr)
+          const prefix = cidrInfo?.prefix
+          const ipconfig = [
+            `ip=${allocated.ip}${prefix !== undefined ? `/${prefix}` : ''}`,
+            `gw=${subnet.gateway}`,
+          ].join(',')
+          body[ipconfigKey] = ipconfig
+          allocations.push({ subnetId: subnet.subnetId, ip: allocated.ip })
+          // DNS resolvers live at the VM level in PVE CloudInit (`nameserver`
+          // is shared across NICs). Take the first non-empty list we see;
+          // if multiple NICs declare different DNS the first one wins —
+          // that's an edge case worth a warning eventually but not blocking.
+          if (injectedDns.length === 0 && subnet.dnsServers.length > 0) {
+            injectedDns = subnet.dnsServers
+          }
+        } catch (e: any) {
+          // Roll back any previously allocated IPs from this same request
+          // so we don't leave dangling reservations on a partial failure.
+          for (const a of allocations) {
+            try { releaseIp({ subnetId: a.subnetId, ip: a.ip }) } catch { /* tolerate */ }
+          }
+          const msg = e instanceof IpamExhaustedError
+            ? `Subnet ${subnet.cidr} is full — no free IP available`
+            : `IPAM allocation failed: ${e?.message ?? String(e)}`
+          return NextResponse.json({ error: msg }, { status: 500 })
+        }
+      }
+
+      // Push DNS resolvers via CloudInit `nameserver` (space-separated). Skip
+      // if the user already provided one to honour explicit overrides.
+      if (injectedDns.length > 0 && !body.nameserver) {
+        body.nameserver = injectedDns.join(' ')
+      }
+    }
+
     // Construire l'URL Proxmox
     const endpoint = `/nodes/${encodeURIComponent(node)}/${type}`
 
     // Appeler l'API Proxmox pour créer la VM/LXC
-    const result = await pveFetch<any>(conn, endpoint, {
-      method: "POST",
-      body: JSON.stringify(body),
-      headers: {
-        'Content-Type': 'application/json'
+    let result: any
+    try {
+      result = await pveFetch<any>(conn, endpoint, {
+        method: "POST",
+        body: JSON.stringify(body),
+        headers: {
+          'Content-Type': 'application/json'
+        }
+      })
+    } catch (err: any) {
+      // Release IPAM allocations on PVE create failure — otherwise the IP
+      // sits reserved without an actual VM behind it.
+      for (const a of allocations) {
+        try { releaseIp({ subnetId: a.subnetId, ip: a.ip }) } catch { /* tolerate */ }
       }
-    })
+      throw err
+    }
 
-    return NextResponse.json({ 
+    return NextResponse.json({
       data: result,
-      message: `${type === 'qemu' ? 'VM' : 'Container'} creation started`
+      message: `${type === 'qemu' ? 'VM' : 'Container'} creation started`,
+      allocatedIps: allocations.map(a => a.ip),
     })
   } catch (e: any) {
     console.error('Error creating guest:', e)
-    
+
 return NextResponse.json({ error: e?.message || String(e) }, { status: 500 })
   }
 }

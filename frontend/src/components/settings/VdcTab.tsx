@@ -80,16 +80,6 @@ const emptyForm: VdcFormState = {
   unlimitedBackups: true,
 }
 
-function formatBytes(bytes: number): string {
-  return (bytes / (1024 * 1024 * 1024)).toFixed(1) + ' GB'
-}
-
-function quotaColor(percent: number): 'success' | 'warning' | 'error' {
-  if (percent < 70) return 'success'
-  if (percent < 90) return 'warning'
-  return 'error'
-}
-
 // Translates an ISO timestamp into a localized "3m ago" / "2h ago" / "5d ago"
 // using the existing time.* keys, so we don't ship a new dependency.
 function formatRelative(iso: string | null | undefined, t: (k: string, p?: any) => string): string {
@@ -252,14 +242,33 @@ export default function VdcTab() {
       setResourcesLoading(true)
 
       try {
-        const res = await fetch(`/api/v1/admin/connections/${form.connectionId}/available-resources`)
+        // Pass vdcId when editing so the route only hides PBS storages
+        // bound to OTHER vDCs and keeps the current vDC's own visible.
+        const url = editingVdc
+          ? `/api/v1/admin/connections/${form.connectionId}/available-resources?vdcId=${encodeURIComponent(editingVdc.id)}`
+          : `/api/v1/admin/connections/${form.connectionId}/available-resources`
+        const res = await fetch(url)
 
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
 
         const data = await res.json()
 
         if (!cancelled) {
-          setAvailableResources(data.data || null)
+          const resources = data.data || null
+          setAvailableResources(resources)
+          // Auto-embed all nodes + all storages of the cluster into the
+          // form when creating. The granular pickers used to drive these
+          // arrays via checkboxes; now the UI just shows the cluster's
+          // contents informationally and we send everything to the API.
+          // Edit mode keeps the existing values so the caller can still
+          // tighten the scope manually if they ever need to.
+          if (!editingVdc && resources) {
+            setForm((f) => ({
+              ...f,
+              nodes: (resources.nodes || []).map((n: any) => n.name).filter(Boolean),
+              storages: (resources.storages || []).map((s: any) => s.id).filter(Boolean),
+            }))
+          }
         }
       } catch {
         if (!cancelled) {
@@ -275,7 +284,7 @@ export default function VdcTab() {
     fetchResources()
 
     return () => { cancelled = true }
-  }, [form.connectionId])
+  }, [form.connectionId, editingVdc?.id])
 
   // Fetch provider bridges when connectionId changes
   useEffect(() => {
@@ -307,6 +316,27 @@ export default function VdcTab() {
   const getTenantSlug = (tenantId: string) => {
     const tenant = tenants.find((t) => t.id === tenantId)
     return tenant?.slug || ''
+  }
+
+  // Slug derivation. The user no longer types the slug — it's a fully
+  // computed value from (tenant, connection). Including the connection
+  // distinguishes a tenant's vDCs across clusters and avoids the
+  // (tenant_id, slug) UNIQUE conflict that would otherwise hit on the
+  // second vDC. Falls back to the tenant slug only when the connection
+  // hasn't been picked yet, so the form's "Save" disabled check stays
+  // meaningful before all fields are filled.
+  const sluggify = (s: string): string =>
+    String(s || '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '')
+
+  const computeVdcSlug = (tenant: any | null, connectionId: string): string => {
+    if (!tenant) return ''
+    const tSlug = sluggify(tenant.slug || tenant.name || tenant.id || '')
+    const conn = connections.find((c) => c.id === connectionId)
+    const cSlug = conn ? sluggify(conn.name || conn.id || '') : ''
+    return cSlug ? `${tSlug}-${cSlug}` : tSlug
   }
 
   // ------- Handlers -------
@@ -386,13 +416,28 @@ export default function VdcTab() {
         label: label.trim() || undefined,
       }))
 
+      // Snapshot nodes/storages from the live resources at submit time.
+      // form.nodes/form.storages get auto-filled by the resources fetch
+      // useEffect, but a race (slow PVE, fetch retry, user clicking
+      // Submit right after Connection select) can leave them empty —
+      // backend then 400s on "nodes must be a non-empty array". Reading
+      // straight from availableResources here closes that window.
+      const liveNodes = (availableResources?.nodes || [])
+        .map((n: any) => n.name)
+        .filter(Boolean)
+      const liveStorages = (availableResources?.storages || [])
+        .map((s: any) => s.id)
+        .filter(Boolean)
+      const nodesPayload = (editingVdc ? form.nodes : (form.nodes.length > 0 ? form.nodes : liveNodes))
+      const storagesPayload = (editingVdc ? form.storages : (form.storages.length > 0 ? form.storages : liveStorages))
+
       if (editingVdc) {
         // PUT - update
         const body: any = {
           name: form.name,
           description: form.description || undefined,
-          nodes: form.nodes,
-          storages: form.storages,
+          nodes: nodesPayload,
+          storages: storagesPayload,
           sharedBridges: sharedBridgesPayload,
           quota,
         }
@@ -415,8 +460,8 @@ export default function VdcTab() {
           name: form.name,
           slug: form.slug,
           description: form.description || undefined,
-          nodes: form.nodes,
-          storages: form.storages,
+          nodes: nodesPayload,
+          storages: storagesPayload,
           sharedBridges: sharedBridgesPayload,
           quota: Object.keys(quota).some((k) => quota[k] !== null) ? quota : undefined,
         }
@@ -732,7 +777,26 @@ export default function VdcTab() {
             <IconButton
               size="small"
               color="error"
-              onClick={() => setDeleteVdc(params.row)}
+              onClick={async () => {
+                // Optimistically open the dialog with the current row so
+                // the user gets immediate feedback, then refresh usage in
+                // the background. Without this, the delete button stays
+                // blocked on stale `usedVms` values when the user has
+                // just torn down their VMs in PVE.
+                setDeleteVdc(params.row)
+                try {
+                  const res = await fetch(
+                    `/api/v1/admin/vdcs/${encodeURIComponent(params.row.id)}/usage?refresh=true`,
+                    { cache: 'no-store' },
+                  )
+                  if (!res.ok) return
+                  const json = await res.json()
+                  const usage = json?.data?.usage
+                  if (usage) {
+                    setDeleteVdc((prev: any) => (prev?.id === params.row.id ? { ...prev, usage } : prev))
+                  }
+                } catch { /* ignore — keep stale usage, the server-side check will still refuse the delete if VMs remain */ }
+              }}
             >
               <i className="ri-delete-bin-line" />
             </IconButton>
@@ -784,12 +848,6 @@ export default function VdcTab() {
       />
     </Box>
   )
-
-  // ------- Pool name preview -------
-
-  const poolNamePreview = form.tenantId && form.slug
-    ? `vdc-${getTenantSlug(form.tenantId)}-${form.slug}`
-    : null
 
   // ------- Render -------
 
@@ -858,43 +916,31 @@ export default function VdcTab() {
       <Dialog open={dialogOpen} onClose={() => setDialogOpen(false)} maxWidth="md" fullWidth>
         <DialogTitle>{editingVdc ? t('vdc.edit') : t('vdc.create')}</DialogTitle>
         <DialogContent sx={{ display: 'flex', flexDirection: 'column', gap: 2, pt: '20px !important' }}>
-          {/* Name */}
-          <TextField
-            label={t('vdc.name')}
-            value={form.name}
-            onChange={(e) => {
-              const name = e.target.value
-
-              setForm((f) => ({
-                ...f,
-                name,
-                ...(editingVdc ? {} : { slug: name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') }),
-              }))
+          {/* Tenant — drives the vDC name and slug. Picking a tenant fills
+              name (= tenant.name) and slug (= sluggified tenant + later
+              the connection too). The slug field is no longer exposed —
+              it's a derived identifier the user shouldn't tune. */}
+          <Autocomplete
+            options={tenants}
+            getOptionLabel={(o) => o.name || o.slug || o.id}
+            value={tenants.find((t) => t.id === form.tenantId) || null}
+            onChange={(_, v) => {
+              setForm((f) => {
+                if (!v) return { ...f, tenantId: '' }
+                if (editingVdc) return { ...f, tenantId: v.id }
+                return {
+                  ...f,
+                  tenantId: v.id,
+                  name: v.name || v.id,
+                  slug: computeVdcSlug(v, f.connectionId),
+                }
+              })
             }}
-            fullWidth
-            required
+            disabled={!!editingVdc}
+            renderInput={(params) => (
+              <TextField {...params} label={t('vdc.tenant')} placeholder={t('vdc.selectTenant')} required />
+            )}
           />
-
-          {/* Slug */}
-          <Tooltip
-            title={t('vdc.slugHelp')}
-            open={!!form.slug && !/^[a-z0-9-]*$/.test(form.slug)}
-            arrow
-            placement="top"
-          >
-            <TextField
-              label={t('vdc.slug')}
-              value={form.slug}
-              onChange={(e) => {
-                const raw = e.target.value
-                const sanitized = raw.toLowerCase().replace(/[^a-z0-9-]/g, '')
-                setForm((f) => ({ ...f, slug: sanitized }))
-              }}
-              fullWidth
-              required
-              disabled={!!editingVdc}
-            />
-          </Tooltip>
 
           {/* Description */}
           <TextField
@@ -906,25 +952,29 @@ export default function VdcTab() {
             rows={2}
           />
 
-          {/* Tenant */}
-          <Autocomplete
-            options={tenants}
-            getOptionLabel={(o) => o.name || o.slug || o.id}
-            value={tenants.find((t) => t.id === form.tenantId) || null}
-            onChange={(_, v) => setForm((f) => ({ ...f, tenantId: v?.id || '' }))}
-            disabled={!!editingVdc}
-            renderInput={(params) => (
-              <TextField {...params} label={t('vdc.tenant')} placeholder={t('vdc.selectTenant')} required />
-            )}
-          />
-
           {/* Connection / Cluster */}
           <Autocomplete
             options={connections}
             getOptionLabel={(o) => o.name || o.id}
             value={connections.find((c) => c.id === form.connectionId) || null}
             onChange={(_, v) => {
-              setForm((f) => ({ ...f, connectionId: v?.id || '', nodes: [], storages: [] }))
+              setForm((f) => {
+                if (editingVdc) {
+                  return { ...f, connectionId: v?.id || '', nodes: [], storages: [] }
+                }
+                // Re-derive slug now that the connection is known —
+                // see computeVdcSlug for the format. Without this, a
+                // tenant with two vDCs across clusters would hit the
+                // (tenant_id, slug) UNIQUE on save.
+                const tenant = tenants.find((tn) => tn.id === f.tenantId) || null
+                return {
+                  ...f,
+                  connectionId: v?.id || '',
+                  nodes: [],
+                  storages: [],
+                  slug: computeVdcSlug(tenant, v?.id || ''),
+                }
+              })
               setAvailableResources(null)
             }}
             disabled={!!editingVdc}
@@ -945,111 +995,12 @@ export default function VdcTab() {
                 </Box>
               ) : availableResources ? (
                 <>
-                  {/* PVE Pool preview */}
-                  {poolNamePreview && (
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                      <Typography variant="body2" color="text.secondary">
-                        {t('vdc.pvePoolName')}:
-                      </Typography>
-                      <Chip
-                        label={poolNamePreview}
-                        size="small"
-                        sx={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '0.75rem' }}
-                      />
-                    </Box>
-                  )}
-
-                  <Divider />
-
-                  {/* Nodes */}
-                  <Typography variant="subtitle2" sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                    <i className="ri-server-line" />
-                    {t('vdc.nodes')}
-                    {form.nodes.length > 0 && (
-                      <Chip label={t('vdc.nodesSelected', { count: form.nodes.length })} size="small" variant="outlined" />
-                    )}
-                  </Typography>
-
-                  {(availableResources.nodes || []).map((node: any) => {
-                    const cpuPercent = node.maxcpu > 0 ? Math.round((node.cpu || 0) * 100) : 0
-                    const ramPercent = node.maxmem > 0 ? Math.round(((node.mem || 0) / node.maxmem) * 100) : 0
-                    const isOnline = node.status === 'online'
-
-                    return (
-                      <Box
-                        key={node.name}
-                        sx={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: 1.5,
-                          py: 0.75,
-                          px: 1,
-                          borderRadius: 1,
-                          '&:hover': { bgcolor: 'action.hover' },
-                        }}
-                      >
-                        <Checkbox
-                          checked={form.nodes.includes(node.name)}
-                          onChange={(e) => {
-                            setForm((f) => ({
-                              ...f,
-                              nodes: e.target.checked
-                                ? [...f.nodes, node.name]
-                                : f.nodes.filter((n) => n !== node.name),
-                            }))
-                          }}
-                          size="small"
-                        />
-
-                        {/* Proxmox icon with status dot */}
-                        <Box sx={{ position: 'relative', width: 22, height: 22, flexShrink: 0 }}>
-                          <img src="/images/proxmox-logo.svg" alt="" width={22} height={22} style={{ opacity: isOnline ? 0.9 : 0.4 }} />
-                          <Box sx={{
-                            position: 'absolute', bottom: -2, right: -2,
-                            width: 10, height: 10, borderRadius: '50%',
-                            bgcolor: isOnline ? 'success.main' : 'text.disabled',
-                            border: '2px solid', borderColor: 'background.paper',
-                          }} />
-                        </Box>
-
-                        <Typography variant="body2" sx={{ fontWeight: 500, minWidth: 120 }}>{node.name}</Typography>
-
-                        {/* CPU progress */}
-                        <Box sx={{ flex: 1, minWidth: 80 }}>
-                          <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.25 }}>
-                            <Typography variant="caption" color="text.secondary">CPU</Typography>
-                            <Typography variant="caption" color="text.secondary">{cpuPercent}%</Typography>
-                          </Box>
-                          <LinearProgress
-                            variant="determinate"
-                            value={cpuPercent}
-                            color={quotaColor(cpuPercent)}
-                            sx={{ height: 6, borderRadius: 3 }}
-                          />
-                        </Box>
-
-                        {/* RAM progress */}
-                        <Box sx={{ flex: 1, minWidth: 80 }}>
-                          <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.25 }}>
-                            <Typography variant="caption" color="text.secondary">RAM</Typography>
-                            <Typography variant="caption" color="text.secondary">
-                              {formatBytes(node.mem || 0)} / {formatBytes(node.maxmem || 0)}
-                            </Typography>
-                          </Box>
-                          <LinearProgress
-                            variant="determinate"
-                            value={ramPercent}
-                            color={quotaColor(ramPercent)}
-                            sx={{ height: 6, borderRadius: 3 }}
-                          />
-                        </Box>
-                      </Box>
-                    )
-                  })}
-
-                  <Divider />
-
-                  {/* PBS bindings (only when editing an existing vDC) */}
+                  {/* PBS bindings (only when editing an existing vDC).
+                      The Pool / Nodes / Storages summary that used to live
+                      here was dropped: a vDC now spans the entire cluster
+                      so the per-node CPU/RAM bars and per-storage usage
+                      bars added noise without informing any decision the
+                      admin can still make in this modal. */}
                   {editingVdc && (
                     <>
                       <VdcPbsBindingsSection
@@ -1062,144 +1013,7 @@ export default function VdcTab() {
                     </>
                   )}
 
-                  {/* Storages */}
-                  <Typography variant="subtitle2" sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                    <i className="ri-hard-drive-3-line" />
-                    {t('vdc.storages')}
-                    {form.storages.length > 0 && (
-                      <Chip label={t('vdc.storagesSelected', { count: form.storages.length })} size="small" variant="outlined" />
-                    )}
-                  </Typography>
-
-                  {(() => {
-                    const selectedNodes = new Set(form.nodes)
-
-                    if (selectedNodes.size === 0) {
-                      // Show only shared storages when no nodes selected
-                      const sharedOnly = (availableResources.storages || []).filter((s: any) => s.shared)
-                      if (sharedOnly.length === 0) {
-                        return (
-                          <Typography variant="body2" color="text.secondary" sx={{ py: 1, fontStyle: 'italic' }}>
-                            {t('vdc.selectNodes')}
-                          </Typography>
-                        )
-                      }
-                    }
-
-                    // Build flat list: shared storages as-is, local storages expanded per selected node
-                    type StorageRow = { key: string; storageId: string; type: string; shared: boolean; node: string | null; disk: number; maxdisk: number }
-                    const rows: StorageRow[] = []
-
-                    for (const storage of (availableResources.storages || [])) {
-                      if (storage.shared) {
-                        rows.push({ key: storage.id, storageId: storage.id, type: storage.type, shared: true, node: null, disk: storage.disk, maxdisk: storage.maxdisk })
-                      } else {
-                        // Local storage: expand into one row per selected node
-                        const nodeDetails = (storage.nodeDetails || []) as { node: string; disk: number; maxdisk: number }[]
-                        // Which nodes is this storage available on?
-                        const storageNodeNames = storage.nodes
-                          ? String(storage.nodes).split(',').map((n: string) => n.trim())
-                          : null // null = available on all nodes
-
-                        for (const nodeName of selectedNodes) {
-                          // Check if this storage is available on this node
-                          if (storageNodeNames && !storageNodeNames.includes(nodeName)) continue
-
-                          const nd = nodeDetails.find((d: any) => d.node === nodeName)
-                          rows.push({
-                            key: `${storage.id}:${nodeName}`,
-                            storageId: storage.id,
-                            type: storage.type,
-                            shared: false,
-                            node: nodeName,
-                            disk: nd?.disk || 0,
-                            maxdisk: nd?.maxdisk || 0,
-                          })
-                        }
-                      }
-                    }
-
-                    return rows.map((row) => {
-                      const usagePercent = row.maxdisk > 0 ? Math.round((row.disk / row.maxdisk) * 100) : 0
-                      // For storage selection, we use the storage ID (not per-node) since PVE pools reference storage IDs
-                      const isChecked = form.storages.includes(row.storageId)
-
-                      return (
-                        <Box
-                          key={row.key}
-                          sx={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: 1.5,
-                            py: 0.75,
-                            px: 1,
-                            borderRadius: 1,
-                            '&:hover': { bgcolor: 'action.hover' },
-                          }}
-                        >
-                          <Checkbox
-                            checked={isChecked}
-                            onChange={(e) => {
-                              setForm((f) => ({
-                                ...f,
-                                storages: e.target.checked
-                                  ? [...new Set([...f.storages, row.storageId])]
-                                  : f.storages.filter((s) => s !== row.storageId),
-                              }))
-                            }}
-                            size="small"
-                          />
-
-                          {/* Storage icon: Ceph logo for rbd/cephfs, disk icon for others */}
-                          {row.type === 'rbd' || row.type === 'cephfs' ? (
-                            <Tooltip title={`Ceph ${row.type.toUpperCase()}`} arrow>
-                              <img src="/images/ceph-logo.svg" alt="Ceph" width={18} height={18} style={{ opacity: 0.8 }} />
-                            </Tooltip>
-                          ) : (
-                            <Tooltip title={row.type} arrow>
-                              <i className="ri-hard-drive-2-fill" style={{ fontSize: 18, opacity: 0.7 }} />
-                            </Tooltip>
-                          )}
-
-                          {/* Left zone: name + node + shared icon (fixed width) */}
-                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, width: 280, flexShrink: 0 }}>
-                            <Typography variant="body2" sx={{ fontWeight: 500 }} noWrap>{row.storageId}</Typography>
-                            {row.node && (
-                              <Typography variant="caption" color="text.secondary" noWrap>({row.node})</Typography>
-                            )}
-                            <Chip label={row.type} size="small" variant="outlined" sx={{ height: 18, fontSize: '0.6rem', opacity: 0.6 }} />
-                            {row.shared && (
-                              <Tooltip title={t('vdc.shared')} arrow>
-                                <i className="ri-share-line" style={{ fontSize: 15, color: 'var(--mui-palette-info-main)', opacity: 0.9 }} />
-                              </Tooltip>
-                            )}
-                          </Box>
-
-                          {/* Right zone: progress bar */}
-                          {row.maxdisk > 0 ? (
-                            <Box sx={{ flex: 1, minWidth: 80 }}>
-                              <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.25 }}>
-                                <Typography variant="caption" color="text.secondary">
-                                  {formatBytes(row.disk || 0)} / {formatBytes(row.maxdisk || 0)}
-                                </Typography>
-                                <Typography variant="caption" color="text.secondary">{usagePercent}%</Typography>
-                              </Box>
-                              <LinearProgress
-                                variant="determinate"
-                                value={usagePercent}
-                                color={quotaColor(usagePercent)}
-                                sx={{ height: 6, borderRadius: 3 }}
-                              />
-                            </Box>
-                          ) : (
-                            <Box sx={{ flex: 1 }} />
-                          )}
-                        </Box>
-                      )
-                    })
-                  })()}
                   {/* Shared Bridges */}
-                  <Divider />
 
                   <Box sx={{ mt: 2 }}>
                     <Typography variant="subtitle2" gutterBottom>{t('vdc.sharedBridgesTitle')}</Typography>
@@ -1291,12 +1105,13 @@ export default function VdcTab() {
             onClick={handleSave}
             disabled={
               saving ||
-              !form.name ||
-              !form.slug ||
               !form.tenantId ||
               !form.connectionId ||
-              form.nodes.length === 0 ||
-              form.storages.length === 0
+              // Hold the click until /available-resources has populated
+              // form.nodes and form.storages — without this gate the user
+              // could submit before the auto-fill ran and the backend
+              // would 400 on "nodes must be a non-empty array".
+              resourcesLoading
             }
           >
             {saving ? t('vdc.saving') : editingVdc ? t('common.update') : t('common.create')}

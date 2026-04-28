@@ -52,18 +52,53 @@ export async function POST(req: Request, ctx: RouteContext) {
 
     if (!displayName) return NextResponse.json({ error: "displayName required" }, { status: 400 })
 
+    // Optional subnet block. Empty / missing = bridge-only VNet, no IPAM.
+    let subnet: {
+      cidr: string
+      gateway: string
+      dnsServers?: string[]
+      dhcpRangeStart?: string
+      dhcpRangeEnd?: string
+    } | undefined = undefined
+    if (body?.subnet && typeof body.subnet === "object") {
+      const s = body.subnet
+      const cidr = typeof s.cidr === "string" ? s.cidr.trim() : ""
+      const gateway = typeof s.gateway === "string" ? s.gateway.trim() : ""
+      if (!cidr || !gateway) {
+        return NextResponse.json({ error: "subnet.cidr and subnet.gateway are required when subnet is provided" }, { status: 400 })
+      }
+      const dnsServers = Array.isArray(s.dnsServers)
+        ? s.dnsServers.map((x: any) => String(x).trim()).filter(Boolean)
+        : typeof s.dnsServers === "string"
+          ? s.dnsServers.split(",").map((x: string) => x.trim()).filter(Boolean)
+          : undefined
+      subnet = {
+        cidr,
+        gateway,
+        dnsServers,
+        dhcpRangeStart: typeof s.dhcpRangeStart === "string" && s.dhcpRangeStart.trim() ? s.dhcpRangeStart.trim() : undefined,
+        dhcpRangeEnd: typeof s.dhcpRangeEnd === "string" && s.dhcpRangeEnd.trim() ? s.dhcpRangeEnd.trim() : undefined,
+      }
+    }
+
     const session = await getServerSession(authOptions)
     const createdBy = session?.user?.id ?? null
     const tenantId = await getCurrentTenantId()
 
     try {
-      const vnet = await createVnetForTenant({ vdcId, tenantId, displayName, description, firewall, isolatePorts, vlanAware, createdBy })
+      const vnet = await createVnetForTenant({ vdcId, tenantId, displayName, description, firewall, isolatePorts, vlanAware, subnet, createdBy })
       return NextResponse.json({ data: vnet }, { status: 201 })
     } catch (err: any) {
       const msg = err?.message || String(err)
       if (msg.includes("Quota exceeded")) return NextResponse.json({ error: msg }, { status: 409 })
       if (msg.includes("already exists")) return NextResponse.json({ error: msg }, { status: 409 })
       if (msg.includes("Invalid VNet name")) return NextResponse.json({ error: msg }, { status: 400 })
+      // Subnet validation surfaces with these prefixes — all user input issues.
+      if (
+        msg.startsWith("Invalid CIDR") ||
+        msg.startsWith("Gateway ") ||
+        msg.startsWith("DHCP range")
+      ) return NextResponse.json({ error: msg }, { status: 400 })
       if (msg.includes("vDC not found")) return NextResponse.json({ error: msg }, { status: 404 })
       throw err
     }

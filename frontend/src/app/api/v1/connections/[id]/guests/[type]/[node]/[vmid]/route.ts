@@ -3,6 +3,7 @@ import { NextResponse } from "next/server"
 import { pveFetch } from "@/lib/proxmox/client"
 import { getConnectionById } from "@/lib/connections/getConnection"
 import { checkPermission, buildVmResourceId, PERMISSIONS } from "@/lib/rbac"
+import { releaseAllocationsForVm } from "@/lib/vdc/ipam"
 
 export const runtime = "nodejs"
 
@@ -38,8 +39,8 @@ export async function DELETE(
     )
     
     if (status?.status === 'running') {
-      return NextResponse.json({ 
-        error: "La VM doit être arrêtée avant d'être supprimée" 
+      return NextResponse.json({
+        error: "La VM doit être arrêtée avant d'être supprimée"
       }, { status: 400 })
     }
 
@@ -86,6 +87,21 @@ export async function DELETE(
       url,
       { method: "DELETE" }
     )
+
+    // Release every IPAM reservation tied to this (connection, vmid).
+    // Our IPAM is keyed on vmid so we don't need to re-parse netN/ipconfigN
+    // out of the (already-deleted) qm config. Idempotent: missing rows are
+    // ignored.
+    if (type === 'qemu') {
+      try {
+        const numericVmid = Number(vmid)
+        if (Number.isFinite(numericVmid)) {
+          releaseAllocationsForVm(id, numericVmid)
+        }
+      } catch (err: any) {
+        console.warn(`[vm-delete] IPAM release failed for ${type}/${vmid}: ${err?.message}`)
+      }
+    }
 
     // Audit
     const { audit } = await import("@/lib/audit")

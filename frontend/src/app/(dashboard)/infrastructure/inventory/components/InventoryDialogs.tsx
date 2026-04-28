@@ -27,6 +27,7 @@ import {
   LinearProgress,
   MenuItem,
   Select,
+  Snackbar,
   Stack,
   Switch,
   TextField,
@@ -490,6 +491,15 @@ export default function InventoryDialogs(props: InventoryDialogsProps) {
         }
       } catch {}
     }, 2000)
+  }
+
+  // Local snackbar for action feedback. Native alert() calls were leaking
+  // through here (backup started, delete VM error, migration failed) — they
+  // freeze the page and look like a JS popup, which contradicts the rule
+  // that all user-facing modals must be MUI components.
+  const [snackbar, setSnackbar] = useState<{ open: boolean; message: string; severity: 'success' | 'error' | 'info' | 'warning' }>({ open: false, message: '', severity: 'info' })
+  const showSnackbar = (message: string, severity: 'success' | 'error' | 'info' | 'warning' = 'info') => {
+    setSnackbar({ open: true, message, severity })
   }
 
   return (
@@ -1225,15 +1235,15 @@ export default function InventoryDialogs(props: InventoryDialogsProps) {
                 if (!res.ok) {
                   const err = await res.json()
 
-                  alert(err.error || t('errors.deleteError'))
-                  
+                  showSnackbar(err.error || t('errors.deleteError'), 'error')
+
 return
                 }
 
                 setDeleteHaGroupDialog(null)
                 loadClusterHa(selection.id)
               } catch (e: any) {
-                alert(e.message || t('errors.deleteError'))
+                showSnackbar(e.message || t('errors.deleteError'), 'error')
               }
             }}
           >
@@ -1300,15 +1310,15 @@ return
                 if (!res.ok) {
                   const err = await res.json()
 
-                  alert(err.error || t('errors.deleteError'))
-                  
+                  showSnackbar(err.error || t('errors.deleteError'), 'error')
+
 return
                 }
 
                 setDeleteHaRuleDialog(null)
                 loadClusterHa(selection.id)
               } catch (e: any) {
-                alert(e.message || t('errors.deleteError'))
+                showSnackbar(e.message || t('errors.deleteError'), 'error')
               }
             }}
           >
@@ -1479,7 +1489,7 @@ return
                 }
                 
                 setCreateBackupDialogOpen(false)
-                alert(t('backups.backupStarted'))
+                showSnackbar(t('backups.backupStarted'), 'success')
                 
                 // Recharger les backups après un délai
                 setTimeout(() => {
@@ -1490,7 +1500,7 @@ return
                   }
                 }, 5000)
               } catch (e: any) {
-                alert(`${t('common.error')}: ${e?.message || e}`)
+                showSnackbar(`${t('common.error')}: ${e?.message || e}`, 'error')
               } finally {
                 setCreatingBackup(false)
               }
@@ -2665,7 +2675,7 @@ return
                       throw new Error(d.error || 'Failed to start migration')
                     }
                   } catch (e: any) {
-                    alert(e.message || 'Migration failed to start')
+                    showSnackbar(e.message || 'Migration failed to start', 'error')
                   } finally {
                     setMigStarting(false)
                   }
@@ -3811,6 +3821,26 @@ return
           </Button>
         </DialogActions>
       </Dialog>
+
+      {/* Action feedback — replaces every alert() that used to leak as a
+          native browser popup (backup started, HA group/rule delete error,
+          ESXi migration start failure). 4s for success, sticky-until-click
+          for errors so the user has time to read the underlying message. */}
+      <Snackbar
+        open={snackbar.open}
+        autoHideDuration={snackbar.severity === 'error' ? null : 4000}
+        onClose={() => setSnackbar(s => ({ ...s, open: false }))}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+      >
+        <Alert
+          onClose={() => setSnackbar(s => ({ ...s, open: false }))}
+          severity={snackbar.severity}
+          variant="filled"
+          sx={{ width: '100%' }}
+        >
+          {snackbar.message}
+        </Alert>
+      </Snackbar>
 
     </>
   )

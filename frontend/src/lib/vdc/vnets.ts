@@ -7,8 +7,13 @@ import { getDb } from '@/lib/db/sqlite'
 import { getConnectionById } from '@/lib/connections/getConnection'
 import { prisma } from '@/lib/db/prisma'
 
-import type { VdcVnet } from './types'
+import type { VdcVnet, VdcSubnet } from './types'
 import { clearVdcScopeCache } from './scope'
+import {
+  parseCidr,
+  gatewayValidForCidr,
+  validateDhcpRange,
+} from './network'
 
 import {
   createVnetPve,
@@ -19,6 +24,10 @@ import {
   applySdn,
   countVnetAttachments,
   generatePveVnetId,
+  createSubnetPve,
+  updateSubnetPve,
+  deleteSubnetPve,
+  ensureZoneDhcpBackend,
 } from './sdn'
 
 // ---------------------------------------------------------------------------
@@ -91,7 +100,26 @@ export function checkVnetQuota(vdcId: string): VnetQuotaResult {
 // listVnetsForTenant
 // ---------------------------------------------------------------------------
 
-function rowToVnet(r: any): VdcVnet {
+function rowToSubnet(r: any): VdcSubnet | null {
+  if (!r || !r.id) return null
+  const dnsRaw: string | null = r.dns_servers ?? null
+  const dnsServers = dnsRaw
+    ? dnsRaw.split(',').map((s: string) => s.trim()).filter(Boolean)
+    : []
+  return {
+    id: r.id,
+    vnetId: r.vnet_id,
+    cidr: r.cidr,
+    gateway: r.gateway,
+    dnsServers,
+    dhcpRangeStart: r.dhcp_range_start ?? null,
+    dhcpRangeEnd: r.dhcp_range_end ?? null,
+    ipamEnabled: !!r.ipam_enabled,
+    createdAt: r.created_at,
+  }
+}
+
+function rowToVnet(r: any, subnetRow: any | null): VdcVnet {
   return {
     id: r.id,
     vdcId: r.vdc_id,
@@ -102,19 +130,25 @@ function rowToVnet(r: any): VdcVnet {
     firewall: !!r.firewall,
     isolatePorts: !!r.isolate_ports,
     vlanAware: !!r.vlan_aware,
+    subnet: rowToSubnet(subnetRow),
     createdBy: r.created_by ?? null,
     createdAt: r.created_at,
   }
 }
 
 const VNET_SELECT_COLS = 'id, vdc_id, pve_name, display_name, description, vxlan_tag, firewall, isolate_ports, vlan_aware, created_by, created_at'
+const SUBNET_SELECT_COLS = 'id, vnet_id, cidr, gateway, dns_servers, dhcp_range_start, dhcp_range_end, ipam_enabled, created_at'
+
+function findSubnetByVnetId(db: any, vnetId: string): any {
+  return db.prepare(`SELECT ${SUBNET_SELECT_COLS} FROM vdc_subnets WHERE vnet_id = ? LIMIT 1`).get(vnetId)
+}
 
 export function listVnetsForTenant(vdcId: string): VdcVnet[] {
   const db = getDb()
   const rows = db
     .prepare(`SELECT ${VNET_SELECT_COLS} FROM vdc_vnets WHERE vdc_id = ? ORDER BY display_name`)
     .all(vdcId) as any[]
-  return rows.map(rowToVnet)
+  return rows.map(r => rowToVnet(r, findSubnetByVnetId(db, r.id)))
 }
 
 /** Resolve a user-facing display name (scoped to a vDC) to its row. */
@@ -138,7 +172,45 @@ export interface CreateVnetInput {
   firewall?: boolean
   isolatePorts?: boolean
   vlanAware?: boolean
+  /** Optional L3 + IPAM config attached at create time. Omit for bridge-only.
+   *  When present, ipam=pve is enforced and CloudInit can later auto-allocate
+   *  IPs from this subnet for VMs attached to the VNet. */
+  subnet?: {
+    cidr: string
+    gateway: string
+    dnsServers?: string[]
+    dhcpRangeStart?: string
+    dhcpRangeEnd?: string
+  }
   createdBy: string | null
+}
+
+/** Validate the subnet config block. Throws on first violation with a
+ *  user-readable message that survives across the API boundary unchanged. */
+function validateSubnetInput(input: NonNullable<CreateVnetInput['subnet']>): void {
+  if (!parseCidr(input.cidr)) {
+    throw new Error(`Invalid CIDR "${input.cidr}" — expected IPv4 form like 10.42.0.0/24`)
+  }
+  if (!gatewayValidForCidr(input.gateway, input.cidr)) {
+    throw new Error(`Gateway "${input.gateway}" is not a usable host inside ${input.cidr}`)
+  }
+  const hasStart = !!input.dhcpRangeStart
+  const hasEnd = !!input.dhcpRangeEnd
+  if (hasStart !== hasEnd) {
+    throw new Error('DHCP range requires both start and end addresses (or neither)')
+  }
+  if (hasStart && hasEnd) {
+    const v = validateDhcpRange(input.cidr, input.gateway, input.dhcpRangeStart!, input.dhcpRangeEnd!)
+    if (!v.ok) {
+      const reasonMap: Record<NonNullable<typeof v.reason>, string> = {
+        invalid_start: `DHCP range start "${input.dhcpRangeStart}" is not a usable host in ${input.cidr}`,
+        invalid_end: `DHCP range end "${input.dhcpRangeEnd}" is not a usable host in ${input.cidr}`,
+        reversed: `DHCP range is reversed (start > end)`,
+        gateway_in_range: `Gateway ${input.gateway} falls inside the DHCP range — pick a range that excludes it`,
+      }
+      throw new Error(reasonMap[v.reason!])
+    }
+  }
 }
 
 // Display name is what tenants type — kept scoped to their vDC, free of PVE's
@@ -163,6 +235,10 @@ export async function createVnetForTenant(input: CreateVnetInput): Promise<VdcVn
   if (!VNET_DISPLAY_NAME_REGEX.test(displayName)) {
     throw new Error('Invalid VNet name (1-20 chars, lowercase letters / digits / dashes, must start with a letter)')
   }
+
+  // Validate subnet input up front — fail before touching PVE so a typo on
+  // CIDR doesn't leave a half-created VNet behind.
+  if (input.subnet) validateSubnetInput(input.subnet)
 
   const db = getDb()
 
@@ -227,6 +303,67 @@ export async function createVnetForTenant(input: CreateVnetInput): Promise<VdcVn
     }
   }
 
+  // Optional subnet: created AFTER the VNet exists in PVE (subnet endpoint
+  // lives under /cluster/sdn/vnets/{vnet}/subnets, so the VNet must be
+  // applied first). Failure here rolls back both the VNet and the DB row.
+  let subnetRow: any | null = null
+  if (input.subnet) {
+    const dnsList = (input.subnet.dnsServers ?? []).map(s => s.trim()).filter(Boolean)
+    const dhcpRange = input.subnet.dhcpRangeStart && input.subnet.dhcpRangeEnd
+      ? { start: input.subnet.dhcpRangeStart, end: input.subnet.dhcpRangeEnd }
+      : undefined
+    try {
+      // Lazy upgrade of the parent zone: PVE silently drops a subnet's
+      // `dhcp-range` unless the zone declares a DHCP backend, so we PUT
+      // `dhcp=dnsmasq, ipam=pve` on the zone the first time the user
+      // creates a DHCP-enabled subnet under it. The helper also fails
+      // upfront with a clear message if dnsmasq is missing on any node.
+      if (dhcpRange) {
+        await ensureZoneDhcpBackend(conn, vdc.sdnZoneName)
+      }
+      await createSubnetPve(conn, pveName, {
+        cidr: input.subnet.cidr,
+        gateway: input.subnet.gateway,
+        dnsServers: dnsList.length > 0 ? dnsList : undefined,
+        dhcpRange,
+      })
+    } catch (err: any) {
+      db.prepare('DELETE FROM vdc_vnets WHERE id = ?').run(id)
+      try { await deleteVnetPve(conn, pveName) } catch {}
+      try { await applySdn(conn) } catch {}
+      throw err
+    }
+
+    const subnetId = randomUUID()
+    try {
+      db.prepare(
+        'INSERT INTO vdc_subnets (id, vnet_id, cidr, gateway, dns_servers, dhcp_range_start, dhcp_range_end, ipam_enabled, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)'
+      ).run(
+        subnetId,
+        id,
+        input.subnet.cidr,
+        input.subnet.gateway,
+        dnsList.length > 0 ? dnsList.join(',') : null,
+        input.subnet.dhcpRangeStart ?? null,
+        input.subnet.dhcpRangeEnd ?? null,
+        now,
+      )
+    } catch (err: any) {
+      // Best-effort rollback: drop the PVE subnet so it doesn't dangle.
+      try { await deleteSubnetPve(conn, pveName, input.subnet.cidr) } catch {}
+      db.prepare('DELETE FROM vdc_vnets WHERE id = ?').run(id)
+      try { await deleteVnetPve(conn, pveName) } catch {}
+      try { await applySdn(conn) } catch {}
+      throw new Error(`Failed to persist subnet: ${err?.message}`)
+    }
+
+    try { await applySdn(conn) } catch (err: any) {
+      console.warn(`[vdc-vnets] applySdn failed after subnet create: ${err?.message}`)
+    }
+
+    subnetRow = findSubnetByVnetId(db, id)
+  }
+
   // Invalidate the tenant scope cache so the next network-choices /
   // VM-create flow sees the new VNet instead of stale 60s-cached data.
   clearVdcScopeCache(vdc.tenantId)
@@ -241,6 +378,7 @@ export async function createVnetForTenant(input: CreateVnetInput): Promise<VdcVn
     firewall,
     isolatePorts,
     vlanAware,
+    subnet: rowToSubnet(subnetRow),
     createdBy: input.createdBy,
     createdAt: now,
   }
@@ -254,7 +392,19 @@ export async function updateVnetForTenant(
   vdcId: string,
   tenantId: string,
   displayName: string,
-  patch: { description?: string; firewall?: boolean; isolatePorts?: boolean; vlanAware?: boolean }
+  patch: {
+    description?: string
+    firewall?: boolean
+    isolatePorts?: boolean
+    vlanAware?: boolean
+    /** Subnet patch — only DNS + DHCP range are editable. CIDR/gateway changes
+     *  would invalidate IPAM allocations and require recreate. */
+    subnet?: {
+      dnsServers?: string[]
+      dhcpRangeStart?: string | null
+      dhcpRangeEnd?: string | null
+    }
+  }
 ): Promise<VdcVnet> {
   const vdc = resolveVdcForVnet(vdcId, tenantId)
   if (!vdc) throw new Error('vDC not found')
@@ -279,7 +429,68 @@ export async function updateVnetForTenant(
     await setVnetFirewallEnabled(conn, pveName, patch.firewall)
   }
 
-  if (patch.isolatePorts !== undefined || patch.vlanAware !== undefined || patch.firewall !== undefined) {
+  // Subnet patch (DNS server list lives in our DB only — CloudInit pushes it
+  // to VMs at create time. DHCP range is the only PVE-side mutation here).
+  if (patch.subnet) {
+    const subnetRow = findSubnetByVnetId(db, row.id) as any | null
+    if (!subnetRow) {
+      throw new Error(`Cannot edit subnet for VNet "${displayName}" — VNet has no subnet (bridge-only)`)
+    }
+    const wantsDhcp =
+      patch.subnet.dhcpRangeStart !== undefined ||
+      patch.subnet.dhcpRangeEnd !== undefined
+    if (wantsDhcp) {
+      // Both endpoints required to enable, both empty = clear.
+      const startCleared = patch.subnet.dhcpRangeStart === null || patch.subnet.dhcpRangeStart === ''
+      const endCleared = patch.subnet.dhcpRangeEnd === null || patch.subnet.dhcpRangeEnd === ''
+      if (startCleared && endCleared) {
+        await updateSubnetPve(conn, vdc.sdnZoneName, pveName, subnetRow.cidr, { dhcpRange: null })
+      } else if (!startCleared && !endCleared) {
+        const v = validateDhcpRange(subnetRow.cidr, subnetRow.gateway, patch.subnet.dhcpRangeStart!, patch.subnet.dhcpRangeEnd!)
+        if (!v.ok) {
+          const reasonMap: Record<NonNullable<typeof v.reason>, string> = {
+            invalid_start: `DHCP range start "${patch.subnet.dhcpRangeStart}" is not a usable host in ${subnetRow.cidr}`,
+            invalid_end: `DHCP range end "${patch.subnet.dhcpRangeEnd}" is not a usable host in ${subnetRow.cidr}`,
+            reversed: `DHCP range is reversed (start > end)`,
+            gateway_in_range: `Gateway ${subnetRow.gateway} falls inside the DHCP range — pick a range that excludes it`,
+          }
+          throw new Error(reasonMap[v.reason!])
+        }
+        // Lazy zone upgrade: enabling DHCP on an existing zone needs
+        // `dhcp=dnsmasq` on the zone, not just `dhcp-range` on the subnet.
+        // See ensureZoneDhcpBackend for the why.
+        await ensureZoneDhcpBackend(conn, vdc.sdnZoneName)
+        await updateSubnetPve(conn, vdc.sdnZoneName, pveName, subnetRow.cidr, {
+          dhcpRange: { start: patch.subnet.dhcpRangeStart!, end: patch.subnet.dhcpRangeEnd! },
+        })
+      } else {
+        throw new Error('DHCP range requires both start and end addresses (or neither to clear)')
+      }
+    }
+    // Persist DNS + DHCP range in our DB regardless (DNS is only DB-stored).
+    db.prepare(
+      `UPDATE vdc_subnets SET
+         dns_servers      = CASE WHEN ? IS NULL THEN dns_servers ELSE ? END,
+         dhcp_range_start = CASE WHEN ? IS NULL THEN dhcp_range_start ELSE ? END,
+         dhcp_range_end   = CASE WHEN ? IS NULL THEN dhcp_range_end ELSE ? END
+       WHERE id = ?`
+    ).run(
+      patch.subnet.dnsServers === undefined ? null : (patch.subnet.dnsServers.length > 0 ? patch.subnet.dnsServers.join(',') : ''),
+      patch.subnet.dnsServers === undefined ? null : (patch.subnet.dnsServers.length > 0 ? patch.subnet.dnsServers.join(',') : ''),
+      patch.subnet.dhcpRangeStart === undefined ? null : (patch.subnet.dhcpRangeStart || null),
+      patch.subnet.dhcpRangeStart === undefined ? null : (patch.subnet.dhcpRangeStart || null),
+      patch.subnet.dhcpRangeEnd === undefined ? null : (patch.subnet.dhcpRangeEnd || null),
+      patch.subnet.dhcpRangeEnd === undefined ? null : (patch.subnet.dhcpRangeEnd || null),
+      subnetRow.id,
+    )
+  }
+
+  if (
+    patch.isolatePorts !== undefined ||
+    patch.vlanAware !== undefined ||
+    patch.firewall !== undefined ||
+    patch.subnet !== undefined
+  ) {
     try { await applySdn(conn) } catch (err: any) {
       console.warn(`[vdc-vnets] applySdn failed after update: ${err?.message}`)
     }
@@ -305,7 +516,7 @@ export async function updateVnetForTenant(
   )
 
   const updated = db.prepare(`SELECT ${VNET_SELECT_COLS} FROM vdc_vnets WHERE id = ?`).get(row.id)
-  return rowToVnet(updated)
+  return rowToVnet(updated, findSubnetByVnetId(db, row.id))
 }
 
 // ---------------------------------------------------------------------------
@@ -332,8 +543,18 @@ export async function deleteVnetForTenant(
     return { deleted: false, attachmentCount: attachments }
   }
 
+  // Drop the subnet first — PVE refuses to delete a VNet that still has
+  // subnets attached (it would orphan IPAM entries). Both helpers are
+  // idempotent so a manually-cleaned-up cluster doesn't block the cascade.
+  const subnetRow = findSubnetByVnetId(db, row.id) as { cidr?: string } | undefined
+  if (subnetRow?.cidr) {
+    await deleteSubnetPve(conn, pveName, subnetRow.cidr)
+    try { await applySdn(conn) } catch { /* tolerate */ }
+  }
+
   await deleteVnetPve(conn, pveName)
 
+  // ON DELETE CASCADE on vdc_subnets.vnet_id removes the subnet row.
   db.prepare('DELETE FROM vdc_vnets WHERE id = ?').run(row.id)
 
   try { await applySdn(conn) } catch (err: any) {
@@ -348,6 +569,12 @@ export async function deleteVnetForTenant(
 // ---------------------------------------------------------------------------
 // Bridge whitelist helpers (used by guest route enforcement in Task 4)
 // ---------------------------------------------------------------------------
+
+// getTenantIpamBridgesForConnection used to live here. It filtered by
+// session tenant, which broke the IPAM hook when a super-admin (default
+// tenant) deployed into a tenant-owned vDC. Replaced by
+// resolveSubnetForBridge below — same inputs minus the tenant filter,
+// since tenant authorisation is enforced separately upstream.
 
 /**
  * Returns the set of bridge names a tenant is allowed to attach to on a given connection.
@@ -374,4 +601,72 @@ export function getAllowedBridgesForTenant(tenantId: string, connectionId: strin
 export function parseBridgeFromNet(netStr: string): string | null {
   const m = String(netStr || '').match(/bridge=([^,]+)/)
   return m ? m[1] : null
+}
+
+// ---------------------------------------------------------------------------
+// resolveSubnetForBridge — IPAM target lookup without tenant scoping
+// ---------------------------------------------------------------------------
+
+export interface SubnetForBridge {
+  vdcId: string
+  vnetId: string
+  subnetId: string
+  pveName: string
+  cidr: string
+  gateway: string
+  dnsServers: string[]
+  sdnZoneName: string
+}
+
+/**
+ * Find the (vDC, VNet, subnet) tuple that owns a given bridge on a given
+ * PVE connection — *without* filtering by tenant. The deploy / VM-create
+ * routes already enforce tenant access upstream (`resolveVdcForTenant`,
+ * RBAC, vDC scope guards), so a second tenant filter here was the bug
+ * that left the IPAM hook silent when a super-admin (default tenant)
+ * deployed into a tenant-owned vDC.
+ *
+ * Returns null when:
+ *   - no VNet on this connection matches the bridge name, OR
+ *   - the matching VNet has no subnet (bridge-only mode)
+ */
+export function resolveSubnetForBridge(
+  connectionId: string,
+  bridgePveName: string,
+): SubnetForBridge | null {
+  const db = getDb()
+  const row = db
+    .prepare(
+      `SELECT
+         d.id   AS vdc_id,
+         d.sdn_zone_name AS sdn_zone_name,
+         v.id   AS vnet_id,
+         v.pve_name,
+         s.id   AS subnet_id,
+         s.cidr,
+         s.gateway,
+         s.dns_servers
+       FROM vdc_vnets v
+       JOIN vdcs d        ON d.id = v.vdc_id
+       JOIN vdc_subnets s ON s.vnet_id = v.id
+       WHERE d.connection_id = ?
+         AND d.enabled = 1
+         AND v.pve_name = ?
+         AND s.ipam_enabled = 1
+       LIMIT 1`,
+    )
+    .get(connectionId, bridgePveName) as
+      | { vdc_id: string; sdn_zone_name: string; vnet_id: string; pve_name: string; subnet_id: string; cidr: string; gateway: string; dns_servers: string | null }
+      | undefined
+  if (!row) return null
+  return {
+    vdcId: row.vdc_id,
+    vnetId: row.vnet_id,
+    subnetId: row.subnet_id,
+    pveName: row.pve_name,
+    cidr: row.cidr,
+    gateway: row.gateway,
+    dnsServers: row.dns_servers ? row.dns_servers.split(',').map(s => s.trim()).filter(Boolean) : [],
+    sdnZoneName: row.sdn_zone_name,
+  }
 }

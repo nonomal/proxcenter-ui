@@ -31,7 +31,11 @@ export const menuData = (t = (key) => key) => [
         label: t('navigation.topology'),
         icon: 'ri-mind-map',
         href: '/infrastructure/topology',
-        permissions: ['vm.view', 'node.view']
+        permissions: ['vm.view', 'node.view'],
+        // Cluster-wide layout (nodes / shared storages / SDN graph) is a
+        // provider concern — tenants don't manage placement and it would
+        // re-leak the node names we hide elsewhere.
+        requires: { isProviderTenant: true }
       },
       {
         label: t('navigation.storage'),

@@ -35,6 +35,27 @@ export async function GET(_req: Request, ctx: RouteContext) {
 
     if (!row) return NextResponse.json({ error: "VNet not found" }, { status: 404 })
 
+    const subnetRow = db.prepare(`
+      SELECT id, vnet_id, cidr, gateway, dns_servers, dhcp_range_start, dhcp_range_end, ipam_enabled, created_at
+      FROM vdc_subnets WHERE vnet_id = ? LIMIT 1
+    `).get(row.id) as any
+
+    const subnet = subnetRow
+      ? {
+          id: subnetRow.id,
+          vnetId: subnetRow.vnet_id,
+          cidr: subnetRow.cidr,
+          gateway: subnetRow.gateway,
+          dnsServers: subnetRow.dns_servers
+            ? String(subnetRow.dns_servers).split(',').map((s: string) => s.trim()).filter(Boolean)
+            : [],
+          dhcpRangeStart: subnetRow.dhcp_range_start ?? null,
+          dhcpRangeEnd: subnetRow.dhcp_range_end ?? null,
+          ipamEnabled: !!subnetRow.ipam_enabled,
+          createdAt: subnetRow.created_at,
+        }
+      : null
+
     return NextResponse.json({
       data: {
         id: row.id,
@@ -46,6 +67,7 @@ export async function GET(_req: Request, ctx: RouteContext) {
         firewall: !!row.firewall,
         isolatePorts: !!row.isolate_ports,
         vlanAware: !!row.vlan_aware,
+        subnet,
         createdBy: row.created_by ?? null,
         createdAt: row.created_at,
       },
@@ -67,11 +89,34 @@ export async function PUT(req: Request, ctx: RouteContext) {
     if (denied) return denied
 
     const body = await req.json().catch(() => ({}))
-    const patch: { description?: string; firewall?: boolean; isolatePorts?: boolean; vlanAware?: boolean } = {}
+    const patch: {
+      description?: string
+      firewall?: boolean
+      isolatePorts?: boolean
+      vlanAware?: boolean
+      subnet?: {
+        dnsServers?: string[]
+        dhcpRangeStart?: string | null
+        dhcpRangeEnd?: string | null
+      }
+    } = {}
     if (typeof body?.description === "string") patch.description = body.description.trim()
     if (typeof body?.firewall === "boolean") patch.firewall = body.firewall
     if (typeof body?.isolatePorts === "boolean") patch.isolatePorts = body.isolatePorts
     if (typeof body?.vlanAware === "boolean") patch.vlanAware = body.vlanAware
+    if (body?.subnet && typeof body.subnet === "object") {
+      const s: any = {}
+      if (Array.isArray(body.subnet.dnsServers)) {
+        s.dnsServers = body.subnet.dnsServers.map((x: any) => String(x).trim()).filter(Boolean)
+      } else if (typeof body.subnet.dnsServers === "string") {
+        s.dnsServers = body.subnet.dnsServers.split(",").map((x: string) => x.trim()).filter(Boolean)
+      }
+      if (typeof body.subnet.dhcpRangeStart === "string") s.dhcpRangeStart = body.subnet.dhcpRangeStart.trim() || null
+      else if (body.subnet.dhcpRangeStart === null) s.dhcpRangeStart = null
+      if (typeof body.subnet.dhcpRangeEnd === "string") s.dhcpRangeEnd = body.subnet.dhcpRangeEnd.trim() || null
+      else if (body.subnet.dhcpRangeEnd === null) s.dhcpRangeEnd = null
+      if (Object.keys(s).length > 0) patch.subnet = s
+    }
 
     const tenantId = await getCurrentTenantId()
 

@@ -19,6 +19,9 @@ export type InventorySelection =
   | { type: 'net-conn'; id: string }
   | { type: 'net-node'; id: string }
   | { type: 'net-vlan'; id: string }
+  /** Tenant-only: a single SDN VNet selected from the Network tree.
+   *  ID format: `tvnet:<vdcId>:<displayName>`. */
+  | { type: 'tvnet'; id: string }
   | { type: 'backup-root'; id: 'backup-root' }
   | { type: 'migration-root'; id: 'migration-root' }
 

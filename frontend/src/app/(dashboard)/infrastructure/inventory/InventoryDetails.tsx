@@ -99,6 +99,7 @@ import BackupDashboard from './BackupDashboard'
 import MigrationDashboard from './MigrationDashboard'
 import { ViewMode, AllVmItem, HostItem, PoolItem, TagItem, NodeIcon, ClusterIcon, StatusIcon } from './InventoryTree'
 import NetworkDetailPanel from './components/NetworkDetailPanel'
+import TenantVnetDetailPanel from './TenantVnetDetailPanel'
 import TagManager from './components/TagManager'
 import EntityTagManager from './components/EntityTagManager'
 import VmActions from './components/VmActions'
@@ -2464,6 +2465,10 @@ return vm?.isCluster ?? false
         </Box>
       ) : selection?.type === 'net-conn' || selection?.type === 'net-node' || selection?.type === 'net-vlan' ? (
         <NetworkDetailPanel selection={selection} onSelect={onSelect} />
+      ) : selection?.type === 'tvnet' ? (
+        <Box sx={{ p: 2.5, height: '100%', overflow: 'auto' }}>
+          <TenantVnetDetailPanel selectionId={selection.id} />
+        </Box>
       ) : selection?.type === 'storage-cluster' || selection?.type === 'storage-node' ? (
         <StorageIntermediatePanel selection={selection} clusterStorages={clusterStorages || []} onSelect={onSelect} />
       ) : selection?.type === 'backup-root' ? (

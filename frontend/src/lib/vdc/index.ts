@@ -8,7 +8,7 @@ import { pveFetch } from '@/lib/proxmox/client'
 import { getConnectionById } from '@/lib/connections/getConnection'
 import { prisma } from '@/lib/db/prisma'
 
-import { generateZoneName, createZone, deleteZone, deleteVnetPve, applySdn } from './sdn'
+import { generateZoneName, createZone, deleteZone, deleteVnetPve, deleteSubnetPve, applySdn } from './sdn'
 
 import type {
   Vdc,
@@ -479,9 +479,41 @@ export async function deleteVdc(id: string): Promise<void> {
   try {
     const poolData = await pveFetch<{ members?: any[] }>(conn, `/pools/${encodeURIComponent(vdc.pvePoolName)}`)
     const members = poolData?.members || []
-    const vmMembers = members.filter(
+    let vmMembers = members.filter(
       (m: any) => m.type === 'qemu' || m.type === 'lxc'
     )
+
+    // Same ghost-filter as refreshVdcUsage: cross-reference with
+    // /cluster/resources so deletion isn't blocked by stale pool refs
+    // pointing to VMs that no longer exist. Same auto-cleanup attempt
+    // — leftover ghosts wouldn't survive the pool deletion below
+    // anyway, but cleaning them now logs a clearer trail.
+    if (vmMembers.length > 0) {
+      try {
+        const liveResources = await pveFetch<any[]>(conn, '/cluster/resources?type=vm')
+        const validIds = new Set(
+          (liveResources || [])
+            .filter((r: any) => r?.vmid != null)
+            .map((r: any) => `${r.type}/${r.vmid}`),
+        )
+        const ghosts = vmMembers.filter(m => !validIds.has(`${m.type}/${m.vmid}`))
+        vmMembers = vmMembers.filter(m => validIds.has(`${m.type}/${m.vmid}`))
+        for (const g of ghosts) {
+          try {
+            await pveFetch(conn, `/pools/${encodeURIComponent(vdc.pvePoolName)}`, {
+              method: 'PUT',
+              body: new URLSearchParams({ delete: '1', vms: String(g.vmid) }),
+              headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            } as any)
+          } catch (err: any) {
+            console.warn(`[vdc-delete] failed to clean ghost ${g.type}/${g.vmid}: ${err?.message}`)
+          }
+        }
+      } catch (err: any) {
+        console.warn(`[vdc-delete] /cluster/resources lookup failed: ${err?.message}`)
+      }
+    }
+
     if (vmMembers.length > 0) {
       throw new Error(
         `Cannot delete vDC "${vdc.name}": PVE pool "${vdc.pvePoolName}" still contains ${vmMembers.length} VM(s)/container(s). Remove them first.`
@@ -497,9 +529,37 @@ export async function deleteVdc(id: string): Promise<void> {
     console.warn(`[vdc] Could not check PVE pool "${vdc.pvePoolName}": ${msg}`)
   }
 
-  // 3. Delete all VNets in the vDC zone (best effort)
+  // 3. Delete all VNets in the vDC zone (best effort).
+  //    Cascade order matters on PVE: subnet → vnet → zone. Skipping the
+  //    subnet leaves PVE with "vnet has subnets" → vnet delete fails →
+  //    zone delete fails because the vnet is still attached. Each helper
+  //    is idempotent (404 / "does not exist" tolerated) so external drift
+  //    doesn't block the rest of the cascade.
   if (vdc.sdnZoneName) {
-    const vnetRows = db.prepare('SELECT pve_name FROM vdc_vnets WHERE vdc_id = ?').all(id) as Array<{ pve_name: string }>
+    const vnetRows = db.prepare(`
+      SELECT v.id AS vnet_id, v.pve_name, s.cidr AS subnet_cidr
+      FROM vdc_vnets v
+      LEFT JOIN vdc_subnets s ON s.vnet_id = v.id
+      WHERE v.vdc_id = ?
+    `).all(id) as Array<{ vnet_id: string; pve_name: string; subnet_cidr: string | null }>
+
+    let anySubnetDeleted = false
+    for (const v of vnetRows) {
+      if (v.subnet_cidr) {
+        try {
+          await deleteSubnetPve(conn, v.pve_name, v.subnet_cidr)
+          anySubnetDeleted = true
+        } catch (err: any) {
+          console.warn(`[vdc] Failed to delete subnet "${v.subnet_cidr}" on VNet "${v.pve_name}": ${err?.message}`)
+        }
+      }
+    }
+    // PVE refuses to remove a VNet whose pending state still shows attached
+    // subnets — apply once between the two cascades.
+    if (anySubnetDeleted) {
+      try { await applySdn(conn) } catch { /* tolerate */ }
+    }
+
     for (const v of vnetRows) {
       try {
         await deleteVnetPve(conn, v.pve_name)
@@ -563,10 +623,48 @@ export async function refreshVdcUsage(vdcId: string): Promise<VdcUsage> {
     console.warn(`[vdc] Failed to fetch pool members for "${vdc.pvePoolName}": ${err?.message}`)
   }
 
-  // 4. Filter for qemu/lxc members
-  const vmMembers = members.filter(
+  // 4. Filter for qemu/lxc members, then drop ghosts. PVE pools can hold
+  //    references to vmids that no longer exist (VM deleted but the pool
+  //    membership wasn't cleaned up — happens when /cluster/resources
+  //    races with the delete, or when a tool deleted the VM directly via
+  //    qm/pct without going through ProxCenter). Counting them blocks the
+  //    vDC delete forever; cross-reference with /cluster/resources and
+  //    auto-clean the orphans from the pool.
+  let vmMembers = members.filter(
     (m: any) => m.type === 'qemu' || m.type === 'lxc'
   )
+
+  if (vmMembers.length > 0) {
+    try {
+      const liveResources = await pveFetch<any[]>(conn, '/cluster/resources?type=vm')
+      const validIds = new Set(
+        (liveResources || [])
+          .filter((r: any) => r?.vmid != null)
+          .map((r: any) => `${r.type}/${r.vmid}`),
+      )
+      const ghosts = vmMembers.filter(m => !validIds.has(`${m.type}/${m.vmid}`))
+      vmMembers = vmMembers.filter(m => validIds.has(`${m.type}/${m.vmid}`))
+
+      // Best-effort cleanup of ghost references on the PVE pool. PVE
+      // accepts PUT /pools/<poolname> with `delete=1` + `vms=<id>` to
+      // remove a member. We do them sequentially to avoid PVE locking
+      // issues on the same pool config.
+      for (const g of ghosts) {
+        try {
+          await pveFetch(conn, `/pools/${encodeURIComponent(vdc.pvePoolName)}`, {
+            method: 'PUT',
+            body: new URLSearchParams({ delete: '1', vms: String(g.vmid) }),
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          } as any)
+          console.info(`[vdc] cleaned ghost ${g.type}/${g.vmid} from pool "${vdc.pvePoolName}"`)
+        } catch (err: any) {
+          console.warn(`[vdc] failed to clean ghost ${g.type}/${g.vmid} from pool "${vdc.pvePoolName}": ${err?.message}`)
+        }
+      }
+    } catch (err: any) {
+      console.warn(`[vdc] /cluster/resources lookup failed; counting all pool members: ${err?.message}`)
+    }
+  }
 
   // 5. Sum resources
   let usedVcpus = 0

@@ -39,8 +39,32 @@ export async function GET(req: Request, ctx: RouteContext) {
     if (!connMeta) return NextResponse.json({ error: "Connection not found" }, { status: 404 })
     const pveConn = await getConnectionById(connId, connMeta.tenantId)
 
+    // Subnet info per VNet pve_name. The DeployWizard's CloudInit step
+    // uses this to pre-fill IP/gateway/DNS fields for the selected VNet
+    // (so the user gets an "Auto-allocated from <CIDR>" hint and a fixed
+    // gateway, both driven by IPAM rather than typed by hand).
+    type SubnetInfo = { cidr: string; gateway: string; dnsServers: string[]; subnetId: string }
+    const subnetByPveName = new Map<string, SubnetInfo>()
+    {
+      const subnetRows = db.prepare(`
+        SELECT v.pve_name, s.id AS subnet_id, s.cidr, s.gateway, s.dns_servers
+        FROM vdc_vnets v
+        JOIN vdcs       d ON d.id = v.vdc_id
+        JOIN vdc_subnets s ON s.vnet_id = v.id
+        WHERE d.connection_id = ? AND d.enabled = 1 AND s.ipam_enabled = 1
+      `).all(connId) as Array<{ pve_name: string; subnet_id: string; cidr: string; gateway: string; dns_servers: string | null }>
+      for (const r of subnetRows) {
+        subnetByPveName.set(r.pve_name, {
+          subnetId: r.subnet_id,
+          cidr: r.cidr,
+          gateway: r.gateway,
+          dnsServers: r.dns_servers ? r.dns_servers.split(',').map(s => s.trim()).filter(Boolean) : [],
+        })
+      }
+    }
+
     type Choice =
-      | { kind: "vnet"; name: string; displayName: string; vdc: string; zone: string }
+      | { kind: "vnet"; name: string; displayName: string; vdc: string; zone: string; subnet: SubnetInfo | null }
       | { kind: "shared"; name: string; label: string | null }
       | { kind: "bridge"; name: string; type: string }
 
@@ -58,7 +82,14 @@ export async function GET(req: Request, ctx: RouteContext) {
         for (const v of vnets || []) {
           // PVE returns alias when set (we set it to display_name on create);
           // fall back to the bare ID for legacy/externally-managed VNets.
-          choices.push({ kind: "vnet", name: v.vnet, displayName: v.alias ?? v.vnet, vdc: "*", zone: v.zone })
+          choices.push({
+            kind: "vnet",
+            name: v.vnet,
+            displayName: v.alias ?? v.vnet,
+            vdc: "*",
+            zone: v.zone,
+            subnet: subnetByPveName.get(v.vnet) ?? null,
+          })
         }
       } catch {}
     } else {
@@ -83,6 +114,7 @@ export async function GET(req: Request, ctx: RouteContext) {
             displayName: v.display_name ?? v.pve_name,
             vdc: v.vdc_slug,
             zone: v.sdn_zone_name,
+            subnet: subnetByPveName.get(v.pve_name) ?? null,
           })
         }
       }

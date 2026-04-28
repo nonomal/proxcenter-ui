@@ -21,6 +21,15 @@ import VnetEditDialog from '@/components/mydc/VnetEditDialog'
 import VnetDeleteDialog from '@/components/mydc/VnetDeleteDialog'
 
 interface Vdc { id: string; name: string; connectionId?: string }
+
+interface SubnetView {
+  cidr: string
+  gateway: string
+  dnsServers: string[]
+  dhcpRangeStart: string | null
+  dhcpRangeEnd: string | null
+}
+
 interface VnetRow {
   id: string
   vdcId: string
@@ -32,6 +41,10 @@ interface VnetRow {
   description?: string | null
   vxlanTag?: number | null
   firewall?: boolean
+  isolatePorts?: boolean
+  vlanAware?: boolean
+  /** L3 / IPAM info attached to the VNet; null = bridge-only. */
+  subnet: SubnetView | null
 }
 
 interface Props {
@@ -71,6 +84,16 @@ export default function VnetsSection({ connectionIds }: Props) {
           const j = await r.json()
           const list = Array.isArray(j?.data) ? j.data : []
           for (const vnet of list) {
+            const sn = vnet.subnet
+            const subnet: SubnetView | null = sn
+              ? {
+                  cidr: sn.cidr,
+                  gateway: sn.gateway,
+                  dnsServers: Array.isArray(sn.dnsServers) ? sn.dnsServers : [],
+                  dhcpRangeStart: sn.dhcpRangeStart ?? null,
+                  dhcpRangeEnd: sn.dhcpRangeEnd ?? null,
+                }
+              : null
             all.push({
               id: vnet.id,
               vdcId: v.id,
@@ -80,6 +103,9 @@ export default function VnetsSection({ connectionIds }: Props) {
               description: vnet.description,
               vxlanTag: vnet.vxlanTag,
               firewall: vnet.firewall,
+              isolatePorts: vnet.isolatePorts,
+              vlanAware: vnet.vlanAware,
+              subnet,
             })
           }
         } catch { /* skip */ }
@@ -133,32 +159,48 @@ export default function VnetsSection({ connectionIds }: Props) {
               <Table size="small">
                 <TableHead>
                   <TableRow>
-                    <TableCell sx={{ fontWeight: 700, fontSize: 12, opacity: 0.65, py: 1 }}>{t('myVdc.vnetVdc')}</TableCell>
                     <TableCell sx={{ fontWeight: 700, fontSize: 12, opacity: 0.65, py: 1 }}>{t('myVdc.vnetName')}</TableCell>
+                    <TableCell sx={{ fontWeight: 700, fontSize: 12, opacity: 0.65, py: 1 }}>{t('myVdc.subnetColumn')}</TableCell>
+                    <TableCell sx={{ fontWeight: 700, fontSize: 12, opacity: 0.65, py: 1 }}>{t('myVdc.subnetGateway')}</TableCell>
+                    <TableCell sx={{ fontWeight: 700, fontSize: 12, opacity: 0.65, py: 1 }}>{t('myVdc.subnetDns')}</TableCell>
+                    <TableCell align="center" sx={{ fontWeight: 700, fontSize: 12, opacity: 0.65, py: 1 }}>DHCP</TableCell>
                     <TableCell sx={{ fontWeight: 700, fontSize: 12, opacity: 0.65, py: 1 }}>{t('myVdc.vnetDescription')}</TableCell>
-                    <TableCell align="center" sx={{ fontWeight: 700, fontSize: 12, opacity: 0.65, py: 1 }}>VNI</TableCell>
                     <TableCell align="center" sx={{ fontWeight: 700, fontSize: 12, opacity: 0.65, py: 1 }}>{t('myVdc.vnetFirewall')}</TableCell>
                     <TableCell align="right" sx={{ fontWeight: 700, fontSize: 12, opacity: 0.65, py: 1 }}></TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
-                  {rows.map((r) => (
+                  {rows.map((r) => {
+                    const sn = r.subnet
+                    const dhcpOn = !!sn?.dhcpRangeStart && !!sn?.dhcpRangeEnd
+                    return (
                     <TableRow key={r.id} sx={{ '&:last-child td': { border: 0 }, '&:hover': { bgcolor: alpha(theme.palette.action.hover, 0.5) } }}>
-                      <TableCell sx={{ py: 1, fontSize: 12 }}>
-                        <Stack direction="row" alignItems="center" spacing={0.75}>
-                          <i className="ri-cloud-line" style={{ fontSize: 13, opacity: 0.5 }} />
-                          <span>{r.vdcName}</span>
-                        </Stack>
-                      </TableCell>
                       <TableCell sx={{ py: 1 }}>
-                        <Tooltip title={`PVE ID: ${r.pveName}`} arrow placement="top">
+                        <Tooltip title={`PVE ID: ${r.pveName} · vDC: ${r.vdcName}${r.vxlanTag ? ` · VNI ${r.vxlanTag}` : ''}`} arrow placement="top">
                           <Typography variant="body2" fontWeight={600} sx={{ fontSize: 12 }}>{r.displayName}</Typography>
                         </Tooltip>
                       </TableCell>
-                      <TableCell sx={{ py: 1, fontSize: 12, opacity: 0.75 }}>{r.description || '—'}</TableCell>
-                      <TableCell align="center" sx={{ py: 1, fontFamily: 'JetBrains Mono, monospace', fontSize: 12, opacity: 0.8 }}>
-                        {r.vxlanTag ?? '—'}
+                      <TableCell sx={{ py: 1, fontSize: 12 }}>
+                        {sn?.cidr ?? <span style={{ opacity: 0.45 }}>—</span>}
                       </TableCell>
+                      <TableCell sx={{ py: 1, fontSize: 12 }}>
+                        {sn?.gateway ?? <span style={{ opacity: 0.45 }}>—</span>}
+                      </TableCell>
+                      <TableCell sx={{ py: 1, fontSize: 12, opacity: 0.85 }}>
+                        {sn && sn.dnsServers.length > 0
+                          ? sn.dnsServers.join(', ')
+                          : <span style={{ opacity: 0.45 }}>—</span>}
+                      </TableCell>
+                      <TableCell align="center" sx={{ py: 1 }}>
+                        {dhcpOn ? (
+                          <Tooltip arrow placement="top" title={`${sn!.dhcpRangeStart} – ${sn!.dhcpRangeEnd}`}>
+                            <Chip size="small" label={t('myVdc.fwOn')} color="success" sx={{ height: 20, fontSize: 11 }} />
+                          </Tooltip>
+                        ) : (
+                          <Chip size="small" label={t('myVdc.fwOff')} sx={{ height: 20, fontSize: 11 }} />
+                        )}
+                      </TableCell>
+                      <TableCell sx={{ py: 1, fontSize: 12, opacity: 0.75 }}>{r.description || '—'}</TableCell>
                       <TableCell align="center" sx={{ py: 1 }}>
                         <Chip
                           size="small"
@@ -174,7 +216,8 @@ export default function VnetsSection({ connectionIds }: Props) {
                         </Stack>
                       </TableCell>
                     </TableRow>
-                  ))}
+                    )
+                  })}
                 </TableBody>
               </Table>
             </TableContainer>

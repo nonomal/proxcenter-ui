@@ -76,6 +76,10 @@ export async function POST(req: NextRequest) {
         description: body.description,
         nodes: body.nodes,
         storages: body.storages,
+        // Same bug as the PUT route: the body carried sharedBridges but
+        // the call site dropped it, so a brand-new vDC was created with
+        // an empty uplink list regardless of what the form sent.
+        sharedBridges: body.sharedBridges,
         quota: body.quota,
       },
       session?.user?.id ?? null

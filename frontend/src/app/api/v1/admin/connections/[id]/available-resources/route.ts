@@ -3,6 +3,7 @@ import { NextResponse } from "next/server"
 import { pveFetch } from "@/lib/proxmox/client"
 import { getConnectionById } from "@/lib/connections/getConnection"
 import { prisma } from "@/lib/db/prisma"
+import { getDb } from "@/lib/db/sqlite"
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
 import { requireProviderTenant } from "@/lib/tenant"
 
@@ -10,7 +11,7 @@ export const runtime = "nodejs"
 
 type RouteContext = { params: Promise<{ id: string }> | { id: string } }
 
-export async function GET(_req: Request, ctx: RouteContext) {
+export async function GET(req: Request, ctx: RouteContext) {
   try {
     const params = await Promise.resolve(ctx.params)
     const id = (params as any)?.id
@@ -21,6 +22,12 @@ export async function GET(_req: Request, ctx: RouteContext) {
     if (providerGate) return providerGate
     const denied = await checkPermission(PERMISSIONS.ADMIN_SETTINGS)
     if (denied) return denied
+
+    // Optional ?vdcId=… so the create/edit modal can keep the current
+    // vDC's own PBS storages visible while still hiding the storages
+    // bound to OTHER vDCs on the same cluster (cross-vDC isolation).
+    const url = new URL(req.url)
+    const excludeForVdcId = url.searchParams.get("vdcId") || null
 
     // Admin endpoint: resolve connection's tenantId to bypass session tenant filter
     const connMeta = await prisma.connection.findUnique({ where: { id }, select: { tenantId: true } })
@@ -52,29 +59,50 @@ export async function GET(_req: Request, ctx: RouteContext) {
       }
     } catch {}
 
-    const storages = storagesRaw.map((s: any) => {
-      const nodeEntries = storageNodeUsage[s.storage] || []
-      // For shared storages: all nodes report the same usage, take first entry
-      // For local storages: sum across nodes
-      let disk = 0, maxdisk = 0
-      if (s.shared) {
-        disk = nodeEntries[0]?.disk || 0
-        maxdisk = nodeEntries[0]?.maxdisk || 0
-      } else {
-        for (const ne of nodeEntries) { disk += ne.disk; maxdisk += ne.maxdisk }
-      }
+    // PBS storages bound to OTHER vDCs on the same PVE cluster: each PBS
+    // storage on PVE is a one-to-one bridge to a tenant-scoped namespace
+    // (datastore/<tenant>/<vdc>) on PBS — letting another vDC also bind to
+    // the same `pbs:` storage would expose that tenant's backups. We hide
+    // them from the available-resources list so the admin modal can't
+    // accidentally embed them in the new vDC.
+    const db = getDb()
+    const pbsRows = db.prepare(
+      `SELECT s.pve_storage_name, n.vdc_id
+       FROM vdc_pbs_pve_storages s
+       JOIN vdc_pbs_namespaces n ON n.id = s.vdc_pbs_namespace_id
+       WHERE s.pve_connection_id = ?`
+    ).all(id) as Array<{ pve_storage_name: string; vdc_id: string }>
+    const hiddenPbsStorages = new Set(
+      pbsRows
+        .filter((r) => !excludeForVdcId || r.vdc_id !== excludeForVdcId)
+        .map((r) => r.pve_storage_name),
+    )
 
-      return {
-        id: s.storage,
-        type: s.type,
-        content: s.content,
-        shared: !!s.shared,
-        nodes: s.nodes || null,
-        nodeDetails: !s.shared ? nodeEntries : null,
-        disk,
-        maxdisk,
-      }
-    })
+    const storages = storagesRaw
+      .filter((s: any) => !hiddenPbsStorages.has(s.storage))
+      .map((s: any) => {
+        const nodeEntries = storageNodeUsage[s.storage] || []
+        // For shared storages: all nodes report the same usage, take first entry
+        // For local storages: sum across nodes
+        let disk = 0, maxdisk = 0
+        if (s.shared) {
+          disk = nodeEntries[0]?.disk || 0
+          maxdisk = nodeEntries[0]?.maxdisk || 0
+        } else {
+          for (const ne of nodeEntries) { disk += ne.disk; maxdisk += ne.maxdisk }
+        }
+
+        return {
+          id: s.storage,
+          type: s.type,
+          content: s.content,
+          shared: !!s.shared,
+          nodes: s.nodes || null,
+          nodeDetails: !s.shared ? nodeEntries : null,
+          disk,
+          maxdisk,
+        }
+      })
 
     // Fetch existing PVE pools (to show what's taken)
     let pools: string[] = []

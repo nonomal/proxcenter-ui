@@ -78,7 +78,21 @@ export interface VdcVnet {
   isolatePorts: boolean
   /** Allow attached VMs to push their own 802.1q tags. */
   vlanAware: boolean
+  /** L3 / IPAM config attached to the VNet, or null for bridge-only. */
+  subnet: VdcSubnet | null
   createdBy: string | null
+  createdAt: string
+}
+
+export interface VdcSubnet {
+  id: string
+  vnetId: string
+  cidr: string
+  gateway: string
+  dnsServers: string[]
+  dhcpRangeStart: string | null
+  dhcpRangeEnd: string | null
+  ipamEnabled: boolean
   createdAt: string
 }
 

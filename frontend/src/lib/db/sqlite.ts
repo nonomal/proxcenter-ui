@@ -457,6 +457,53 @@ export function getDb() {
     );
     CREATE INDEX IF NOT EXISTS idx_vdc_vnets_vdc ON vdc_vnets(vdc_id);
 
+    -- One L3 subnet attached to a VNet. MVP supports a single subnet per
+    -- VNet (UNIQUE on vnet_id) — multi-subnet (e.g. dual-stack v4/v6) can
+    -- relax the constraint later. ipam_enabled is reserved for a future
+    -- "bridge-only without IPAM" mode; today it is always 1 when a row
+    -- exists.
+    CREATE TABLE IF NOT EXISTS vdc_subnets (
+      id                TEXT PRIMARY KEY,
+      vnet_id           TEXT NOT NULL UNIQUE REFERENCES vdc_vnets(id) ON DELETE CASCADE,
+      cidr              TEXT NOT NULL,
+      gateway           TEXT NOT NULL,
+      dns_servers       TEXT,                      -- comma-separated, optional
+      dhcp_range_start  TEXT,                      -- optional (enables dnsmasq DHCP)
+      dhcp_range_end    TEXT,
+      ipam_enabled      INTEGER NOT NULL DEFAULT 1,
+      created_at        TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_vdc_subnets_vnet ON vdc_subnets(vnet_id);
+
+    -- IPAM allocations owned by ProxCenter. We don't rely on PVE's built-in
+    -- IPAM because (a) it is opaque on VXLAN zones in PVE 9.x — the
+    -- allocations endpoint returns 200 but writes nothing readable in
+    -- /cluster/sdn/ipams/pve/status — and (b) we need multi-tenant queries
+    -- that the PVE API never exposes. Each row pins a single IP to a MAC
+    -- inside one subnet; (subnet_id, ip) and (subnet_id, mac) are unique so
+    -- re-allocating with the same MAC returns the same IP idempotently.
+    -- vmid is denormalised so the VM-delete hook can release in one query.
+    -- ip_int holds the IP as a uint32 to make next-free / range queries
+    -- trivial without parsing strings on every row.
+    CREATE TABLE IF NOT EXISTS vdc_ipam_allocations (
+      id          TEXT PRIMARY KEY,
+      vdc_id      TEXT NOT NULL REFERENCES vdcs(id) ON DELETE CASCADE,
+      subnet_id   TEXT NOT NULL REFERENCES vdc_subnets(id) ON DELETE CASCADE,
+      vnet_id     TEXT NOT NULL REFERENCES vdc_vnets(id) ON DELETE CASCADE,
+      connection_id TEXT NOT NULL,                -- denormalised for the VM-delete hook
+      ip          TEXT NOT NULL,
+      ip_int      INTEGER NOT NULL,
+      mac         TEXT NOT NULL,
+      vmid        INTEGER,
+      hostname    TEXT,
+      created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE (subnet_id, ip),
+      UNIQUE (subnet_id, mac)
+    );
+    CREATE INDEX IF NOT EXISTS idx_vdc_ipam_allocations_vdc ON vdc_ipam_allocations(vdc_id);
+    CREATE INDEX IF NOT EXISTS idx_vdc_ipam_allocations_subnet ON vdc_ipam_allocations(subnet_id);
+    CREATE INDEX IF NOT EXISTS idx_vdc_ipam_allocations_vmid ON vdc_ipam_allocations(connection_id, vmid);
+
     CREATE TABLE IF NOT EXISTS vdc_pbs_namespaces (
       id                 TEXT PRIMARY KEY,
       vdc_id             TEXT NOT NULL REFERENCES vdcs(id) ON DELETE CASCADE,
