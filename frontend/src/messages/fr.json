@@ -2907,6 +2907,15 @@
         "settings": "Modifier les paramètres",
         "audit": "Consulter les logs d'audit",
         "compliance": "Gérer la conformité et les politiques de sécurité"
+      },
+      "sdn": {
+        "vnet": {
+          "view": "Lister et consulter les VNets de ses propres vDC",
+          "create": "Créer de nouveaux VNets dans ses propres vDC",
+          "edit": "Modifier les métadonnées et le firewall d'un VNet",
+          "delete": "Supprimer les VNets sans NIC attachée",
+          "firewall": "CRUD règles firewall, ipsets et alias par VNet"
+        }
       }
     },
     "roles": {
@@ -6442,11 +6451,20 @@
     "vnetsTitle": "Réseaux virtuels",
     "createVnet": "Créer un VNet",
     "vnetName": "Nom",
-    "vnetNameHint": "Lettres minuscules et chiffres, commence par une lettre, 15 caractères maximum.",
+    "vnetNameHint": "Lettres minuscules, chiffres et tirets, commence par une lettre, 20 caractères max. Unique dans votre vDC.",
     "vnetDescription": "Description",
     "vnetFirewall": "Firewall",
     "vnetFirewallToggle": "Activer le firewall VNet",
     "vnetVniAutoAllocated": "Le VNI est alloué automatiquement par ProxCenter.",
+    "vnetVdc": "Datacenter virtuel",
+    "vnetNoVdc": "Aucun vDC disponible — créez-en un d'abord.",
+    "vnetSelectVdc": "Sélectionnez un vDC.",
+    "vnetsEmpty": "Aucun VNet pour l'instant.",
+    "vnetAdvanced": "Paramètres avancés",
+    "vnetIsolatePortsToggle": "Isoler les ports",
+    "vnetIsolatePortsHelp": "Bloque tout trafic VM-à-VM direct sur ce VNet au niveau du bridge L2 (style private VLAN, sans règle à configurer). Les VMs gardent l'accès à la gateway et à l'extérieur. Pour des règles plus fines (ex. autoriser VM-A → VM-B sur le port 5432), utilise plutôt le firewall du VNet.",
+    "vnetVlanAwareToggle": "VLAN aware",
+    "vnetVlanAwareHelp": "Autorise les VMs attachées à pousser leurs propres tags 802.1q sur ce VNet. Requis pour des VMs de type routeur / firewall / vRouter qui multiplexent plusieurs VLANs sur une seule NIC. Laisser désactivé pour les workloads classiques.",
     "fwOn": "Actif",
     "fwOff": "Inactif",
     "errorInvalidName": "Nom invalide. Doit matcher ^[a-z][a-z0-9]{0,14}$ (ex: prodlan, dmz, app1).",
@@ -6499,6 +6517,19 @@
       "mapOffline": "offline",
       "mapVmsRunning": "{running}/{total} VMs actives",
       "loadError": "Échec du chargement"
+    },
+    "metrics": {
+      "cpuTitle": "Utilisation CPU des VMs",
+      "ramTitle": "Utilisation RAM des VMs",
+      "netTitle": "I/O réseau des VMs",
+      "ioTitle": "I/O disque des VMs",
+      "cpu": "CPU moy",
+      "ram": "RAM moy",
+      "netIn": "Entrant",
+      "netOut": "Sortant",
+      "diskRead": "Lecture",
+      "diskWrite": "Écriture",
+      "noData": "Aucune donnée de VM active sur la dernière heure."
     }
   },
   "sdn": {

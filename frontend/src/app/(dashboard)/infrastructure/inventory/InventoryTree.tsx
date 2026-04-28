@@ -3616,8 +3616,12 @@ return (
         </>
       )}
 
-      {/* ── Network Section ── (super admin only — cluster-wide network topology) */}
-      {viewMode === 'tree' && clusters.length > 0 && isAdmin && (
+      {/* ── Network Section ── visible to tenants too (hosts the VNets
+           management UI; bridge/VLAN topology underneath stays scoped to
+           connections the caller can access). 'vms' mode is the default for
+           non-provider tenants since infra modes are hidden by useRBAC-
+           ScopeProfile, so we accept both 'tree' and 'vms'. */}
+      {(viewMode === 'tree' || viewMode === 'vms') && clusters.length > 0 && (
         <>
           <Box
             onClick={() => {

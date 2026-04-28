@@ -12,11 +12,13 @@ import { clearVdcScopeCache } from './scope'
 
 import {
   createVnetPve,
+  updateVnetPve,
   setVnetFirewallEnabled,
   deleteVnetPve,
   allocateVni,
   applySdn,
   countVnetAttachments,
+  generatePveVnetId,
 } from './sdn'
 
 // ---------------------------------------------------------------------------
@@ -89,21 +91,37 @@ export function checkVnetQuota(vdcId: string): VnetQuotaResult {
 // listVnetsForTenant
 // ---------------------------------------------------------------------------
 
-export function listVnetsForTenant(vdcId: string): VdcVnet[] {
-  const db = getDb()
-  const rows = db
-    .prepare('SELECT id, vdc_id, pve_name, description, vxlan_tag, firewall, created_by, created_at FROM vdc_vnets WHERE vdc_id = ? ORDER BY pve_name')
-    .all(vdcId) as any[]
-  return rows.map((r) => ({
+function rowToVnet(r: any): VdcVnet {
+  return {
     id: r.id,
     vdcId: r.vdc_id,
     pveName: r.pve_name,
+    displayName: r.display_name ?? r.pve_name,
     description: r.description ?? null,
     vxlanTag: r.vxlan_tag,
     firewall: !!r.firewall,
+    isolatePorts: !!r.isolate_ports,
+    vlanAware: !!r.vlan_aware,
     createdBy: r.created_by ?? null,
     createdAt: r.created_at,
-  }))
+  }
+}
+
+const VNET_SELECT_COLS = 'id, vdc_id, pve_name, display_name, description, vxlan_tag, firewall, isolate_ports, vlan_aware, created_by, created_at'
+
+export function listVnetsForTenant(vdcId: string): VdcVnet[] {
+  const db = getDb()
+  const rows = db
+    .prepare(`SELECT ${VNET_SELECT_COLS} FROM vdc_vnets WHERE vdc_id = ? ORDER BY display_name`)
+    .all(vdcId) as any[]
+  return rows.map(rowToVnet)
+}
+
+/** Resolve a user-facing display name (scoped to a vDC) to its row. */
+function findVnetByDisplayName(db: any, vdcId: string, displayName: string): any {
+  return db
+    .prepare(`SELECT ${VNET_SELECT_COLS} FROM vdc_vnets WHERE vdc_id = ? AND display_name = ? LIMIT 1`)
+    .get(vdcId, displayName)
 }
 
 // ---------------------------------------------------------------------------
@@ -113,13 +131,20 @@ export function listVnetsForTenant(vdcId: string): VdcVnet[] {
 export interface CreateVnetInput {
   vdcId: string
   tenantId: string
-  pveName: string
+  /** Free-form, tenant-facing name; unique per vDC. We hash this into the
+   *  8-char pve_name actually sent to PVE so two tenants can both use "lan". */
+  displayName: string
   description?: string
   firewall?: boolean
+  isolatePorts?: boolean
+  vlanAware?: boolean
   createdBy: string | null
 }
 
-const VNET_NAME_REGEX = /^[a-z][a-z0-9]{0,14}$/
+// Display name is what tenants type — kept scoped to their vDC, free of PVE's
+// 8-char + cluster-wide constraints. Up to 20 lowercase alphanumeric chars,
+// optionally separated by single dashes; must start with a letter.
+const VNET_DISPLAY_NAME_REGEX = /^[a-z][a-z0-9-]{0,19}$/
 
 async function getConn(vdc: ResolvedVdc): Promise<any> {
   const connMeta = await prisma.connection.findUnique({
@@ -134,28 +159,39 @@ export async function createVnetForTenant(input: CreateVnetInput): Promise<VdcVn
   const vdc = resolveVdcForVnet(input.vdcId, input.tenantId)
   if (!vdc) throw new Error('vDC not found')
 
-  if (!VNET_NAME_REGEX.test(input.pveName)) {
-    throw new Error('Invalid VNet name (must match ^[a-z][a-z0-9]{0,14}$)')
+  const displayName = input.displayName
+  if (!VNET_DISPLAY_NAME_REGEX.test(displayName)) {
+    throw new Error('Invalid VNet name (1-20 chars, lowercase letters / digits / dashes, must start with a letter)')
   }
 
   const db = getDb()
 
-  const existing = db.prepare('SELECT id FROM vdc_vnets WHERE vdc_id = ? AND pve_name = ?').get(vdc.id, input.pveName)
-  if (existing) throw new Error(`VNet "${input.pveName}" already exists in this vDC`)
+  // Display name uniqueness is scoped to the vDC — two tenants can both
+  // legitimately have a "lan". The unique index on (vdc_id, display_name)
+  // also enforces this at the DB level.
+  if (findVnetByDisplayName(db, vdc.id, displayName)) {
+    throw new Error(`VNet "${displayName}" already exists in this vDC`)
+  }
 
   const quota = checkVnetQuota(vdc.id)
   if (!quota.allowed) {
     throw new Error(`Quota exceeded: max_vnets=${quota.max}, current=${quota.current}`)
   }
 
+  const pveName = generatePveVnetId(vdc.id, displayName)
   const tag = allocateVni(vdc.id)
   const conn = await getConn(vdc)
   const firewall = input.firewall !== false
+  const isolatePorts = input.isolatePorts === true
+  const vlanAware = input.vlanAware === true
 
   await createVnetPve(conn, {
-    pveName: input.pveName,
+    pveName,
     zoneName: vdc.sdnZoneName,
     tag,
+    alias: displayName,
+    isolatePorts,
+    vlanAware,
   })
 
   const id = randomUUID()
@@ -163,10 +199,10 @@ export async function createVnetForTenant(input: CreateVnetInput): Promise<VdcVn
 
   try {
     db.prepare(
-      'INSERT INTO vdc_vnets (id, vdc_id, pve_name, description, vxlan_tag, firewall, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-    ).run(id, vdc.id, input.pveName, input.description ?? null, tag, firewall ? 1 : 0, input.createdBy, now)
+      'INSERT INTO vdc_vnets (id, vdc_id, pve_name, display_name, description, vxlan_tag, firewall, isolate_ports, vlan_aware, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    ).run(id, vdc.id, pveName, displayName, input.description ?? null, tag, firewall ? 1 : 0, isolatePorts ? 1 : 0, vlanAware ? 1 : 0, input.createdBy, now)
   } catch (err: any) {
-    try { await deleteVnetPve(conn, input.pveName) } catch {}
+    try { await deleteVnetPve(conn, pveName) } catch {}
     throw new Error(`Failed to persist VNet: ${err?.message}`)
   }
 
@@ -182,10 +218,10 @@ export async function createVnetForTenant(input: CreateVnetInput): Promise<VdcVn
   // system state stays consistent.
   if (firewall) {
     try {
-      await setVnetFirewallEnabled(conn, input.pveName, true)
+      await setVnetFirewallEnabled(conn, pveName, true)
     } catch (err: any) {
       db.prepare('DELETE FROM vdc_vnets WHERE id = ?').run(id)
-      try { await deleteVnetPve(conn, input.pveName) } catch {}
+      try { await deleteVnetPve(conn, pveName) } catch {}
       try { await applySdn(conn) } catch {}
       throw err
     }
@@ -198,10 +234,13 @@ export async function createVnetForTenant(input: CreateVnetInput): Promise<VdcVn
   return {
     id,
     vdcId: vdc.id,
-    pveName: input.pveName,
+    pveName,
+    displayName,
     description: input.description ?? null,
     vxlanTag: tag,
     firewall,
+    isolatePorts,
+    vlanAware,
     createdBy: input.createdBy,
     createdAt: now,
   }
@@ -214,21 +253,33 @@ export async function createVnetForTenant(input: CreateVnetInput): Promise<VdcVn
 export async function updateVnetForTenant(
   vdcId: string,
   tenantId: string,
-  pveName: string,
-  patch: { description?: string; firewall?: boolean }
+  displayName: string,
+  patch: { description?: string; firewall?: boolean; isolatePorts?: boolean; vlanAware?: boolean }
 ): Promise<VdcVnet> {
   const vdc = resolveVdcForVnet(vdcId, tenantId)
   if (!vdc) throw new Error('vDC not found')
 
   const db = getDb()
-  const row = db
-    .prepare('SELECT id FROM vdc_vnets WHERE vdc_id = ? AND pve_name = ?')
-    .get(vdc.id, pveName) as any
-  if (!row) throw new Error(`VNet "${pveName}" not found`)
+  const row = findVnetByDisplayName(db, vdc.id, displayName)
+  if (!row) throw new Error(`VNet "${displayName}" not found`)
+
+  const pveName: string = row.pve_name
+  const conn = await getConn(vdc)
+
+  // Push isolate-ports / vlanaware to PVE first — these are part of the VNet
+  // schema (PUT /cluster/sdn/vnets/{id}). Firewall is its own subresource.
+  if (patch.isolatePorts !== undefined || patch.vlanAware !== undefined) {
+    await updateVnetPve(conn, pveName, {
+      isolatePorts: patch.isolatePorts,
+      vlanAware: patch.vlanAware,
+    })
+  }
 
   if (patch.firewall !== undefined) {
-    const conn = await getConn(vdc)
     await setVnetFirewallEnabled(conn, pveName, patch.firewall)
+  }
+
+  if (patch.isolatePorts !== undefined || patch.vlanAware !== undefined || patch.firewall !== undefined) {
     try { await applySdn(conn) } catch (err: any) {
       console.warn(`[vdc-vnets] applySdn failed after update: ${err?.message}`)
     }
@@ -236,30 +287,25 @@ export async function updateVnetForTenant(
 
   db.prepare(
     `UPDATE vdc_vnets SET
-       description = CASE WHEN ? IS NULL THEN description ELSE ? END,
-       firewall = CASE WHEN ? IS NULL THEN firewall ELSE ? END
+       description    = CASE WHEN ? IS NULL THEN description ELSE ? END,
+       firewall       = CASE WHEN ? IS NULL THEN firewall ELSE ? END,
+       isolate_ports  = CASE WHEN ? IS NULL THEN isolate_ports ELSE ? END,
+       vlan_aware     = CASE WHEN ? IS NULL THEN vlan_aware ELSE ? END
      WHERE id = ?`
   ).run(
     patch.description === undefined ? null : patch.description,
     patch.description === undefined ? null : patch.description,
     patch.firewall === undefined ? null : (patch.firewall ? 1 : 0),
     patch.firewall === undefined ? null : (patch.firewall ? 1 : 0),
+    patch.isolatePorts === undefined ? null : (patch.isolatePorts ? 1 : 0),
+    patch.isolatePorts === undefined ? null : (patch.isolatePorts ? 1 : 0),
+    patch.vlanAware === undefined ? null : (patch.vlanAware ? 1 : 0),
+    patch.vlanAware === undefined ? null : (patch.vlanAware ? 1 : 0),
     row.id
   )
 
-  const updated = db.prepare(
-    'SELECT id, vdc_id, pve_name, description, vxlan_tag, firewall, created_by, created_at FROM vdc_vnets WHERE id = ?'
-  ).get(row.id) as any
-  return {
-    id: updated.id,
-    vdcId: updated.vdc_id,
-    pveName: updated.pve_name,
-    description: updated.description ?? null,
-    vxlanTag: updated.vxlan_tag,
-    firewall: !!updated.firewall,
-    createdBy: updated.created_by ?? null,
-    createdAt: updated.created_at,
-  }
+  const updated = db.prepare(`SELECT ${VNET_SELECT_COLS} FROM vdc_vnets WHERE id = ?`).get(row.id)
+  return rowToVnet(updated)
 }
 
 // ---------------------------------------------------------------------------
@@ -269,14 +315,16 @@ export async function updateVnetForTenant(
 export async function deleteVnetForTenant(
   vdcId: string,
   tenantId: string,
-  pveName: string
+  displayName: string
 ): Promise<{ deleted: true } | { deleted: false; attachmentCount: number }> {
   const vdc = resolveVdcForVnet(vdcId, tenantId)
   if (!vdc) throw new Error('vDC not found')
 
   const db = getDb()
-  const row = db.prepare('SELECT id FROM vdc_vnets WHERE vdc_id = ? AND pve_name = ?').get(vdc.id, pveName) as any
-  if (!row) throw new Error(`VNet "${pveName}" not found`)
+  const row = findVnetByDisplayName(db, vdc.id, displayName)
+  if (!row) throw new Error(`VNet "${displayName}" not found`)
+
+  const pveName: string = row.pve_name
 
   const conn = await getConn(vdc)
   const attachments = await countVnetAttachments(conn, pveName)
@@ -295,22 +343,6 @@ export async function deleteVnetForTenant(
   clearVdcScopeCache(vdc.tenantId)
 
   return { deleted: true }
-}
-
-// ---------------------------------------------------------------------------
-// listSharedBridgesForTenant
-// ---------------------------------------------------------------------------
-
-export function listSharedBridgesForTenant(vdcId: string, tenantId: string): Array<{ bridge: string; label: string | null }> {
-  const db = getDb()
-  const vdc = db
-    .prepare('SELECT id FROM vdcs WHERE id = ? AND tenant_id = ?')
-    .get(vdcId, tenantId) as any
-  if (!vdc) return []
-  const rows = db
-    .prepare('SELECT bridge, label FROM vdc_shared_bridges WHERE vdc_id = ? ORDER BY bridge')
-    .all(vdcId) as any[]
-  return rows.map((r) => ({ bridge: r.bridge, label: r.label ?? null }))
 }
 
 // ---------------------------------------------------------------------------

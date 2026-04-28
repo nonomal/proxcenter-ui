@@ -21,6 +21,7 @@ import {
 } from '@mui/material'
 import { Bar, BarChart, Cell, Tooltip, XAxis, YAxis } from 'recharts'
 import ChartContainer from '@/components/ChartContainer'
+import VnetsSection from './VnetsSection'
 
 type VmNetData = {
   vmid: string
@@ -418,6 +419,10 @@ export default function NetworkDashboard({ connectionIds, connectionNames }: Pro
           )}
         </CardContent>
       </Card>
+
+      {/* Tenant SDN VNets — managed per vDC, surfaced here so providers can
+          create / inspect them alongside the underlying bridges & VLANs. */}
+      <VnetsSection connectionIds={connectionIds} />
     </Box>
   )
 }

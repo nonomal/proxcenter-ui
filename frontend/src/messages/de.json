@@ -2875,6 +2875,15 @@
         "settings": "Modify Einstellungen",
         "audit": "Audit-Logs anzeigen",
         "compliance": "Manage compliance and Sicherheit policies"
+      },
+      "sdn": {
+        "vnet": {
+          "view": "VNets in eigenen vDCs auflisten und ansehen",
+          "create": "Neue VNets in eigenen vDCs erstellen",
+          "edit": "VNet-Metadaten und Firewall-Toggle bearbeiten",
+          "delete": "VNets ohne angehängte NIC löschen",
+          "firewall": "Firewall-Regeln, IP-Sets und Aliase pro VNet verwalten"
+        }
       }
     },
     "roles": {
@@ -6301,11 +6310,20 @@
     "vnetsTitle": "Virtuelle Netzwerke",
     "createVnet": "VNet erstellen",
     "vnetName": "Name",
-    "vnetNameHint": "Kleinbuchstaben und Ziffern, muss mit einem Buchstaben beginnen, max. 15 Zeichen.",
+    "vnetNameHint": "Kleinbuchstaben, Ziffern und Bindestriche, muss mit einem Buchstaben beginnen, max. 20 Zeichen. Eindeutig innerhalb Ihres vDC.",
     "vnetDescription": "Beschreibung",
     "vnetFirewall": "Firewall",
     "vnetFirewallToggle": "VNet-Firewall aktivieren",
     "vnetVniAutoAllocated": "Die VNI wird von ProxCenter automatisch zugewiesen.",
+    "vnetVdc": "Virtuelles Rechenzentrum",
+    "vnetNoVdc": "Kein vDC verfügbar — bitte zuerst eines erstellen.",
+    "vnetSelectVdc": "vDC auswählen.",
+    "vnetsEmpty": "Noch keine VNets.",
+    "vnetAdvanced": "Erweiterte Einstellungen",
+    "vnetIsolatePortsToggle": "Ports isolieren",
+    "vnetIsolatePortsHelp": "Blockiert sämtlichen direkten VM-zu-VM-Verkehr auf diesem VNet auf L2-Bridge-Ebene (Private-VLAN-Stil, ohne konfigurierbare Regeln). VMs behalten Gateway- und Außenwelt-Zugriff. Für feinere Regeln (z. B. VM-A → VM-B nur auf Port 5432) nutze stattdessen die VNet-Firewall.",
+    "vnetVlanAwareToggle": "VLAN aware",
+    "vnetVlanAwareHelp": "Erlaubt angeschlossenen VMs, eigene 802.1q-VLAN-Tags über dieses VNet zu schicken. Notwendig für Router-/Firewall-/vRouter-VMs, die mehrere VLANs auf einer einzigen NIC bündeln. Für reguläre Workloads ausgeschaltet lassen.",
     "fwOn": "Ein",
     "fwOff": "Aus",
     "errorInvalidName": "Ungültiger Name. Muss auf ^[a-z][a-z0-9]{0,14}$ passen (z. B. prodlan, dmz, app1).",
@@ -6358,6 +6376,19 @@
       "mapOffline": "offline",
       "mapVmsRunning": "{running}/{total} VMs laufen",
       "loadError": "Laden fehlgeschlagen"
+    },
+    "metrics": {
+      "cpuTitle": "VM-CPU-Auslastung",
+      "ramTitle": "VM-RAM-Auslastung",
+      "netTitle": "VM-Netzwerk-I/O",
+      "ioTitle": "VM-Disk-I/O",
+      "cpu": "CPU Ø",
+      "ram": "RAM Ø",
+      "netIn": "Eingehend",
+      "netOut": "Ausgehend",
+      "diskRead": "Lesen",
+      "diskWrite": "Schreiben",
+      "noData": "Keine aktiven VM-Daten in der letzten Stunde."
     }
   },
   "vdc": {

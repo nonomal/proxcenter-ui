@@ -2877,6 +2877,15 @@
         "settings": "修改设置",
         "audit": "查看审计日志",
         "compliance": "管理合规与安全策略"
+      },
+      "sdn": {
+        "vnet": {
+          "view": "查看自有 vDC 中的 VNet 列表",
+          "create": "在自有 vDC 中创建新的 VNet",
+          "edit": "编辑 VNet 元数据及防火墙开关",
+          "delete": "删除未挂载网卡的 VNet",
+          "firewall": "管理 VNet 的防火墙规则、IP 集合和别名"
+        }
       }
     },
     "roles": {
@@ -6298,11 +6307,20 @@
     "vnetsTitle": "虚拟网络",
     "createVnet": "创建 VNet",
     "vnetName": "名称",
-    "vnetNameHint": "小写字母和数字，以字母开头，最多 15 个字符。",
+    "vnetNameHint": "小写字母、数字和连字符，以字母开头，最多 20 个字符。在您的 vDC 内唯一。",
     "vnetDescription": "描述",
     "vnetFirewall": "防火墙",
     "vnetFirewallToggle": "启用 VNet 防火墙",
     "vnetVniAutoAllocated": "VNI 由 ProxCenter 自动分配。",
+    "vnetVdc": "虚拟数据中心",
+    "vnetNoVdc": "暂无可用的 vDC — 请先创建一个。",
+    "vnetSelectVdc": "请选择一个 vDC。",
+    "vnetsEmpty": "暂无 VNet。",
+    "vnetAdvanced": "高级设置",
+    "vnetIsolatePortsToggle": "端口隔离",
+    "vnetIsolatePortsHelp": "在二层桥接层面阻止本 VNet 内所有 VM 之间的直接通信（类似私有 VLAN，无需配置规则）。VM 仍可访问网关和外部网络。如需更精细的规则（例如允许 VM-A → VM-B 在 5432 端口通信），请改用 VNet 防火墙。",
+    "vnetVlanAwareToggle": "支持 VLAN",
+    "vnetVlanAwareHelp": "允许接入此 VNet 的 VM 自行打 802.1q VLAN 标签。适用于需要在单个网卡上复用多个 VLAN 的路由器 / 防火墙 / vRouter 类 VM。普通负载请保持关闭。",
     "fwOn": "开",
     "fwOff": "关",
     "errorInvalidName": "名称无效。必须匹配 ^[a-z][a-z0-9]{0,14}$（例如 prodlan、dmz、app1）。",
@@ -6355,6 +6373,19 @@
       "mapOffline": "离线",
       "mapVmsRunning": "{running}/{total} 虚拟机运行中",
       "loadError": "加载失败"
+    },
+    "metrics": {
+      "cpuTitle": "虚拟机 CPU 使用率",
+      "ramTitle": "虚拟机内存使用率",
+      "netTitle": "虚拟机网络 I/O",
+      "ioTitle": "虚拟机磁盘 I/O",
+      "cpu": "CPU 平均",
+      "ram": "内存平均",
+      "netIn": "入",
+      "netOut": "出",
+      "diskRead": "读",
+      "diskWrite": "写",
+      "noData": "最近一小时内没有运行中的虚拟机数据。"
     }
   },
   "vdc": {

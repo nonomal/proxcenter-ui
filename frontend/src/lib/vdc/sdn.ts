@@ -12,14 +12,24 @@ import type { SdnVnet } from './types'
 // Zone name generation
 // ---------------------------------------------------------------------------
 
+// PVE caps SDN zone IDs at 8 characters total (cluster check, not just our
+// preference). The previous 14-char strip was a leftover from an earlier
+// schema and broke the moment slugs got longer than ~7 chars after the
+// switch to <tenantSlug>-<connectionSlug> auto-derivation. Keep the
+// sanitiser pure here; the call sites cap to whatever fits below.
 function stripSlug(slug: string): string {
-  return slug.replace(/[^a-z0-9]/g, '').slice(0, 14)
+  return slug.replace(/[^a-z0-9]/g, '')
 }
+
+const ZONE_MAX_LEN = 8         // PVE hard limit on /cluster/sdn/zones
+const ZONE_HASH_LEN = 2        // collision suffix length (hex)
 
 interface ZoneNameInput { id: string; slug: string }
 
 function generateZoneNameImpl(db: any, connectionId: string, vdc: ZoneNameInput): string {
-  const base = 'z' + stripSlug(vdc.slug)
+  // 'z' prefix + up to 7 slug chars = 8 total. We always reserve room for
+  // the prefix even when the slug is tiny.
+  const base = 'z' + stripSlug(vdc.slug).slice(0, ZONE_MAX_LEN - 1)
 
   const existing = db
     .prepare('SELECT sdn_zone_name FROM vdcs WHERE connection_id = ? AND sdn_zone_name = ?')
@@ -27,8 +37,12 @@ function generateZoneNameImpl(db: any, connectionId: string, vdc: ZoneNameInput)
 
   if (!existing) return base
 
-  const hash = crypto.createHash('sha1').update(vdc.id).digest('hex').slice(0, 2)
-  const withSuffix = 'z' + stripSlug(vdc.slug).slice(0, 12) + hash
+  // Collision: drop two slug chars and append a 2-hex-char hash of the
+  // vdc id so two vDCs with similar slugs on the same cluster don't
+  // overlap. Total: 'z' (1) + 5 slug + 2 hash = 8.
+  const hash = crypto.createHash('sha1').update(vdc.id).digest('hex').slice(0, ZONE_HASH_LEN)
+  const slugRoom = ZONE_MAX_LEN - 1 - ZONE_HASH_LEN
+  const withSuffix = 'z' + stripSlug(vdc.slug).slice(0, slugRoom) + hash
 
   const collision2 = db
     .prepare('SELECT sdn_zone_name FROM vdcs WHERE connection_id = ? AND sdn_zone_name = ?')
@@ -49,15 +63,79 @@ export function generateZoneName(connectionId: string, vdc: ZoneNameInput): stri
   return generateZoneNameImpl(getDb(), connectionId, vdc)
 }
 
+
 // ---------------------------------------------------------------------------
-// VNI allocation (local per vDC)
+// PVE VNet ID generation
+// ---------------------------------------------------------------------------
+//
+// PVE caps SDN VNet IDs at 8 characters AND requires them to be unique
+// cluster-wide (across every zone, not per-zone). Forcing tenants to share
+// that flat 8-char namespace is unusable in MSP — two tenants both naturally
+// want a "lan" VNet. We decouple by storing a free-form display_name in the
+// vDC namespace and computing a deterministic 8-char pve_name to send to PVE.
+// PVE's own `alias` field carries the display_name so an admin debugging in
+// the Proxmox GUI sees both ID and friendly label.
+
+const PVE_VNET_ID_LEN = 8                // PVE hard limit
+const PVE_VNET_ID_PREFIX = 'v'           // first char must be a letter
+const PVE_VNET_ID_HEX_LEN = PVE_VNET_ID_LEN - PVE_VNET_ID_PREFIX.length
+
+function hashVnetSeed(seed: string): string {
+  return crypto.createHash('sha256').update(seed).digest('hex').slice(0, PVE_VNET_ID_HEX_LEN)
+}
+
+function generatePveVnetIdImpl(db: any, vdcId: string, displayName: string): string {
+  // Deterministic for the same (vdcId, displayName) pair so re-runs of a
+  // failed create don't drift. Collision-check across the whole connection
+  // (PVE's actual uniqueness scope), with up to 16 retries appending a nonce.
+  const seedBase = `${vdcId}:${displayName}`
+
+  const stmt = db.prepare(
+    `SELECT 1 FROM vdc_vnets v
+     JOIN vdcs d ON d.id = v.vdc_id
+     WHERE d.connection_id = (SELECT connection_id FROM vdcs WHERE id = ?)
+       AND v.pve_name = ?
+     LIMIT 1`
+  )
+
+  for (let i = 0; i < 16; i++) {
+    const seed = i === 0 ? seedBase : `${seedBase}#${i}`
+    const candidate = PVE_VNET_ID_PREFIX + hashVnetSeed(seed)
+    if (!stmt.get(vdcId, candidate)) return candidate
+  }
+
+  throw new Error(
+    `Cannot generate a unique PVE VNet ID for vdc=${vdcId} displayName=${displayName} after 16 retries — extreme collision rate suggests a bug.`
+  )
+}
+
+/** @internal exported only for testing */
+export function generatePveVnetIdForTesting(db: any, vdcId: string, displayName: string): string {
+  return generatePveVnetIdImpl(db, vdcId, displayName)
+}
+
+export function generatePveVnetId(vdcId: string, displayName: string): string {
+  return generatePveVnetIdImpl(getDb(), vdcId, displayName)
+}
+
+// ---------------------------------------------------------------------------
+// VNI allocation (cluster-wide per PVE connection)
 // ---------------------------------------------------------------------------
 
 const VNI_BASE = 10000
 
 function allocateVniImpl(db: any, vdcId: string): number {
+  // VXLAN VNIs must be unique across the entire PVE cluster (transport is one
+  // shared overlay), not just within a single vDC. Scoping by vdc_id caused
+  // tenant A's first VNet (VNI 10000) to collide with tenant B's first VNet
+  // (also 10000) on the same cluster → PVE returns a 400 on the second.
   const row = db
-    .prepare('SELECT MAX(vxlan_tag) AS max_tag FROM vdc_vnets WHERE vdc_id = ?')
+    .prepare(
+      `SELECT MAX(v.vxlan_tag) AS max_tag
+       FROM vdc_vnets v
+       JOIN vdcs d ON d.id = v.vdc_id
+       WHERE d.connection_id = (SELECT connection_id FROM vdcs WHERE id = ?)`
+    )
     .get(vdcId) as { max_tag: number | null } | undefined
 
   const maxTag = row?.max_tag ?? null
@@ -141,6 +219,15 @@ export interface CreateVnetParams {
   pveName: string
   zoneName: string
   tag: number
+  /** Friendly label shown in the PVE GUI under the hashed pveName — lets a
+   *  provider admin debugging Proxmox identify which tenant VNet this is. */
+  alias?: string
+  /** When true, PVE blocks intra-VNet traffic between the attached VMs
+   *  (private-VLAN style). Default false (VMs in the same VNet talk freely). */
+  isolatePorts?: boolean
+  /** When true, attached VMs can push their own 802.1q tags across this VNet —
+   *  needed for router/firewall VMs that multiplex VLANs. Default false. */
+  vlanAware?: boolean
 }
 
 /**
@@ -154,21 +241,29 @@ export async function createVnetPve(conn: any, params: CreateVnetParams): Promis
   body.append('zone', params.zoneName)
   body.append('tag', String(params.tag))
   body.append('type', 'vnet')
+  if (params.alias) body.append('alias', params.alias)
+  if (params.isolatePorts) body.append('isolate-ports', '1')
+  if (params.vlanAware) body.append('vlanaware', '1')
 
   try {
     await pveFetch(conn, '/cluster/sdn/vnets', { method: 'POST', body })
   } catch (err: any) {
-    throw new Error(`Failed to create SDN VNet "${params.pveName}": ${err?.message}`)
+    throw new Error(`Failed to create SDN VNet "${params.alias ?? params.pveName}": ${err?.message}`)
   }
 }
 
 export async function updateVnetPve(
   conn: any,
   pveName: string,
-  patch: { alias?: string }
+  patch: { alias?: string; isolatePorts?: boolean; vlanAware?: boolean }
 ): Promise<void> {
   const body = new URLSearchParams()
   if (patch.alias !== undefined) body.append('alias', patch.alias)
+  // PVE expects the param to be DELETEd (via the `delete` query) rather than
+  // set to 0 to clear a boolean flag. Easier path: always send 0/1 explicitly,
+  // PVE accepts either form.
+  if (patch.isolatePorts !== undefined) body.append('isolate-ports', patch.isolatePorts ? '1' : '0')
+  if (patch.vlanAware !== undefined) body.append('vlanaware', patch.vlanAware ? '1' : '0')
   if ([...body.keys()].length === 0) return
 
   await pveFetch(conn, `/cluster/sdn/vnets/${encodeURIComponent(pveName)}`, { method: 'PUT', body })
@@ -205,10 +300,20 @@ export async function deleteVnetPve(conn: any, pveName: string): Promise<void> {
     await pveFetch(conn, `/cluster/sdn/vnets/${encodeURIComponent(pveName)}`, { method: 'DELETE' })
   } catch (err: any) {
     const msg = String(err?.message || '')
-    if (!msg.toLowerCase().includes('not found') && !msg.includes('404')) {
+    const lower = msg.toLowerCase()
+    // PVE returns 500 with "sdn vnet 'X' does not exist" for SDN objects that
+    // were already removed (manual cluster cleanup, drift, etc.). Treat any of
+    // these missing-object signals as success so DB-side delete stays
+    // idempotent and the user can clean up the orphan row.
+    const isMissing =
+      lower.includes('not found') ||
+      msg.includes('404') ||
+      lower.includes('does not exist') ||
+      lower.includes("doesn't exist")
+    if (!isMissing) {
       throw new Error(`Failed to delete SDN VNet "${pveName}": ${msg}`)
     }
-    console.warn(`[vdc-sdn] SDN VNet "${pveName}" not found, skipping`)
+    console.warn(`[vdc-sdn] SDN VNet "${pveName}" already gone on PVE, proceeding with DB cleanup`)
   }
 }
 

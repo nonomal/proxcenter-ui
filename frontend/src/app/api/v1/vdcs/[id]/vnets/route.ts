@@ -38,18 +38,26 @@ export async function POST(req: Request, ctx: RouteContext) {
     if (denied) return denied
 
     const body = await req.json().catch(() => ({}))
-    const pveName = typeof body?.pveName === "string" ? body.pveName.trim() : ""
+    // Accept `displayName` (current), fall back to legacy `pveName` field
+    // posted by older clients/dialogs that haven't been redeployed yet.
+    const displayName = typeof body?.displayName === "string"
+      ? body.displayName.trim()
+      : typeof body?.pveName === "string"
+        ? body.pveName.trim()
+        : ""
     const description = typeof body?.description === "string" ? body.description.trim() : undefined
     const firewall = body?.firewall !== false
+    const isolatePorts = body?.isolatePorts === true
+    const vlanAware = body?.vlanAware === true
 
-    if (!pveName) return NextResponse.json({ error: "pveName required" }, { status: 400 })
+    if (!displayName) return NextResponse.json({ error: "displayName required" }, { status: 400 })
 
     const session = await getServerSession(authOptions)
     const createdBy = session?.user?.id ?? null
     const tenantId = await getCurrentTenantId()
 
     try {
-      const vnet = await createVnetForTenant({ vdcId, tenantId, pveName, description, firewall, createdBy })
+      const vnet = await createVnetForTenant({ vdcId, tenantId, displayName, description, firewall, isolatePorts, vlanAware, createdBy })
       return NextResponse.json({ data: vnet }, { status: 201 })
     } catch (err: any) {
       const msg = err?.message || String(err)

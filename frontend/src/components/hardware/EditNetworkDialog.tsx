@@ -55,7 +55,9 @@ export function EditNetworkDialog({ open, onClose, onSave, onDelete, connId, nod
   const [showAdvanced, setShowAdvanced] = useState(false)
 
   // Bridges disponibles
-  const [bridges, setBridges] = useState<string[]>([])
+  // {iface,label}: iface is the actual PVE bridge name (hashed for tenant
+  // VNets); label is the user-friendly display name we show in the dropdown.
+  const [bridges, setBridges] = useState<Array<{ iface: string; label: string }>>([])
 
   // Network config
   const [bridge, setBridge] = useState('vmbr0')
@@ -80,14 +82,21 @@ export function EditNetworkDialog({ open, onClose, onSave, onDelete, connId, nod
         if (res.ok) {
           const json = await res.json()
           const choices = Array.isArray(json.data) ? json.data : []
-          const bridgeList = choices.map((c: any) => c.name)
+          const bridgeList = choices.map((c: any) => ({
+            iface: c.name,
+            label: c.kind === 'vnet'
+              ? (c.displayName ?? c.name)
+              : c.kind === 'shared'
+                ? (c.label ?? c.name)
+                : c.name,
+          }))
 
-          setBridges(bridgeList.length > 0 ? bridgeList : ['vmbr0', 'vmbr1'])
+          setBridges(bridgeList.length > 0 ? bridgeList : [{ iface: 'vmbr0', label: 'vmbr0' }, { iface: 'vmbr1', label: 'vmbr1' }])
         } else {
-          setBridges(['vmbr0', 'vmbr1'])
+          setBridges([{ iface: 'vmbr0', label: 'vmbr0' }, { iface: 'vmbr1', label: 'vmbr1' }])
         }
       } catch (e) {
-        setBridges(['vmbr0', 'vmbr1'])
+        setBridges([{ iface: 'vmbr0', label: 'vmbr0' }, { iface: 'vmbr1', label: 'vmbr1' }])
       }
     }
 
@@ -170,7 +179,12 @@ export function EditNetworkDialog({ open, onClose, onSave, onDelete, connId, nod
               <InputLabel>Bridge</InputLabel>
               <Select value={bridge} onChange={(e) => setBridge(e.target.value)} label="Bridge">
                 {bridges.map((b) => (
-                  <MenuItem key={b} value={b}>{b}</MenuItem>
+                  <MenuItem key={b.iface} value={b.iface}>
+                    {b.label}
+                    {b.label !== b.iface && (
+                      <span style={{ opacity: 0.45, marginLeft: 8, fontSize: '0.75em', fontFamily: 'JetBrains Mono, monospace' }}>{b.iface}</span>
+                    )}
+                  </MenuItem>
                 ))}
               </Select>
             </FormControl>

@@ -441,14 +441,17 @@ export function getDb() {
     CREATE INDEX IF NOT EXISTS idx_vdc_shared_bridges_vdc ON vdc_shared_bridges(vdc_id);
 
     CREATE TABLE IF NOT EXISTS vdc_vnets (
-      id          TEXT PRIMARY KEY,
-      vdc_id      TEXT NOT NULL REFERENCES vdcs(id) ON DELETE CASCADE,
-      pve_name    TEXT NOT NULL,
-      description TEXT,
-      vxlan_tag   INTEGER NOT NULL,
-      firewall    INTEGER DEFAULT 1,
-      created_by  TEXT,
-      created_at  TEXT DEFAULT (datetime('now')),
+      id            TEXT PRIMARY KEY,
+      vdc_id        TEXT NOT NULL REFERENCES vdcs(id) ON DELETE CASCADE,
+      pve_name      TEXT NOT NULL,                 -- 8-char unique ID sent to PVE (hash-based)
+      display_name  TEXT,                          -- friendly name shown to the tenant; unique per vDC
+      description   TEXT,
+      vxlan_tag     INTEGER NOT NULL,
+      firewall      INTEGER DEFAULT 1,
+      isolate_ports INTEGER DEFAULT 0,             -- prevent intra-VNet VM-to-VM traffic (private VLAN style)
+      vlan_aware    INTEGER DEFAULT 0,             -- allow VMs to push their own 802.1q tags over the VNet
+      created_by    TEXT,
+      created_at    TEXT DEFAULT (datetime('now')),
       UNIQUE(vdc_id, pve_name),
       UNIQUE(vdc_id, vxlan_tag)
     );
@@ -546,6 +549,38 @@ export function getDb() {
   db.prepare(
     'CREATE UNIQUE INDEX IF NOT EXISTS idx_vdcs_sdn_zone_name ON vdcs(connection_id, sdn_zone_name)'
   ).run()
+
+  // SDN VNet display_name decoupling — PVE caps VNet IDs at 8 chars and
+  // requires them to be unique cluster-wide, which makes "lan" / "dmz" / etc.
+  // unusable in a multi-tenant MSP setup. We now hash a unique 8-char pve_name
+  // per VNet and let the user pick a free-form display_name scoped to their
+  // vDC. Backfill: pre-existing rows had pve_name double as the display name,
+  // so set display_name = pve_name for them.
+  try {
+    db.prepare('ALTER TABLE vdc_vnets ADD COLUMN display_name TEXT').run()
+  } catch (e: any) {
+    if (!String(e?.message || '').includes('duplicate column')) {
+      throw e
+    }
+  }
+  db.prepare(
+    'UPDATE vdc_vnets SET display_name = pve_name WHERE display_name IS NULL OR display_name = ""'
+  ).run()
+  db.prepare(
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_vdc_vnets_display_name ON vdc_vnets(vdc_id, display_name)'
+  ).run()
+
+  // Advanced VNet flags surfaced to tenants as opt-in toggles.
+  for (const colDef of [
+    'ALTER TABLE vdc_vnets ADD COLUMN isolate_ports INTEGER DEFAULT 0',
+    'ALTER TABLE vdc_vnets ADD COLUMN vlan_aware INTEGER DEFAULT 0',
+  ]) {
+    try {
+      db.prepare(colDef).run()
+    } catch (e: any) {
+      if (!String(e?.message || '').includes('duplicate column')) throw e
+    }
+  }
 
   // Multi-DC Phase A — datacentres now own server specs (TDP/core, W/GB RAM,
   // overhead) so the inheritance chain is self-contained: node → cluster →

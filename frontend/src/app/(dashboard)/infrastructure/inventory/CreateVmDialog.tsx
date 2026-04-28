@@ -289,8 +289,11 @@ function CreateVmDialog({
         const choices = Array.isArray(json.data) ? json.data : []
         const bridgeList = choices.map((c: any) => ({
           iface: c.name,
+          // VNets carry a hashed iface (the actual PVE ID) but a friendly
+          // display name from the user. Surface displayName as label so the
+          // picker shows "lan" instead of "v8a3f9e2b".
           type: c.kind === 'vnet' ? 'vnet' : c.kind === 'shared' ? 'shared' : (c.type || 'bridge'),
-          label: c.label ?? null,
+          label: c.kind === 'vnet' ? (c.displayName ?? null) : (c.label ?? null),
           vdc: c.vdc ?? null,
         }))
         setBridges(bridgeList)
@@ -1922,9 +1925,19 @@ return
                                   b.type === 'vnet' ? 'VNet'
                                   : b.type === 'shared' ? 'Shared'
                                   : b.type === 'OVSBridge' ? 'OVS' : null
+                                // For VNets the iface is the hashed PVE ID and
+                                // b.label is the friendly display name — lead
+                                // with the friendly part, demote the hash.
+                                const primary = b.type === 'vnet' && b.label ? b.label : b.iface
+                                const showHash = b.type === 'vnet' && b.label && b.label !== b.iface
                                 return (
                                   <MenuItem key={b.iface} value={b.iface}>
-                                    {b.iface}{tag ? ` (${tag})` : ''}{b.label ? ` — ${b.label}` : ''}{b.vdc && b.vdc !== '*' ? ` — ${b.vdc}` : ''}
+                                    {primary}{tag ? ` (${tag})` : ''}
+                                    {showHash && (
+                                      <span style={{ opacity: 0.45, marginLeft: 6, fontSize: '0.75em', fontFamily: 'JetBrains Mono, monospace' }}>{b.iface}</span>
+                                    )}
+                                    {!showHash && b.label && b.label !== b.iface ? ` — ${b.label}` : ''}
+                                    {b.vdc && b.vdc !== '*' ? ` — ${b.vdc}` : ''}
                                   </MenuItem>
                                 )
                               })

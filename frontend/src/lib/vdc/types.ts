@@ -67,10 +67,17 @@ export interface VdcSharedBridge {
 export interface VdcVnet {
   id: string
   vdcId: string
+  /** Hash-based 8-char ID sent to PVE (always unique cluster-wide). */
   pveName: string
+  /** Friendly name shown to the tenant (free-form, unique per vDC). */
+  displayName: string
   description: string | null
   vxlanTag: number
   firewall: boolean
+  /** Block intra-VNet VM-to-VM traffic (private-VLAN style). */
+  isolatePorts: boolean
+  /** Allow attached VMs to push their own 802.1q tags. */
+  vlanAware: boolean
   createdBy: string | null
   createdAt: string
 }

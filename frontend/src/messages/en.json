@@ -2907,6 +2907,15 @@
         "settings": "Modify settings",
         "audit": "View audit logs",
         "compliance": "Manage compliance and security policies"
+      },
+      "sdn": {
+        "vnet": {
+          "view": "List and view VNets in own vDCs",
+          "create": "Create new VNets in own vDCs",
+          "edit": "Edit VNet metadata and firewall toggle",
+          "delete": "Delete VNets that have no NIC attached",
+          "firewall": "CRUD firewall rules, ipsets, aliases per VNet"
+        }
       }
     },
     "roles": {
@@ -6441,11 +6450,20 @@
     "vnetsTitle": "Virtual Networks",
     "createVnet": "Create VNet",
     "vnetName": "Name",
-    "vnetNameHint": "Lowercase letters and digits, starting with a letter, max 15 chars.",
+    "vnetNameHint": "Lowercase letters, digits and dashes, starting with a letter, max 20 chars. Unique within your vDC.",
     "vnetDescription": "Description",
     "vnetFirewall": "Firewall",
     "vnetFirewallToggle": "Enable VNet firewall",
     "vnetVniAutoAllocated": "VNI is auto-allocated by ProxCenter.",
+    "vnetVdc": "Virtual Datacenter",
+    "vnetNoVdc": "No vDC available — create one first.",
+    "vnetSelectVdc": "Select a vDC.",
+    "vnetsEmpty": "No VNets yet.",
+    "vnetAdvanced": "Advanced settings",
+    "vnetIsolatePortsToggle": "Isolate ports",
+    "vnetIsolatePortsHelp": "Blocks all direct VM-to-VM traffic on this VNet at the L2 bridge level (private-VLAN style, no rules to configure). VMs keep gateway and outside-world access. For granular policies (e.g. allow VM-A → VM-B on port 5432), use the VNet firewall instead.",
+    "vnetVlanAwareToggle": "VLAN aware",
+    "vnetVlanAwareHelp": "Allow attached VMs to push their own 802.1q VLAN tags across this VNet. Required for router / firewall / vRouter VMs that multiplex several VLANs on a single NIC. Leave off for regular workloads.",
     "fwOn": "On",
     "fwOff": "Off",
     "errorInvalidName": "Invalid name. Must match ^[a-z][a-z0-9]{0,14}$ (e.g. prodlan, dmz, app1).",
@@ -6498,6 +6516,19 @@
       "mapOffline": "offline",
       "mapVmsRunning": "{running}/{total} VMs running",
       "loadError": "Load failed"
+    },
+    "metrics": {
+      "cpuTitle": "VM CPU usage",
+      "ramTitle": "VM RAM usage",
+      "netTitle": "VM network I/O",
+      "ioTitle": "VM disk I/O",
+      "cpu": "CPU avg",
+      "ram": "RAM avg",
+      "netIn": "In",
+      "netOut": "Out",
+      "diskRead": "Read",
+      "diskWrite": "Write",
+      "noData": "No running VM data over the last hour."
     }
   },
   "sdn": {

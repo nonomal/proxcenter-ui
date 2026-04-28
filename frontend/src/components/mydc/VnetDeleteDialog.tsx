@@ -22,8 +22,9 @@ export default function VnetDeleteDialog({ vnet, vdcId, onClose, onDeleted }: Pr
   const handleDelete = async () => {
     setDeleting(true); setError(null)
     try {
+      const segment = vnet.displayName ?? vnet.pveName
       const res = await fetch(
-        `/api/v1/vdcs/${encodeURIComponent(vdcId)}/vnets/${encodeURIComponent(vnet.pveName)}`,
+        `/api/v1/vdcs/${encodeURIComponent(vdcId)}/vnets/${encodeURIComponent(segment)}`,
         { method: 'DELETE' }
       )
       const json = await res.json()
@@ -41,7 +42,7 @@ export default function VnetDeleteDialog({ vnet, vdcId, onClose, onDeleted }: Pr
       <AppDialogTitle onClose={onClose}>{t('myVdc.deleteVnetTitle')}</AppDialogTitle>
       <DialogContent>
         <Stack spacing={2} mt={1}>
-          <Typography>{t('myVdc.deleteVnetConfirm', { name: vnet.pveName })}</Typography>
+          <Typography>{t('myVdc.deleteVnetConfirm', { name: vnet.displayName ?? vnet.pveName })}</Typography>
           <Typography variant="caption" color="text.secondary">{t('myVdc.deleteVnetHint')}</Typography>
           {error && <Alert severity="error">{error}</Alert>}
         </Stack>

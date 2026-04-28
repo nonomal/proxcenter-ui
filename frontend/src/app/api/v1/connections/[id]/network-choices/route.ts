@@ -40,7 +40,7 @@ export async function GET(req: Request, ctx: RouteContext) {
     const pveConn = await getConnectionById(connId, connMeta.tenantId)
 
     type Choice =
-      | { kind: "vnet"; name: string; vdc: string; zone: string }
+      | { kind: "vnet"; name: string; displayName: string; vdc: string; zone: string }
       | { kind: "shared"; name: string; label: string | null }
       | { kind: "bridge"; name: string; type: string }
 
@@ -56,7 +56,9 @@ export async function GET(req: Request, ctx: RouteContext) {
       try {
         const vnets = await pveFetch<any[]>(pveConn, "/cluster/sdn/vnets")
         for (const v of vnets || []) {
-          choices.push({ kind: "vnet", name: v.vnet, vdc: "*", zone: v.zone })
+          // PVE returns alias when set (we set it to display_name on create);
+          // fall back to the bare ID for legacy/externally-managed VNets.
+          choices.push({ kind: "vnet", name: v.vnet, displayName: v.alias ?? v.vnet, vdc: "*", zone: v.zone })
         }
       } catch {}
     } else {
@@ -64,16 +66,24 @@ export async function GET(req: Request, ctx: RouteContext) {
       const allowedVnets = scope.vnetsByConnection.get(connId) ?? new Set<string>()
       const allowedShared = scope.sharedBridgesByConnection.get(connId) ?? new Set<string>()
 
-      // VNets with vdc slug + zone
+      // VNets with vdc slug + zone. `name` stays the pve_name (= what PVE
+      // expects in the NIC bridge field) but we expose displayName separately
+      // so the picker can render the user-friendly label.
       const vnetRows = db.prepare(`
-        SELECT v.pve_name, d.slug AS vdc_slug, d.sdn_zone_name
+        SELECT v.pve_name, v.display_name, d.slug AS vdc_slug, d.sdn_zone_name
         FROM vdc_vnets v
         JOIN vdcs d ON d.id = v.vdc_id
         WHERE d.tenant_id = ? AND d.connection_id = ?
       `).all(tenantId, connId) as any[]
       for (const v of vnetRows) {
         if (allowedVnets.has(v.pve_name)) {
-          choices.push({ kind: "vnet", name: v.pve_name, vdc: v.vdc_slug, zone: v.sdn_zone_name })
+          choices.push({
+            kind: "vnet",
+            name: v.pve_name,
+            displayName: v.display_name ?? v.pve_name,
+            vdc: v.vdc_slug,
+            zone: v.sdn_zone_name,
+          })
         }
       }
 
