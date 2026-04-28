@@ -7,11 +7,7 @@ import { Box, Paper, Typography } from '@mui/material'
 import { alpha, useTheme } from '@mui/material/styles'
 
 import QuotaDonut from './QuotaDonut'
-import UplinksCard from './UplinksCard'
-import MyStoragesCard from './MyStoragesCard'
-import MyVmsCard from './MyVmsCard'
-import VnetList from './VnetList'
-import MyBackupsCard from './MyBackupsCard'
+import MyVmsMetricsCharts from './MyVmsMetricsCharts'
 import MyGreenCard from './MyGreenCard'
 import MyDatacentersMapCard from './MyDatacentersMapCard'
 
@@ -20,9 +16,10 @@ interface Props {
 }
 
 /**
- * Tenant cockpit for a single vDC: quota donuts across the top, then a
- * 2-column grid (1 column on mobile) with VMs / VNets / Storages / Uplinks.
- * All data-fetching lives in the children; this file composes.
+ * Tenant cockpit for a single vDC: quotas → DC map → per-VM consumption
+ * charts → green footprint. Resource management (VMs, VNets, storages,
+ * backups) lives in /infrastructure/inventory; this view focuses on the
+ * usage signals tenants actually care about day-to-day.
  */
 export default function MyVdcOverview({ vdc }: Props) {
   const t = useTranslations()
@@ -36,14 +33,6 @@ export default function MyVdcOverview({ vdc }: Props) {
   const connectionIds = useMemo<string[]>(
     () => (vdc.connectionId ? [vdc.connectionId] : []),
     [vdc.connectionId],
-  )
-  const allowedStorages = useMemo<string[]>(
-    () => (Array.isArray(vdc.storages) ? vdc.storages : []),
-    [vdc.storages],
-  )
-  const pbsBindings = useMemo<any[]>(
-    () => (Array.isArray(vdc.pbsBindings) ? vdc.pbsBindings : []),
-    [vdc.pbsBindings],
   )
 
   return (
@@ -107,29 +96,16 @@ export default function MyVdcOverview({ vdc }: Props) {
         </Box>
       </Paper>
 
-      {/* Geographic map of datacentres hosting the vDC's resources. */}
+      {/* Per-VM consumption charts — CPU%, RAM%, Network in+out, Disk r/w
+          over the last hour. The full VM list and VNet management have been
+          relocated to /infrastructure/inventory; the tenant cockpit here
+          stays focused on usage signals (quotas, consumption, footprint). */}
+      <MyVmsMetricsCharts connectionIds={connectionIds} />
+
+      {/* Geographic map of datacentres hosting the vDC's resources — placed
+          after the metric charts so the cockpit reads top-to-bottom from
+          live consumption to compliance/residency context. */}
       <MyDatacentersMapCard vdcId={vdc.id} />
-
-      {/* Blocks 2-5 in a 2-column grid. Nodes are deliberately abstracted
-          away from the tenant view (cloud-style) — the provider manages the
-          underlying hosts via /infrastructure/inventory. */}
-      <Box
-        sx={{
-          display: 'grid',
-          gap: 2,
-          gridTemplateColumns: { xs: '1fr', md: '1fr 1fr' },
-        }}
-      >
-        <MyVmsCard connectionIds={connectionIds} />
-        <VnetList vdcId={vdc.id} quota={{ maxVnets: quota.maxVnets ?? null }} />
-        <MyStoragesCard connectionIds={connectionIds} allowedStorages={allowedStorages} />
-        <UplinksCard vdcId={vdc.id} />
-      </Box>
-
-      {/* Backups card — full width below the grid. PBS namespaces and
-          retention timelines need horizontal real estate the half-width
-          column was clipping. */}
-      <MyBackupsCard pbsBindings={pbsBindings} />
 
       {/* Green-IT card at the bottom — full width so the 3 sub-papers have
           room without clipping. */}
