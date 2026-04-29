@@ -565,6 +565,7 @@ export async function fetchDetails(sel: InventorySelection): Promise<DetailsPayl
       maxdisk: Number(g.maxdisk ?? 0),
       uptime: Number(g.uptime ?? 0),
       tags: parseTags(g.tags),
+      lock: g.lock,
     }))
 
     return {
@@ -669,6 +670,7 @@ export async function fetchDetails(sel: InventorySelection): Promise<DetailsPayl
           tags: parseTags(vm.tags),
           template: vm.template === 1,
           isCluster,
+          lock: vm.lock,
         }))
       } catch {}
     }

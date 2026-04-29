@@ -2628,6 +2628,7 @@ return vm?.isCluster ?? false
                       hagroup: vm.hagroup,
                       isCluster: vm.isCluster,
                       osInfo: vm.osInfo,
+                      lock: vm.lock,
                     }))}
                     expanded
                     showNode
@@ -2767,6 +2768,7 @@ return vm?.isCluster ?? false
                       template: vm.template,
                       isCluster: vm.isCluster,
                       osInfo: vm.osInfo,
+                      lock: vm.lock,
                     }))}
                     expanded
                     showNode
@@ -2877,7 +2879,6 @@ return vm?.isCluster ?? false
                     vmType={data.vmType}
                     isMigrating={migratingVmIds?.has(`${connId}:${vmid}`)}
                     isPendingAction={pendingActionVmIds?.has(`${connId}:${vmid}`)}
-                    lock={vmLock.locked ? (vmLock.lockType || 'locked') : undefined}
                     size={22}
                   />
 
@@ -2905,23 +2906,14 @@ return vm?.isCluster ?? false
                   )}
                   {vmLock.locked && (
                     <MuiTooltip title={`Lock: ${vmLock.lockType || 'unknown'}`}>
-                      <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5, flexShrink: 0 }}>
-                        <Box sx={{
-                          width: 14, height: 14, borderRadius: '50%',
-                          bgcolor: '#ff9800',
-                          display: 'flex', alignItems: 'center', justifyContent: 'center',
-                          '@keyframes lockPulseSidePanel': {
-                            '0%, 100%': { boxShadow: '0 0 4px rgba(255, 152, 0, 0.6)' },
-                            '50%': { boxShadow: '0 0 10px rgba(255, 152, 0, 1)' },
-                          },
-                          animation: 'lockPulseSidePanel 2s ease-in-out infinite',
-                        }}>
-                          <i className="ri-lock-fill" style={{ fontSize: 10, color: '#fff' }} />
-                        </Box>
-                        <Typography variant="body2" sx={{ color: '#ff9800', fontWeight: 600, fontSize: '0.75rem' }}>
-                          {vmLock.lockType || 'locked'}
-                        </Typography>
-                      </Box>
+                      <Chip
+                        size="small"
+                        icon={<i className="ri-lock-line" style={{ fontSize: 12, marginLeft: 6 }} />}
+                        label={vmLock.lockType || 'locked'}
+                        color="warning"
+                        variant="outlined"
+                        sx={{ height: 20, fontSize: '0.7rem', flexShrink: 0 }}
+                      />
                     </MuiTooltip>
                   )}
                   {/* Node chip — provider only. Tenants see a vDC abstraction

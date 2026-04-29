@@ -88,6 +88,7 @@ return next
     hagroup: vm.hagroup,
     isCluster: vm.isCluster,
     osInfo: vm.osInfo,
+    lock: vm.lock,
   })
   
   return (

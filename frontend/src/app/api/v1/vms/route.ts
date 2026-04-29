@@ -100,6 +100,7 @@ export async function GET(req: Request) {
             tags: r.tags ? String(r.tags).split(';').filter(Boolean) : [],
             pool: r.pool || null,
             netvmid: r.netvmid,
+            lock: r.lock || undefined,
             ip: null, // Chargé séparément via /api/v1/vms/ips
           }
         })

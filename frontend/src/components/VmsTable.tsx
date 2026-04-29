@@ -451,6 +451,7 @@ export type VmRow = {
   hagroup?: string
   isCluster?: boolean
   osInfo?: OsInfo | null
+  lock?: string
 }
 
 type VmsTableProps = {
@@ -897,7 +898,7 @@ return (
 
           return (
             <Stack direction='row' spacing={0.75} sx={{ alignItems: 'center', overflow: 'hidden', width: '100%' }}>
-              <Tooltip title={`${vm.template ? 'Template' : vm.type === 'lxc' ? 'LXC' : 'VM'} - ${vm.status}`}>
+              <Tooltip title={`${vm.template ? 'Template' : vm.type === 'lxc' ? 'LXC' : 'VM'} - ${vm.status}${vm.lock ? ` (locked: ${vm.lock})` : ''}`}>
                 <Box sx={{ position: 'relative', display: 'inline-flex', flexShrink: 0 }}>
                   {isMigrating ? (
                     <Box sx={{
@@ -920,6 +921,22 @@ return (
                         }} />
                       )}
                     </>
+                  )}
+                  {vm.lock && (
+                    <Box sx={{
+                      position: 'absolute', top: -3, left: -3,
+                      width: 12, height: 12, borderRadius: '50%',
+                      bgcolor: '#ff9800',
+                      border: '1.5px solid', borderColor: 'background.paper',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      '@keyframes lockPulseTable': {
+                        '0%, 100%': { boxShadow: '0 0 4px rgba(255, 152, 0, 0.6)' },
+                        '50%': { boxShadow: '0 0 10px rgba(255, 152, 0, 1)' },
+                      },
+                      animation: 'lockPulseTable 2s ease-in-out infinite',
+                    }}>
+                      <i className="ri-lock-fill" style={{ fontSize: 8, color: '#fff' }} />
+                    </Box>
                   )}
                 </Box>
               </Tooltip>
