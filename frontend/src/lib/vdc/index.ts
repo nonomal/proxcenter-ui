@@ -5,8 +5,10 @@ import { randomUUID } from 'crypto'
 
 import { getDb } from '@/lib/db/sqlite'
 import { pveFetch } from '@/lib/proxmox/client'
+import { pbsFetch } from '@/lib/proxmox/pbs-client'
 import { getConnectionById } from '@/lib/connections/getConnection'
 import { prisma } from '@/lib/db/prisma'
+import { decryptSecret } from '@/lib/crypto/secret'
 
 import { generateZoneName, createZone, deleteZone, deleteVnetPve, applySdn } from './sdn'
 
@@ -714,7 +716,61 @@ export async function refreshVdcUsage(vdcId: string): Promise<VdcUsage> {
     }
   }
 
-  // 7. Upsert into vdc_usage_cache
+  // 7. Count backups across the vDC's PBS bindings. Each binding pins a
+  //    (PBS connection, datastore, namespace) tuple; we list snapshots
+  //    in that namespace and keep only those whose backup-id matches a
+  //    vmid in the vDC pool. Failures on a single PBS are skipped — a
+  //    flaky PBS shouldn't blank the whole usage refresh.
+  const vmidSet = new Set(vmMembers.map(vm => String(vm.vmid)))
+  if (vmidSet.size > 0) {
+    const bindings = db.prepare(
+      `SELECT pbs_connection_id, datastore, namespace FROM vdc_pbs_namespaces WHERE vdc_id = ?`
+    ).all(vdcId) as Array<{ pbs_connection_id: string; datastore: string; namespace: string }>
+
+    // Group by PBS connection so we authenticate / decrypt once per PBS
+    // instead of per binding.
+    const byPbs = new Map<string, Array<{ datastore: string; namespace: string }>>()
+    for (const b of bindings) {
+      const list = byPbs.get(b.pbs_connection_id) || []
+      list.push({ datastore: b.datastore, namespace: b.namespace })
+      byPbs.set(b.pbs_connection_id, list)
+    }
+
+    for (const [pbsId, locations] of byPbs.entries()) {
+      try {
+        const pbsConn = await prisma.connection.findUnique({
+          where: { id: pbsId },
+          select: { baseUrl: true, apiTokenEnc: true, insecureTLS: true },
+        })
+        if (!pbsConn?.apiTokenEnc || !pbsConn?.baseUrl) continue
+        const pbsCreds = {
+          baseUrl: pbsConn.baseUrl,
+          apiToken: decryptSecret(pbsConn.apiTokenEnc),
+          insecureDev: !!pbsConn.insecureTLS,
+        }
+        for (const loc of locations) {
+          try {
+            const nsParam = loc.namespace ? `?ns=${encodeURIComponent(loc.namespace)}` : ''
+            const snaps = await pbsFetch<any[]>(
+              pbsCreds,
+              `/admin/datastore/${encodeURIComponent(loc.datastore)}/snapshots${nsParam}`,
+            )
+            if (!Array.isArray(snaps)) continue
+            for (const snap of snaps) {
+              const backupId = String(snap?.['backup-id'] ?? '')
+              if (vmidSet.has(backupId)) usedBackups += 1
+            }
+          } catch (err: any) {
+            console.warn(`[vdc] PBS snapshot list failed for ${pbsId}/${loc.datastore} ns="${loc.namespace}": ${err?.message ?? err}`)
+          }
+        }
+      } catch (err: any) {
+        console.warn(`[vdc] PBS connection ${pbsId} skipped during usage refresh: ${err?.message ?? err}`)
+      }
+    }
+  }
+
+  // 8. Upsert into vdc_usage_cache
   const now = new Date().toISOString()
 
   db.prepare(`
