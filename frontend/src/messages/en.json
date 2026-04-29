@@ -575,7 +575,7 @@
     "manageTags": "Manage Tags",
     "deleteVm": "Delete VM",
     "deleteVmDisks": "Also delete associated disks",
-    "deleteVmLockedError": "VM is locked in state '{lock}'. Right-click the VM in the tree and select Unlock to release the lock (requires SSH on the connection).",
+    "deleteVmLockedError": "VM is locked in state \"{lock}\". Right-click the VM in the tree and select Unlock to release the lock (requires SSH on the connection).",
     "deleteVmRunningError": "VM must be stopped before being deleted. Stop the VM first.",
     "vmRunningWarning": "Stop the VM before deleting it",
     "health": {
