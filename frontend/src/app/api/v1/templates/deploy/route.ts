@@ -153,6 +153,7 @@ export async function POST(req: Request) {
             sourceType,
             volumeId,
             vdcInfo,
+            onIpamAllocation: (alloc) => { ipamAllocation = alloc },
           })
           return
         }
@@ -523,8 +524,12 @@ async function runIsoDeploy(args: {
   sourceType: string
   volumeId: string | null
   vdcInfo: { poolName?: string | null } | null
+  /** Optional sink the caller fills in once we've claimed an IP — lets
+   *  the parent's try/catch release the reservation if any later step
+   *  throws (waitForTask timeout, audit failure, etc.). */
+  onIpamAllocation?: (alloc: { subnetId: string; ip: string }) => void
 }): Promise<void> {
-  const { deploymentId, conn, body, image, isCustom, sourceType, volumeId, vdcInfo } = args
+  const { deploymentId, conn, body, image, isCustom, sourceType, volumeId, vdcInfo, onIpamAllocation } = args
   const hw = body.hardware
   const isoStorage: string = body.isoStorage
 
@@ -595,6 +600,44 @@ async function runIsoDeploy(args: {
   const diskSizeGb = String(hw.diskSize).replace(/G$/i, '') // "32G" → "32"
   const useUefi = hw.bios === 'ovmf'
 
+  // ── IPAM reservation for ISO mode ──
+  // PVE auto-generates a MAC unless we pin one. For ISO installs on an
+  // IPAM-managed VNet, we need a deterministic MAC so the IPAM row stays
+  // in lock-step with whatever the tenant types into the OS installer.
+  // The wizard pre-allocates the IP and MAC client-side and submits them
+  // here as `staticIp` / `staticMac`; we then claim them in the IPAM with
+  // a hint.
+  let isoNetSpec = `${hw.networkModel},bridge=${hw.networkBridge}${hw.vlanTag ? `,tag=${hw.vlanTag}` : ""}`
+  let isoIpamAlloc: { subnetId: string; ip: string } | null = null
+  const isoSubnet = resolveSubnetForBridge(body.connectionId, hw.networkBridge)
+  if (isoSubnet) {
+    if (!body.staticIp) {
+      throw new Error('Static IP is required when deploying an ISO into an IPAM-managed VNet — pass staticIp in the request body')
+    }
+    const isoMac = body.staticMac || generatePveMacAddress()
+    const externalScanned = await scanUsedIpsForSubnet({
+      conn,
+      vdcPoolName: isoSubnet.pvePoolName,
+      vnetPveName: isoSubnet.pveName,
+      subnetId: isoSubnet.subnetId,
+      connectionId: body.connectionId,
+    })
+    const allocated = allocateIp({
+      vdcId: isoSubnet.vdcId,
+      subnetId: isoSubnet.subnetId,
+      vnetId: isoSubnet.vnetId,
+      connectionId: body.connectionId,
+      mac: isoMac,
+      vmid: body.vmid,
+      hostname: body.vmName || `vm-${body.vmid}`,
+      hint: body.staticIp,
+      externalIps: scannedToIntSet(externalScanned),
+    })
+    isoIpamAlloc = { subnetId: isoSubnet.subnetId, ip: allocated.ip }
+    isoNetSpec = `${hw.networkModel}=${isoMac},bridge=${hw.networkBridge}${hw.vlanTag ? `,tag=${hw.vlanTag}` : ""}`
+    onIpamAllocation?.(isoIpamAlloc)
+  }
+
   const createParams = new URLSearchParams({
     vmid: String(body.vmid),
     name: body.vmName || `${image.slug}-${body.vmid}`,
@@ -607,7 +650,7 @@ async function runIsoDeploy(args: {
     // Empty data disk (no import-from). Format defaults to qcow2 on
     // file-based storage; on block-based storage PVE picks raw automatically.
     scsi0: `${body.storage}:${diskSizeGb}`,
-    net0: `${hw.networkModel},bridge=${hw.networkBridge}${hw.vlanTag ? `,tag=${hw.vlanTag}` : ""}`,
+    net0: isoNetSpec,
     // Boot ISO on the secondary IDE bus (PVE convention for install media).
     ide2: `${isoVolume},media=cdrom`,
     // CD-ROM first, fall back to the empty disk once the OS is installed.

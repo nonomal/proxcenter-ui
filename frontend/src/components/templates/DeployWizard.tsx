@@ -29,6 +29,7 @@ import {
   TextField,
   Tooltip,
   Typography,
+  alpha,
 } from '@mui/material'
 
 import type { CloudImage } from '@/lib/templates/cloudImages'
@@ -170,6 +171,17 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint, r
   const [nameserver, setNameserver] = useState('')
   const [searchdomain, setSearchdomain] = useState('')
 
+  // ISO-mode network reservation. Cloud-init can't push ipconfigN to a
+  // raw OS installer, so for IPAM-managed VNets we pre-allocate an
+  // (IP, MAC) here and tell the tenant to type the IP into the OS during
+  // install. Pinned MAC = stable IPAM key across reboots / rebuilds.
+  const [staticIp, setStaticIp] = useState('')
+  const [staticMac, setStaticMac] = useState('')
+  const [staticDns, setStaticDns] = useState<string[]>([])
+  const [staticPrefix, setStaticPrefix] = useState<number | null>(null)
+  const [nextFreeLoading, setNextFreeLoading] = useState(false)
+  const [nextFreeError, setNextFreeError] = useState<string | null>(null)
+
   // Save as blueprint
   const [saveAsBlueprint, setSaveAsBlueprint] = useState(false)
   const [blueprintName, setBlueprintName] = useState('')
@@ -179,6 +191,60 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint, r
   // controls on Hardware, the cloud-init step skip, and the post-deploy
   // console link on Progress.
   const isIsoMode = String(image?.format || '').toLowerCase() === 'iso'
+
+  // ISO + IPAM-managed bridge → the wizard needs (IP, MAC) before submit.
+  // We compute this from the currently selected bridge so the network
+  // reservation block can render and the next-free fetcher knows which
+  // VNet to query.
+  const isoBridgeChoice = bridges.find((b) => b.iface === networkBridge)
+  const isoNeedsReservation = isIsoMode && !!isoBridgeChoice?.subnet && !!isoBridgeChoice.vdc && !!isoBridgeChoice.displayName
+
+  // Pre-fill (IP, MAC, DNS, prefix) from the IPAM next-free endpoint the
+  // first time the user lands on the hardware step with an IPAM-managed
+  // bridge selected in ISO mode. Don't refetch unless the bridge or the
+  // mode changes; we honour any IP the user has already typed.
+  useEffect(() => {
+    if (!open) return
+    if (!isoNeedsReservation || !isoBridgeChoice?.vdc || !isoBridgeChoice?.displayName) {
+      // Clear when the user moves off ISO / off an IPAM bridge so a stale
+      // pre-fill doesn't sneak into a non-IPAM submit.
+      if (staticIp || staticMac) {
+        setStaticIp('')
+        setStaticMac('')
+        setStaticDns([])
+        setStaticPrefix(null)
+        setNextFreeError(null)
+      }
+      return
+    }
+    let cancelled = false
+    setNextFreeLoading(true)
+    setNextFreeError(null)
+    ;(async () => {
+      try {
+        const url = `/api/v1/vdcs/${encodeURIComponent(isoBridgeChoice.vdc!)}/vnets/${encodeURIComponent(isoBridgeChoice.displayName!)}/ipam/next-free`
+        const r = await fetch(url)
+        const j = await r.json()
+        if (cancelled) return
+        if (!r.ok) {
+          setNextFreeError(j?.error || `HTTP ${r.status}`)
+          return
+        }
+        const d = j?.data
+        if (!d) { setNextFreeError('Invalid response'); return }
+        if (!staticIp) setStaticIp(String(d.ip || ''))
+        if (!staticMac) setStaticMac(String(d.suggestedMac || ''))
+        setStaticDns(Array.isArray(d.dnsServers) ? d.dnsServers : [])
+        setStaticPrefix(typeof d.prefix === 'number' ? d.prefix : null)
+      } catch (e: any) {
+        if (!cancelled) setNextFreeError(e?.message || 'Failed to fetch next free IP')
+      } finally {
+        if (!cancelled) setNextFreeLoading(false)
+      }
+    })()
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, isoNeedsReservation, isoBridgeChoice?.vdc, isoBridgeChoice?.displayName])
 
   // Best-effort guess of "this ISO is a Windows installer" — drives the
   // OVMF/pre-enrolled-keys default. We check ostype first (most reliable
@@ -535,6 +601,10 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint, r
         blueprintName: saveAsBlueprint ? blueprintName : undefined,
       }
       if (isIsoMode) body.isoStorage = isoStorage
+      if (isoNeedsReservation) {
+        body.staticIp = staticIp
+        body.staticMac = staticMac
+      }
 
       const res = await fetch('/api/v1/templates/deploy', {
         method: 'POST',
@@ -568,7 +638,7 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint, r
   }, [
     image, connectionId, node, storage, isoStorage, vmid, vmName, cores, sockets, memory,
     diskSize, scsihw, networkModel, networkBridge, cpu, agent,
-    bios, ostypeOverride, isIsoMode,
+    bios, ostypeOverride, isIsoMode, isoNeedsReservation, staticIp, staticMac,
     ciuser, cipassword, sshKeys, ipOverride, nameserver, searchdomain,
     bridges,
     saveAsBlueprint, blueprintName, prefillBlueprint,
@@ -591,12 +661,23 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint, r
         return baseOk
       }
       // Hardware step: also block while the vDC quota would be exceeded.
-      case 2: return cores >= 1 && memory >= 128 && !!diskSize && !quotaBlocked
+      // ISO + IPAM-managed VNet requires an explicit static IP — we can't
+      // pin it via cloud-init (no agent during install), so the tenant
+      // must commit to the IP before we let them advance.
+      case 2: {
+        const baseOk = cores >= 1 && memory >= 128 && !!diskSize && !quotaBlocked
+        if (isoNeedsReservation) {
+          const ipOk = /^\d{1,3}(\.\d{1,3}){3}$/.test(staticIp)
+          const macOk = /^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$/.test(staticMac)
+          return baseOk && ipOk && macOk
+        }
+        return baseOk
+      }
       case 3: return true
       case 4: return !quotaBlocked
       default: return false
     }
-  }, [activeStep, image, connectionId, node, storage, vmid, cores, memory, diskSize, quotaBlocked, isIsoMode, isoStorage])
+  }, [activeStep, image, connectionId, node, storage, vmid, cores, memory, diskSize, quotaBlocked, isIsoMode, isoStorage, isoNeedsReservation, staticIp, staticMac])
 
   // ─── Step renderers ────────────────────────────────────────────────
 
@@ -1119,6 +1200,85 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint, r
               </Alert>
             ) : null
           })()}
+        </Box>
+      )}
+
+      {/* ISO + IPAM-managed VNet → tenant must commit to a static (IP, MAC).
+          Cloud-init can't push ipconfigN to a raw OS installer, so we
+          pre-generate a MAC, propose the next free IP, and surface a
+          banner instructing the tenant to type these into the OS at
+          install time. */}
+      {isoNeedsReservation && (
+        <Box sx={{ mt: 2.5, p: 2, border: '1px solid', borderColor: 'divider', borderRadius: 1.5, bgcolor: (theme) => alpha(theme.palette.warning.main, 0.04) }}>
+          <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1 }}>
+            <Box component="i" className="ri-flashlight-line" sx={{ fontSize: 18, color: 'warning.main' }} />
+            <Typography variant="subtitle2" fontWeight={700}>{t('templates.deploy.iso.networkReservationTitle')}</Typography>
+            {nextFreeLoading && <CircularProgress size={14} sx={{ ml: 'auto' }} />}
+          </Stack>
+          <Alert severity="warning" variant="outlined" sx={{ mb: 1.5, fontSize: '0.8rem' }} icon={<i className="ri-information-line" style={{ fontSize: 16 }} />}>
+            {t('templates.deploy.iso.networkReservationHelp')}
+          </Alert>
+          <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 2 }}>
+            <TextField
+              size="small"
+              label={t('templates.deploy.iso.staticIp')}
+              value={staticIp}
+              onChange={(e) => setStaticIp(e.target.value.trim())}
+              placeholder="10.42.0.10"
+              error={!!staticIp && !/^\d{1,3}(\.\d{1,3}){3}$/.test(staticIp)}
+              helperText={isoBridgeChoice?.subnet ? `${isoBridgeChoice.subnet.cidr}` : ''}
+              fullWidth
+              required
+            />
+            <TextField
+              size="small"
+              label={t('templates.deploy.iso.staticMac')}
+              value={staticMac}
+              onChange={(e) => setStaticMac(e.target.value.trim().toUpperCase())}
+              error={!!staticMac && !/^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$/.test(staticMac)}
+              fullWidth
+              required
+              InputProps={{
+                endAdornment: (
+                  <Tooltip title={t('templates.deploy.iso.regenerateMac')} arrow>
+                    <IconButton
+                      size="small"
+                      onClick={async () => {
+                        // Regenerate via the same endpoint to keep the
+                        // OUI prefix consistent with what the backend uses.
+                        if (!isoBridgeChoice?.vdc || !isoBridgeChoice?.displayName) return
+                        try {
+                          const r = await fetch(`/api/v1/vdcs/${encodeURIComponent(isoBridgeChoice.vdc)}/vnets/${encodeURIComponent(isoBridgeChoice.displayName)}/ipam/next-free`)
+                          const j = await r.json()
+                          if (r.ok && j?.data?.suggestedMac) setStaticMac(String(j.data.suggestedMac))
+                        } catch { /* ignore */ }
+                      }}
+                    >
+                      <Box component="i" className="ri-refresh-line" sx={{ fontSize: 14 }} />
+                    </IconButton>
+                  </Tooltip>
+                ),
+              }}
+            />
+            <TextField
+              size="small"
+              label={t('templates.deploy.iso.staticGateway')}
+              value={isoBridgeChoice?.subnet?.gateway ?? ''}
+              fullWidth
+              InputProps={{ readOnly: true }}
+            />
+            <TextField
+              size="small"
+              label={t('templates.deploy.iso.staticDns')}
+              value={staticDns.join(', ')}
+              fullWidth
+              InputProps={{ readOnly: true }}
+              placeholder="—"
+            />
+          </Box>
+          {nextFreeError && (
+            <Alert severity="error" sx={{ mt: 1.5 }}>{nextFreeError}</Alert>
+          )}
         </Box>
       )}
     </Box>

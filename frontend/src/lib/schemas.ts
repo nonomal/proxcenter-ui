@@ -348,6 +348,13 @@ export const deploySchema = z.object({
     nameserver: z.string().optional(),
     searchdomain: z.string().optional(),
   }).nullable().optional(),
+  // ISO-mode network reservation: tenant pre-declares the IP/MAC the OS
+  // installer will configure manually (no cloud-init = PVE can't push
+  // ipconfigN). When the chosen bridge is an IPAM-managed VNet, both
+  // fields are required so the IPAM stays in sync with what the tenant
+  // will type in the installer. Ignored outside ISO mode.
+  staticIp: z.string().optional(),
+  staticMac: z.string().regex(/^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$/).optional(),
   saveAsBlueprint: z.boolean().default(false),
   blueprintName: z.string().max(100).optional(),
 })
