@@ -1233,6 +1233,7 @@ return () => clearTimeout(timer)
               namespace: selectedBackup.namespace || '',
               backupPath,
               backupTimeFormatted: selectedBackup.backupTimeFormatted,
+              vmName: selectedBackup.vmName,
             }}
           />
         )

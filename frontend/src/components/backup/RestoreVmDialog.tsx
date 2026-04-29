@@ -46,6 +46,9 @@ interface BackupRef {
   format?: string
   size?: number | string
   backupTimeFormatted?: string
+  /** Friendly VM name from the snapshot's `comment` field (PBS) — used
+   *  to label the dialog header instead of leaking the raw backupPath. */
+  vmName?: string
 }
 
 interface Props {
@@ -340,7 +343,12 @@ export default function RestoreVmDialog({
       if (unique) body.unique = true
       if (start) body.start = true
       if (live && type === 'qemu') body.live = true
-      if (overrideName && name) body.name = name
+      // Tenant overwrite path keeps the source name — don't forward
+      // the (now hidden) name input. New-VM and provider-override paths
+      // honour whatever the user typed.
+      const wantName =
+        (isVdcTenant && restoreAsNew) || (!isVdcTenant && overrideName)
+      if (wantName && name) body.name = name
 
       const r = await fetch(
         `/api/v1/connections/${encodeURIComponent(connectionId)}/nodes/${encodeURIComponent(node)}/restore`,
@@ -372,7 +380,12 @@ export default function RestoreVmDialog({
       <DialogContent>
         <Stack spacing={2} mt={1}>
           <Alert severity="info" variant="outlined" sx={{ fontSize: '0.8rem' }} icon={<i className="ri-information-line" style={{ fontSize: 16 }} />}>
-            {backup.backupTimeFormatted ? `${backup.backupTimeFormatted} · ` : ''}{backup.volid || backup.backupPath || ''}
+            {(() => {
+              const label = type === 'lxc' ? 'CT' : 'VM'
+              const id = backup.vmName || sourceVmid
+              const date = backup.backupTimeFormatted
+              return date ? `${label} ${id} · ${date}` : `${label} ${id}`
+            })()}
           </Alert>
 
           {/* Target pickers + every infra-level field are hidden in tenant
@@ -467,13 +480,16 @@ export default function RestoreVmDialog({
             </Box>
           )}
 
-          {(overrideName || isVdcTenant) && (
+          {/* Name field is meaningful only when we're spawning a NEW VM
+              (tenant: restoreAsNew, provider: explicit override toggle).
+              Overwrite path keeps the source VM's existing name. */}
+          {((isVdcTenant && restoreAsNew) || (!isVdcTenant && overrideName)) && (
             <TextField
               size="small"
               label={t('common.name')}
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder={isVdcTenant ? backup.backupTimeFormatted ?? '' : ''}
+              placeholder={backup.vmName || ''}
               fullWidth
             />
           )}
