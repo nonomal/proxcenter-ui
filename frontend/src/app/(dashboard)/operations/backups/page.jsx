@@ -45,6 +45,7 @@ import BackupJobsTabs from './BackupJobsTabs'
 import BackupTrendsChart from './BackupTrendsChart'
 import EmptyState from '@/components/EmptyState'
 import { TableSkeleton } from '@/components/skeletons'
+import RestoreVmDialog from '@/components/backup/RestoreVmDialog'
 
 /* -----------------------------
   Helpers
@@ -165,6 +166,9 @@ return () => setPageInfo('', '', '')
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [selectedBackup, setSelectedBackup] = useState(null)
   const [drawerTab, setDrawerTab] = useState(0) // 0 = Infos, 1 = Explorer
+
+  // Restore dialog (cross-PVE — user picks target cluster + node).
+  const [restoreOpen, setRestoreOpen] = useState(false)
 
   // File explorer state
   const [explorerLoading, setExplorerLoading] = useState(false)
@@ -623,10 +627,10 @@ return () => clearTimeout(timer)
     {
       field: 'actions',
       headerName: '',
-      width: 80,
+      width: 110,
       sortable: false,
       renderCell: params => (
-        <Box sx={{ display: 'flex', alignItems: 'center', height: '100%' }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', height: '100%', gap: 0.25 }}>
           <Tooltip title={t('common.details')}>
             <IconButton size='small' onClick={() => {
               setSelectedBackup(params.row)
@@ -635,6 +639,20 @@ return () => clearTimeout(timer)
               <i className='ri-eye-line' style={{ fontSize: 16 }} />
             </IconButton>
           </Tooltip>
+          {params.row.backupType !== 'host' && (
+            <Tooltip title={t('audit.actions.restore')}>
+              <IconButton
+                size='small'
+                onClick={(ev) => {
+                  ev.stopPropagation()
+                  setSelectedBackup(params.row)
+                  setRestoreOpen(true)
+                }}
+              >
+                <i className='ri-history-line' style={{ fontSize: 16 }} />
+              </IconButton>
+            </Tooltip>
+          )}
         </Box>
       )
     }
@@ -1042,7 +1060,13 @@ return () => clearTimeout(timer)
                     <Box>
                       <Typography variant='overline' sx={{ opacity: 0.7 }}>{t('common.actions')}</Typography>
                       <Box sx={{ display: 'flex', gap: 1, mt: 1, flexWrap: 'wrap' }}>
-                        <Button size='small' variant='contained' disabled>
+                        <Button
+                          size='small'
+                          variant='contained'
+                          disabled={selectedBackup.backupType === 'host'}
+                          onClick={() => setRestoreOpen(true)}
+                          startIcon={<i className='ri-history-line' />}
+                        >
                           {t('audit.actions.restore')}
                         </Button>
                         <Button size='small' variant='outlined' disabled>
@@ -1055,9 +1079,6 @@ return () => clearTimeout(timer)
                           {t('common.delete')}
                         </Button>
                       </Box>
-                      <Typography variant='caption' sx={{ opacity: 0.5, display: 'block', mt: 1 }}>
-                        {t('backups.actionsAvailableSoon')}
-                      </Typography>
                     </Box>
                   </Stack>
                 )}
@@ -1193,6 +1214,29 @@ return () => clearTimeout(timer)
           )}
         </Box>
       </Drawer>
+
+      {restoreOpen && selectedBackup && (() => {
+        // Compose backupPath from the row fields. The /api/v1/pbs/[id]/backups
+        // payload doesn't include it directly (unlike /guests/...) so we
+        // build it client-side: backup/<type>/<id>/<isoTime>.
+        const backupPath = `backup/${selectedBackup.backupType}/${selectedBackup.backupId}/${selectedBackup.backupTimeIso}`
+        const restoreType = selectedBackup.backupType === 'ct' ? 'lxc' : 'qemu'
+        return (
+          <RestoreVmDialog
+            open
+            onClose={() => setRestoreOpen(false)}
+            type={restoreType}
+            sourceVmid={Number(selectedBackup.backupId) || 0}
+            backup={{
+              pbsId: selectedPbs,
+              datastore: selectedBackup.datastore,
+              namespace: selectedBackup.namespace || '',
+              backupPath,
+              backupTimeFormatted: selectedBackup.backupTimeFormatted,
+            }}
+          />
+        )
+      })()}
     </Box>
   )
 }

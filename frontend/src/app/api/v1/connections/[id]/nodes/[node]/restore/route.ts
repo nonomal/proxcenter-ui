@@ -6,6 +6,7 @@ import { checkPermission, buildNodeResourceId, PERMISSIONS } from "@/lib/rbac"
 import { syncIpamForVmConfig } from "@/lib/vdc/ipamSync"
 import { releaseAllocationsForVm } from "@/lib/vdc/ipam"
 import { waitForTask } from "@/lib/proxmox/tasks"
+import { prisma } from "@/lib/db/prisma"
 
 export const runtime = "nodejs"
 
@@ -25,7 +26,7 @@ export async function POST(
     const body = await req.json()
     const {
       vmid,
-      archive,
+      archive: archiveDirect,
       storage,
       type = 'qemu',
       bwlimit,
@@ -36,16 +37,93 @@ export async function POST(
       memory,
       cores,
       sockets,
+      pbsBackup,
     } = body
 
     if (!vmid) {
       return NextResponse.json({ error: "VMID is required" }, { status: 400 })
     }
-    if (!archive) {
-      return NextResponse.json({ error: "Archive volume ID is required" }, { status: 400 })
-    }
 
     const conn = await getConnectionById(id)
+
+    // Resolve the PVE-side volid the way qmrestore expects it. Two paths:
+    //
+    // 1. The caller already knows the volid (e.g. /storage/.../content
+    //    listings on a PVE-configured PBS storage produce them directly).
+    //    Pass it as `archive` and we use it as-is.
+    //
+    // 2. The caller only has PBS-side coordinates (this is what
+    //    /api/v1/guests/{vmid}/backups returns, since it queries PBS
+    //    directly without going through PVE). Pass them as
+    //    `pbsBackup: { pbsId, datastore, namespace, backupPath }` and we
+    //    look up the PVE storage that targets this (datastore, namespace)
+    //    pair, then compose `<storageName>:<backupPath>`.
+    let archive: string | null = typeof archiveDirect === 'string' && archiveDirect ? archiveDirect : null
+    if (!archive && pbsBackup && typeof pbsBackup === 'object') {
+      const { pbsId, datastore, namespace, backupPath } = pbsBackup as {
+        pbsId?: string; datastore?: string; namespace?: string; backupPath?: string
+      }
+      if (!pbsId || !datastore || !backupPath) {
+        return NextResponse.json({ error: "pbsBackup requires pbsId, datastore, and backupPath" }, { status: 400 })
+      }
+      // Look up the PBS connection to know which `server` PVE storages
+      // need to advertise. We compare lower-cased hostnames so an IP vs
+      // FQDN mismatch (e.g. `pbs.lab` vs `10.0.0.5`) doesn't break the
+      // join — both sides are normalised the same way.
+      const pbsConn = await prisma.connection.findUnique({
+        where: { id: pbsId },
+        select: { baseUrl: true },
+      })
+      if (!pbsConn?.baseUrl) {
+        return NextResponse.json({ error: "PBS connection not found" }, { status: 404 })
+      }
+      const pbsHost = (() => {
+        try { return new URL(pbsConn.baseUrl).hostname.toLowerCase() } catch { return '' }
+      })()
+
+      // List PVE storages on the target node and pick the one whose pbs-
+      // type config points at the same server + datastore (and namespace).
+      const nodeStorages = await pveFetch<any[]>(
+        conn,
+        `/nodes/${encodeURIComponent(node)}/storage?content=backup`
+      ).catch(() => [])
+
+      // For each candidate, GET /storage/{name} to read its `server` /
+      // `datastore` / `namespace` fields. The /nodes/X/storage listing
+      // doesn't return them, only the names + types.
+      const wantedNs = (namespace || '').trim()
+      let matchedStorage: string | null = null
+      for (const s of (nodeStorages || [])) {
+        if ((s.type || '').toLowerCase() !== 'pbs') continue
+        const storageName: string = String(s.storage || '')
+        if (!storageName) continue
+        try {
+          const cfg = await pveFetch<any>(conn, `/storage/${encodeURIComponent(storageName)}`)
+          const cfgServer = String(cfg?.server || '').toLowerCase()
+          const cfgDatastore = String(cfg?.datastore || '')
+          const cfgNamespace = String(cfg?.namespace || '').trim()
+          const sameHost = !!cfgServer && (cfgServer === pbsHost || cfgServer === pbsConn.baseUrl.toLowerCase())
+          const sameDs = cfgDatastore === datastore
+          const sameNs = cfgNamespace === wantedNs
+          if (sameHost && sameDs && sameNs) {
+            matchedStorage = storageName
+            break
+          }
+        } catch { /* continue probing other candidates */ }
+      }
+      if (!matchedStorage) {
+        return NextResponse.json({
+          error: `No PVE storage on node "${node}" maps to PBS datastore "${datastore}"${wantedNs ? ` (ns: ${wantedNs})` : ''}. Configure one before restoring.`,
+        }, { status: 409 })
+      }
+      // backupPath comes from /guests/{vmid}/backups already shaped as
+      // `backup/<type>/<id>/<isoTime>` — drop into the volid form.
+      archive = `${matchedStorage}:${backupPath}`
+    }
+
+    if (!archive) {
+      return NextResponse.json({ error: "archive (or pbsBackup) is required" }, { status: 400 })
+    }
 
     const isLxc = type === 'lxc'
     const endpoint = isLxc ? 'vzrestore' : 'qmrestore'
