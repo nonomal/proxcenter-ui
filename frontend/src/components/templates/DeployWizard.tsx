@@ -1233,9 +1233,37 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint, r
               onChange={(e) => setStaticIp(e.target.value.trim())}
               placeholder="10.42.0.10"
               error={!!staticIp && !/^\d{1,3}(\.\d{1,3}){3}$/.test(staticIp)}
-              helperText={isoBridgeChoice?.subnet ? `${isoBridgeChoice.subnet.cidr}` : ''}
+              helperText={
+                isoBridgeChoice?.subnet
+                  ? t('templates.deploy.iso.staticIpHelp', { cidr: isoBridgeChoice.subnet.cidr })
+                  : ''
+              }
               fullWidth
               required
+              InputProps={{
+                endAdornment: (
+                  <Tooltip title={t('templates.deploy.iso.staticIpAutoPick')} arrow>
+                    <IconButton
+                      size="small"
+                      onClick={async () => {
+                        // Force a fresh next-free lookup and override
+                        // whatever the user has currently typed. Useful
+                        // when the suggested IP collides with another
+                        // reservation made between the dialog opening
+                        // and submit.
+                        if (!isoBridgeChoice?.vdcId || !isoBridgeChoice?.displayName) return
+                        try {
+                          const r = await fetch(`/api/v1/vdcs/${encodeURIComponent(isoBridgeChoice.vdcId)}/vnets/${encodeURIComponent(isoBridgeChoice.displayName)}/ipam/next-free`)
+                          const j = await r.json()
+                          if (r.ok && j?.data?.ip) setStaticIp(String(j.data.ip))
+                        } catch { /* ignore */ }
+                      }}
+                    >
+                      <Box component="i" className="ri-refresh-line" sx={{ fontSize: 14 }} />
+                    </IconButton>
+                  </Tooltip>
+                ),
+              }}
             />
             <TextField
               size="small"

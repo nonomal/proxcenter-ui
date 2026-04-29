@@ -4052,6 +4052,8 @@
         "networkReservationTitle": "Network reservation",
         "networkReservationHelp": "ISO installers can't be configured via cloud-init. ProxCenter pre-allocates this (IP, MAC) pair so the IPAM stays in sync — type these values into the OS during install. The VM will not get connectivity until you configure the network manually inside the installer.",
         "staticIp": "Static IP",
+        "staticIpHelp": "Editable — type any IP within {cidr}",
+        "staticIpAutoPick": "Pick another free IP",
         "staticMac": "MAC address",
         "regenerateMac": "Generate a new MAC",
         "staticGateway": "Gateway",
