@@ -2084,6 +2084,8 @@
     "actionsAvailableSoon": "操作将在未来版本中可用",
     "backupArchives": "备份归档",
     "clickToExplore": "点击浏览",
+    "clickToDownload": "Click to download",
+    "useFileRestore": "Use File Restore to extract files",
     "notExplorable": "不可浏览",
     "noArchiveFound": "未找到归档",
     "emptyFolder": "空文件夹",

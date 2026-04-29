@@ -2082,6 +2082,8 @@
     "actionsAvailableSoon": "Aktionen in einer zukünftigen Version verfügbar",
     "backupArchives": "Backup-Archive",
     "clickToExplore": "klicken to explore",
+    "clickToDownload": "Click to download",
+    "useFileRestore": "Use File Restore to extract files",
     "notExplorable": "Nicht durchsuchbar",
     "noArchiveFound": "Kein Archiv gefunden",
     "emptyFolder": "Leerer Ordner",

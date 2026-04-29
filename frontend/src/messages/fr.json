@@ -2115,6 +2115,8 @@
     "actionsAvailableSoon": "Actions disponibles dans une prochaine version",
     "backupArchives": "Archives du backup",
     "clickToExplore": "Cliquer pour explorer",
+    "clickToDownload": "Cliquer pour télécharger",
+    "useFileRestore": "Utilisez la restauration de fichiers pour extraire les fichiers",
     "notExplorable": "Non explorable",
     "noArchiveFound": "Aucune archive trouvée",
     "emptyFolder": "Dossier vide",

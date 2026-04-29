@@ -46,6 +46,7 @@ import BackupTrendsChart from './BackupTrendsChart'
 import EmptyState from '@/components/EmptyState'
 import { TableSkeleton } from '@/components/skeletons'
 import RestoreVmDialog from '@/components/backup/RestoreVmDialog'
+import { useTenant } from '@/contexts/TenantContext'
 
 /* -----------------------------
   Helpers
@@ -124,6 +125,12 @@ export default function BackupsPage() {
   const theme = useTheme()
   const { setPageInfo } = usePageTitle()
   const timeAgo = useTimeAgo(t)
+  // Tenant-vDC users get a simpler drawer: the Explorer tab exposes raw
+  // PBS internals (catalog browse, .blob downloads of the qm config, etc.)
+  // that don't map onto the abstraction we sell to tenants. Provider /
+  // 'default' tenant keeps both tabs.
+  const { currentTenant, loading: tenantLoading } = useTenant()
+  const isVdcTenant = !tenantLoading && !!currentTenant && currentTenant.id !== 'default'
 
   useEffect(() => {
     setPageInfo(t('backups.title'), t('backups.subtitle'), 'ri-file-copy-fill')
@@ -292,6 +299,13 @@ return () => setPageInfo('', '', '')
     setExplorerError(null)
     setDrawerTab(0)
   }, [selectedBackup?.id])
+
+  // Tenant guard: if the user was on the Explorer tab when their tenant
+  // role flipped (rare but cheap to defend against), bounce them back to
+  // the Information tab so they don't see an empty panel.
+  useEffect(() => {
+    if (isVdcTenant && drawerTab !== 0) setDrawerTab(0)
+  }, [isVdcTenant, drawerTab])
 
   // Charger les connexions PBS
   useEffect(() => {
@@ -994,7 +1008,9 @@ return () => clearTimeout(timer)
                 {/* Tabs */}
                 <Tabs value={drawerTab} onChange={(e, v) => setDrawerTab(v)} sx={{ mt: 1 }}>
                   <Tab label={t('backups.informations')} icon={<i className='ri-information-line' />} iconPosition='start' />
-                  <Tab label={t('backups.explorer')} icon={<i className='ri-folder-open-line' />} iconPosition='start' />
+                  {!isVdcTenant && (
+                    <Tab label={t('backups.explorer')} icon={<i className='ri-folder-open-line' />} iconPosition='start' />
+                  )}
                 </Tabs>
               </Box>
 
@@ -1084,7 +1100,7 @@ return () => clearTimeout(timer)
                 )}
 
                 {/* Onglet Explorer */}
-                {drawerTab === 1 && (
+                {drawerTab === 1 && !isVdcTenant && (
                   <Box>
                     {explorerLoading && (
                       <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
@@ -1103,27 +1119,66 @@ return () => clearTimeout(timer)
                           {t('backups.backupArchives')}
                         </Typography>
                         <List dense>
-                          {explorerArchives.map((file, idx) => (
+                          {explorerArchives.map((file, idx) => {
+                            // .blob → direct download via /file-download
+                            // .pxar.didx → browsable
+                            // .img.fidx → "Use file restore" hint (no inline download — the index alone is useless)
+                            const isBlob = typeof file.name === 'string' && file.name.endsWith('.blob')
+                            const isImgIdx = typeof file.name === 'string' && file.name.endsWith('.img.fidx')
+                            const handleClick = () => {
+                              if (file.browsable) {
+                                browseArchive(file.name, '/')
+                              } else if (isBlob) {
+                                // Trigger the browser download. The route streams
+                                // the bytes with Content-Disposition: attachment.
+                                const params = new URLSearchParams({ file: file.name })
+                                if (selectedBackup?.namespace) params.set('ns', selectedBackup.namespace)
+                                const href = `/api/v1/pbs/${encodeURIComponent(selectedPbs)}/backups/${encodeURIComponent(selectedBackup.id)}/download?${params}`
+                                window.open(href, '_blank', 'noopener')
+                              }
+                            }
+                            const secondary = file.browsable
+                              ? t('backups.clickToExplore')
+                              : isBlob
+                                ? t('backups.clickToDownload')
+                                : isImgIdx
+                                  ? t('backups.useFileRestore')
+                                  : t('backups.notExplorable')
+                            const trailingIcon = file.browsable
+                              ? 'ri-arrow-right-s-line'
+                              : isBlob
+                                ? 'ri-download-2-line'
+                                : null
+                            return (
                             <ListItem key={idx} disablePadding>
                               <ListItemButton
-                                onClick={() => file.browsable && browseArchive(file.name, '/')}
-                                disabled={!file.browsable}
+                                onClick={handleClick}
+                                disabled={!file.browsable && !isBlob}
                               >
                                 <ListItemIcon sx={{ minWidth: 36 }}>
                                   <FileIcon type={file.type} name={file.name} />
                                 </ListItemIcon>
                                 <ListItemText
                                   primary={file.name}
-                                  secondary={file.browsable ? t('backups.clickToExplore') : t('backups.notExplorable')}
+                                  secondary={secondary}
                                   primaryTypographyProps={{ variant: 'body2' }}
                                   secondaryTypographyProps={{ variant: 'caption' }}
                                 />
-                                {file.browsable && (
-                                  <i className='ri-arrow-right-s-line' style={{ opacity: 0.5 }} />
+                                {file.sizeFormatted && file.sizeFormatted !== '-' && (
+                                  <Typography
+                                    variant='caption'
+                                    sx={{ opacity: 0.6, fontFamily: 'monospace', mr: 1, whiteSpace: 'nowrap' }}
+                                  >
+                                    {file.sizeFormatted}
+                                  </Typography>
+                                )}
+                                {trailingIcon && (
+                                  <i className={trailingIcon} style={{ opacity: 0.5 }} />
                                 )}
                               </ListItemButton>
                             </ListItem>
-                          ))}
+                            )
+                          })}
                           {explorerArchives.length === 0 && !explorerLoading && (
                             <Typography variant='body2' sx={{ opacity: 0.5, py: 2, textAlign: 'center' }}>
                               {t('backups.noArchiveFound')}
