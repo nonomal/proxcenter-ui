@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server"
+import { NextResponse, after } from "next/server"
 
 import { pveFetch } from "@/lib/proxmox/client"
 import { getConnectionById } from "@/lib/connections/getConnection"
@@ -7,7 +7,10 @@ import { cloneVmSchema } from "@/lib/schemas"
 import { invalidateInventoryCache } from "@/lib/cache/inventoryCache"
 import { getCurrentTenantId } from "@/lib/tenant"
 import { resolveVdcForTenant, checkVdcQuota } from "@/lib/vdc/quota"
-import { getAllowedBridgesForTenant, parseBridgeFromNet } from "@/lib/vdc/vnets"
+import { getAllowedBridgesForTenant, parseBridgeFromNet, resolveSubnetForBridge } from "@/lib/vdc/vnets"
+import { syncIpamForVmConfig } from "@/lib/vdc/ipamSync"
+import { releaseAllocationsForVm } from "@/lib/vdc/ipam"
+import { waitForTask } from "@/lib/proxmox/tasks"
 
 export const runtime = "nodejs"
 
@@ -104,6 +107,31 @@ export async function POST(
       }
     }
 
+    // ── IPAM-managed clone hardening (qemu only) ──
+    // PVE's clone keeps the source MACs by default, which would create
+    // both a network-level MAC collision AND an IPAM (subnet, mac) UNIQUE
+    // collision when allocating for the new vmid. If the source has any
+    // NIC on an IPAM-managed VNet, force `unique=1` so PVE regenerates
+    // every MAC. The post-clone sync below then allocates fresh IPs for
+    // those new MACs.
+    let cloneTouchesIpam = false
+    if (type === 'qemu') {
+      try {
+        const sourceConfig = await pveFetch<any>(
+          conn,
+          `/nodes/${encodeURIComponent(node)}/qemu/${encodeURIComponent(vmid)}/config`
+        )
+        for (const k of Object.keys(sourceConfig || {})) {
+          if (!/^net\d+$/.test(k)) continue
+          const bridge = parseBridgeFromNet(String(sourceConfig[k] || ''))
+          if (bridge && resolveSubnetForBridge(id, bridge)) {
+            cloneTouchesIpam = true
+            break
+          }
+        }
+      } catch { /* tolerate — fall through, sync will detect drift later */ }
+    }
+
     // Construire l'URL Proxmox pour le clone
     const endpoint = `/nodes/${encodeURIComponent(node)}/${type}/${encodeURIComponent(vmid)}/clone`
 
@@ -121,6 +149,13 @@ export async function POST(
       formData.set('pool', vdcPoolName)
     }
 
+    if (cloneTouchesIpam) {
+      // unique=1 tells PVE to regenerate every MAC on the clone's NICs.
+      // Without it, two VMs would share MACs which collides at L2 and
+      // breaks the IPAM (subnet, mac) UNIQUE constraint.
+      formData.set('unique', '1')
+    }
+
     // Appeler l'API Proxmox pour cloner la VM
     const result = await pveFetch<any>(conn, endpoint, {
       method: "POST",
@@ -131,6 +166,66 @@ export async function POST(
     })
 
     invalidateInventoryCache()
+
+    // ── Post-clone IPAM sync ──
+    // The clone runs as a PVE task (UPID returned in `result`). We schedule
+    // the IPAM reconciliation in after() so the HTTP response goes back to
+    // the client immediately and the sync runs once PVE actually finished
+    // cloning. Failures are logged + auto-rollback'd; we don't try to roll
+    // back the clone itself (data loss risk).
+    if (cloneTouchesIpam && type === 'qemu' && body.newid) {
+      const newVmid = Number(body.newid)
+      const upid = String(result || '')
+      const cloneNode = String(body.target || node)
+      const cloneName = body.name ? String(body.name) : null
+
+      after(async () => {
+        try {
+          if (upid) await waitForTask(conn, cloneNode, upid)
+          const cloneConfig = await pveFetch<any>(
+            conn,
+            `/nodes/${encodeURIComponent(cloneNode)}/qemu/${encodeURIComponent(String(newVmid))}/config`
+          )
+
+          const sync = await syncIpamForVmConfig({
+            before: null,
+            after: cloneConfig,
+            conn,
+            connectionId: id,
+            vmid: newVmid,
+            hostname: cloneName ?? cloneConfig?.name ?? null,
+          })
+
+          // Push any ipconfigN corrections back to the clone so cloud-init
+          // sees the freshly allocated IP — without this the clone would
+          // boot with the source's ip baked in and collide on the wire.
+          if (Object.keys(sync.bodyOverrides).length > 0) {
+            const patch = new URLSearchParams()
+            for (const [k, v] of Object.entries(sync.bodyOverrides)) patch.set(k, v)
+            try {
+              await pveFetch<any>(
+                conn,
+                `/nodes/${encodeURIComponent(cloneNode)}/qemu/${encodeURIComponent(String(newVmid))}/config`,
+                {
+                  method: 'PUT',
+                  headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                  body: patch.toString(),
+                }
+              )
+            } catch (err: any) {
+              console.error(`[clone-ipam-sync] PVE PUT config failed for vmid=${newVmid}: ${err?.message ?? err}`)
+              try { sync.rollback() } catch { /* tolerate */ }
+              try { releaseAllocationsForVm(id, newVmid) } catch { /* tolerate */ }
+            }
+          }
+        } catch (err: any) {
+          console.error(`[clone-ipam-sync] post-clone IPAM sync failed for vmid=${body.newid}: ${err?.message ?? err}`)
+          // Best-effort cleanup so a failed sync doesn't leak partial
+          // allocations. The clone itself stays — data loss > drift.
+          try { releaseAllocationsForVm(id, newVmid) } catch { /* tolerate */ }
+        }
+      })
+    }
 
     // Audit
     const { audit } = await import("@/lib/audit")
