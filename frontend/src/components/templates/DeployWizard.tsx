@@ -1240,75 +1240,72 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint, r
             {t('templates.deploy.iso.networkReservationHelp')}
           </Alert>
           <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 2 }}>
-            <TextField
-              size="small"
-              label={t('templates.deploy.iso.staticIp')}
-              value={staticIp}
-              onChange={(e) => setStaticIp(e.target.value.trim())}
-              placeholder="10.42.0.10"
-              error={!!staticIp && !/^\d{1,3}(\.\d{1,3}){3}$/.test(staticIp)}
-              helperText={
-                isoBridgeChoice?.subnet
-                  ? t('templates.deploy.iso.staticIpHelp', { cidr: isoBridgeChoice.subnet.cidr })
-                  : ''
-              }
-              fullWidth
-              required
-              InputProps={{
-                endAdornment: (
-                  <Tooltip title={t('templates.deploy.iso.staticIpAutoPick')} arrow>
-                    <IconButton
-                      size="small"
-                      onClick={async () => {
-                        // Force a fresh next-free lookup and override
-                        // whatever the user has currently typed. Useful
-                        // when the suggested IP collides with another
-                        // reservation made between the dialog opening
-                        // and submit.
-                        if (!isoBridgeChoice?.vdcId || !isoBridgeChoice?.displayName) return
-                        try {
-                          const r = await fetch(`/api/v1/vdcs/${encodeURIComponent(isoBridgeChoice.vdcId)}/vnets/${encodeURIComponent(isoBridgeChoice.displayName)}/ipam/next-free`)
-                          const j = await r.json()
-                          if (r.ok && j?.data?.ip) setStaticIp(String(j.data.ip))
-                        } catch { /* ignore */ }
-                      }}
-                    >
-                      <Box component="i" className="ri-refresh-line" sx={{ fontSize: 14 }} />
-                    </IconButton>
-                  </Tooltip>
-                ),
-              }}
-            />
-            <TextField
-              size="small"
-              label={t('templates.deploy.iso.staticMac')}
-              value={staticMac}
-              onChange={(e) => setStaticMac(e.target.value.trim().toUpperCase())}
-              error={!!staticMac && !/^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$/.test(staticMac)}
-              fullWidth
-              required
-              InputProps={{
-                endAdornment: (
-                  <Tooltip title={t('templates.deploy.iso.regenerateMac')} arrow>
-                    <IconButton
-                      size="small"
-                      onClick={async () => {
-                        // Regenerate via the same endpoint to keep the
-                        // OUI prefix consistent with what the backend uses.
-                        if (!isoBridgeChoice?.vdcId || !isoBridgeChoice?.displayName) return
-                        try {
-                          const r = await fetch(`/api/v1/vdcs/${encodeURIComponent(isoBridgeChoice.vdcId)}/vnets/${encodeURIComponent(isoBridgeChoice.displayName)}/ipam/next-free`)
-                          const j = await r.json()
-                          if (r.ok && j?.data?.suggestedMac) setStaticMac(String(j.data.suggestedMac))
-                        } catch { /* ignore */ }
-                      }}
-                    >
-                      <Box component="i" className="ri-refresh-line" sx={{ fontSize: 14 }} />
-                    </IconButton>
-                  </Tooltip>
-                ),
-              }}
-            />
+            {/* Static IP — editable. Refresh button next to the field
+                (not in endAdornment) to avoid the MUI Tooltip-in-input
+                focus interception that was preventing keystrokes from
+                reaching the input. */}
+            <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 0.5 }}>
+              <TextField
+                size="small"
+                label={t('templates.deploy.iso.staticIp')}
+                value={staticIp}
+                onChange={(e) => setStaticIp(e.target.value)}
+                placeholder="10.42.0.10"
+                error={!!staticIp && !/^\d{1,3}(\.\d{1,3}){3}$/.test(staticIp.trim())}
+                helperText={
+                  isoBridgeChoice?.subnet
+                    ? t('templates.deploy.iso.staticIpHelp', { cidr: isoBridgeChoice.subnet.cidr })
+                    : ''
+                }
+                fullWidth
+                required
+              />
+              <Tooltip title={t('templates.deploy.iso.staticIpAutoPick')} arrow>
+                <IconButton
+                  size="small"
+                  sx={{ mt: 0.5 }}
+                  onClick={async () => {
+                    if (!isoBridgeChoice?.vdcId || !isoBridgeChoice?.displayName) return
+                    try {
+                      const r = await fetch(`/api/v1/vdcs/${encodeURIComponent(isoBridgeChoice.vdcId)}/vnets/${encodeURIComponent(isoBridgeChoice.displayName)}/ipam/next-free`)
+                      const j = await r.json()
+                      if (r.ok && j?.data?.ip) setStaticIp(String(j.data.ip))
+                    } catch { /* ignore */ }
+                  }}
+                >
+                  <Box component="i" className="ri-refresh-line" sx={{ fontSize: 14 }} />
+                </IconButton>
+              </Tooltip>
+            </Box>
+
+            <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 0.5 }}>
+              <TextField
+                size="small"
+                label={t('templates.deploy.iso.staticMac')}
+                value={staticMac}
+                onChange={(e) => setStaticMac(e.target.value.toUpperCase())}
+                error={!!staticMac && !/^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$/.test(staticMac.trim())}
+                fullWidth
+                required
+              />
+              <Tooltip title={t('templates.deploy.iso.regenerateMac')} arrow>
+                <IconButton
+                  size="small"
+                  sx={{ mt: 0.5 }}
+                  onClick={async () => {
+                    if (!isoBridgeChoice?.vdcId || !isoBridgeChoice?.displayName) return
+                    try {
+                      const r = await fetch(`/api/v1/vdcs/${encodeURIComponent(isoBridgeChoice.vdcId)}/vnets/${encodeURIComponent(isoBridgeChoice.displayName)}/ipam/next-free`)
+                      const j = await r.json()
+                      if (r.ok && j?.data?.suggestedMac) setStaticMac(String(j.data.suggestedMac))
+                    } catch { /* ignore */ }
+                  }}
+                >
+                  <Box component="i" className="ri-refresh-line" sx={{ fontSize: 14 }} />
+                </IconButton>
+              </Tooltip>
+            </Box>
+
             <TextField
               size="small"
               label={t('templates.deploy.iso.staticGateway')}
