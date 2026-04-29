@@ -6,6 +6,7 @@ import { useLocale, useTranslations } from 'next-intl'
 
 import { getDateLocale } from '@/lib/i18n/date'
 import { useTenant } from '@/contexts/TenantContext'
+import BackupSchedulePicker from './BackupSchedulePicker'
 
 import {
   Alert,
@@ -612,12 +613,12 @@ return '—'
         <DialogContent>
           <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, pt: 1 }}>
             {/* Row 1 — infra pickers (PBS storage, namespace, node)
-                are hidden for tenants because the vDC ABOVE drives all of
-                them: the form was prefilled in handleCreate from
-                tenantPools[0]. The Schedule field stays so the tenant
-                still picks the time. Provider keeps the open form. */}
-            <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: isVdcTenant ? '1fr' : '1fr 1fr 1fr 1fr' }, gap: 2 }}>
-              {!isVdcTenant && (
+                are entirely hidden for tenants because the vDC drives
+                all of them: handleCreate prefills from tenantPools[0].
+                Provider keeps the open form. The Schedule moved to its
+                own structured block below (BackupSchedulePicker). */}
+            {!isVdcTenant && (
+              <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '1fr 1fr 1fr' }, gap: 2 }}>
                 <FormControl fullWidth size="small">
                   <InputLabel>{t('backups.pbsStorage')}</InputLabel>
                   <Select
@@ -642,9 +643,7 @@ return '—'
                     )}
                   </Select>
                 </FormControl>
-              )}
 
-              {!isVdcTenant && (
                 <TextField
                   size="small"
                   label={t('backups.namespace')}
@@ -653,17 +652,7 @@ return '—'
                   placeholder="ex: prod/web"
                   helperText={t('common.optional')}
                 />
-              )}
 
-              <TextField
-                size="small"
-                label={t('backups.scheduleTime')}
-                value={formData.schedule}
-                onChange={(e) => setFormData(prev => ({ ...prev, schedule: e.target.value }))}
-                placeholder="00:00"
-              />
-
-              {!isVdcTenant && (
                 <FormControl fullWidth size="small">
                   <InputLabel>{t('backups.node')}</InputLabel>
                   <Select
@@ -677,7 +666,21 @@ return '—'
                     ))}
                   </Select>
                 </FormControl>
-              )}
+              </Box>
+            )}
+
+            {/* Structured schedule picker — replaces the previous raw
+                cron-like text input. The picker compiles a PVE calendar
+                event spec from frequency + time + (days|day-of-month),
+                with an Advanced toggle for power users. */}
+            <Box sx={{ mt: 1 }}>
+              <Typography variant="caption" sx={{ display: 'block', mb: 0.5, opacity: 0.7, fontWeight: 600 }}>
+                {t('backups.scheduleSection')}
+              </Typography>
+              <BackupSchedulePicker
+                value={formData.schedule}
+                onChange={(v) => setFormData(prev => ({ ...prev, schedule: v }))}
+              />
             </Box>
 
             {/* Row 2 */}
@@ -1481,14 +1484,17 @@ function PbsJobsTab({ pbsConnections = [], isVdcTenant = false }) {
               placeholder="production/web"
             />
 
-            <TextField
-              size="small"
-              label={t('backups.planification')}
-              value={formData.schedule}
-              onChange={(e) => setFormData(prev => ({ ...prev, schedule: e.target.value }))}
-              placeholder="daily 02:00"
-              helperText="Ex: hourly, daily 02:00, mon..fri 03:00"
-            />
+            {/* Same structured schedule picker as the PVE tab — PBS
+                accepts the exact same calendar event spec. */}
+            <Box>
+              <Typography variant="caption" sx={{ display: 'block', mb: 0.5, opacity: 0.7, fontWeight: 600 }}>
+                {t('backups.scheduleSection')}
+              </Typography>
+              <BackupSchedulePicker
+                value={formData.schedule}
+                onChange={(v) => setFormData(prev => ({ ...prev, schedule: v }))}
+              />
+            </Box>
 
             <TextField
               size="small"
