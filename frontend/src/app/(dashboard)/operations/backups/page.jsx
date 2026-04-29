@@ -84,6 +84,41 @@ const VerifyChip = ({ verified, t }) => {
 return <Chip size='small' color='default' label={t('backups.notVerified')} variant='outlined' sx={{ opacity: 0.5 }} />
 }
 
+// Compact state icon for the table column. Three distinct states:
+//   - ok      : verification.state === 'ok' → green check
+//   - failed  : verification.state set, anything else → red cross
+//   - none    : no verification record → grey dash (never verified)
+// Tooltip carries the localised label + last-run date when available.
+const VerifyStateIcon = ({ row, t }) => {
+  const state = row.verification?.state
+  if (state === 'ok') {
+    const tooltip = row.verifiedAt
+      ? `${t('backups.verifiedOn', { date: row.verifiedAt })}`
+      : t('backups.verified')
+    return (
+      <Tooltip title={tooltip} arrow>
+        <i className='ri-checkbox-circle-fill' style={{ fontSize: 18, color: '#4caf50' }} />
+      </Tooltip>
+    )
+  }
+  if (state) {
+    // Anything other than 'ok' is a failed/incomplete verification.
+    const tooltip = row.verifiedAt
+      ? `${t('backups.verifyFailedOn', { date: row.verifiedAt })}`
+      : t('backups.verifyFailed')
+    return (
+      <Tooltip title={tooltip} arrow>
+        <i className='ri-error-warning-fill' style={{ fontSize: 18, color: '#f44336' }} />
+      </Tooltip>
+    )
+  }
+  return (
+    <Tooltip title={t('backups.notVerified')} arrow>
+      <i className='ri-subtract-line' style={{ fontSize: 18, opacity: 0.35 }} />
+    </Tooltip>
+  )
+}
+
 // Icône selon le type de fichier
 const FileIcon = ({ type, name }) => {
   if (type === 'directory') return <i className='ri-folder-fill' style={{ color: '#FFB74D', fontSize: 20 }} />
@@ -693,10 +728,12 @@ return () => clearTimeout(timer)
     {
       field: 'verified',
       headerName: t('backups.verified'),
-      width: 120,
+      width: 80,
+      align: 'center',
+      headerAlign: 'center',
       renderCell: params => (
-        <Box sx={{ display: 'flex', alignItems: 'center', height: '100%' }}>
-          <VerifyChip verified={params.value} t={t} />
+        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
+          <VerifyStateIcon row={params.row} t={t} />
         </Box>
       )
     },
