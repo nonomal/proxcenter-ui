@@ -47,46 +47,33 @@ export async function POST(req: Request, ctx: RouteContext) {
         : ""
     const description = typeof body?.description === "string" ? body.description.trim() : undefined
     const firewall = body?.firewall !== false
-    const isolatePorts = body?.isolatePorts === true
-    const vlanAware = body?.vlanAware === true
 
     if (!displayName) return NextResponse.json({ error: "displayName required" }, { status: 400 })
 
-    // Optional subnet block. Empty / missing = bridge-only VNet, no IPAM.
-    let subnet: {
-      cidr: string
-      gateway: string
-      dnsServers?: string[]
-      dhcpRangeStart?: string
-      dhcpRangeEnd?: string
-    } | undefined = undefined
-    if (body?.subnet && typeof body.subnet === "object") {
-      const s = body.subnet
-      const cidr = typeof s.cidr === "string" ? s.cidr.trim() : ""
-      const gateway = typeof s.gateway === "string" ? s.gateway.trim() : ""
-      if (!cidr || !gateway) {
-        return NextResponse.json({ error: "subnet.cidr and subnet.gateway are required when subnet is provided" }, { status: 400 })
-      }
-      const dnsServers = Array.isArray(s.dnsServers)
-        ? s.dnsServers.map((x: any) => String(x).trim()).filter(Boolean)
-        : typeof s.dnsServers === "string"
-          ? s.dnsServers.split(",").map((x: string) => x.trim()).filter(Boolean)
-          : undefined
-      subnet = {
-        cidr,
-        gateway,
-        dnsServers,
-        dhcpRangeStart: typeof s.dhcpRangeStart === "string" && s.dhcpRangeStart.trim() ? s.dhcpRangeStart.trim() : undefined,
-        dhcpRangeEnd: typeof s.dhcpRangeEnd === "string" && s.dhcpRangeEnd.trim() ? s.dhcpRangeEnd.trim() : undefined,
-      }
+    // Subnet is mandatory — VNets without one cannot allocate IPs since
+    // PVE-native IPAM/DHCP are broken on VXLAN zones.
+    if (!body?.subnet || typeof body.subnet !== "object") {
+      return NextResponse.json({ error: "subnet (cidr + gateway) is required" }, { status: 400 })
     }
+    const s = body.subnet
+    const cidr = typeof s.cidr === "string" ? s.cidr.trim() : ""
+    const gateway = typeof s.gateway === "string" ? s.gateway.trim() : ""
+    if (!cidr || !gateway) {
+      return NextResponse.json({ error: "subnet.cidr and subnet.gateway are required" }, { status: 400 })
+    }
+    const dnsServers = Array.isArray(s.dnsServers)
+      ? s.dnsServers.map((x: any) => String(x).trim()).filter(Boolean)
+      : typeof s.dnsServers === "string"
+        ? s.dnsServers.split(",").map((x: string) => x.trim()).filter(Boolean)
+        : undefined
+    const subnet = { cidr, gateway, dnsServers }
 
     const session = await getServerSession(authOptions)
     const createdBy = session?.user?.id ?? null
     const tenantId = await getCurrentTenantId()
 
     try {
-      const vnet = await createVnetForTenant({ vdcId, tenantId, displayName, description, firewall, isolatePorts, vlanAware, subnet, createdBy })
+      const vnet = await createVnetForTenant({ vdcId, tenantId, displayName, description, firewall, subnet, createdBy })
       return NextResponse.json({ data: vnet }, { status: 201 })
     } catch (err: any) {
       const msg = err?.message || String(err)
@@ -96,8 +83,7 @@ export async function POST(req: Request, ctx: RouteContext) {
       // Subnet validation surfaces with these prefixes — all user input issues.
       if (
         msg.startsWith("Invalid CIDR") ||
-        msg.startsWith("Gateway ") ||
-        msg.startsWith("DHCP range")
+        msg.startsWith("Gateway ")
       ) return NextResponse.json({ error: msg }, { status: 400 })
       if (msg.includes("vDC not found")) return NextResponse.json({ error: msg }, { status: 404 })
       throw err

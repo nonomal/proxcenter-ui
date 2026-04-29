@@ -263,7 +263,6 @@ type VnetSummary = {
   firewall: boolean
   subnetCidr: string | null
   subnetGateway: string | null
-  subnetDhcp: boolean
 }
 
 export default function NetworkDashboard({ connectionIds, connectionNames }: Props) {
@@ -340,7 +339,6 @@ export default function NetworkDashboard({ connectionIds, connectionNames }: Pro
                 firewall: !!vnet.firewall,
                 subnetCidr: sn?.cidr ?? null,
                 subnetGateway: sn?.gateway ?? null,
-                subnetDhcp: !!sn?.dhcpRangeStart && !!sn?.dhcpRangeEnd,
               })
             }
           } catch { /* skip vDC on transient error */ }

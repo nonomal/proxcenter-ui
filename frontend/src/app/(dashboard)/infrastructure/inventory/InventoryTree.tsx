@@ -2284,9 +2284,7 @@ return favorites.has(vmKey)
     pveName: string
     description?: string | null
     firewall?: boolean
-    isolatePorts?: boolean
-    vlanAware?: boolean
-    subnet?: { cidr: string; gateway: string; dnsServers: string[]; dhcpRangeStart: string | null; dhcpRangeEnd: string | null } | null
+    subnet?: { cidr: string; gateway: string; dnsServers: string[] } | null
   }
   const [tenantVnets, setTenantVnets] = useState<TenantVnetItem[]>([])
   const [tenantVnetsLoading, setTenantVnetsLoading] = useState(false)
@@ -2328,8 +2326,6 @@ return favorites.has(vmKey)
               pveName: vnet.pveName,
               description: vnet.description ?? null,
               firewall: !!vnet.firewall,
-              isolatePorts: !!vnet.isolatePorts,
-              vlanAware: !!vnet.vlanAware,
               subnet: vnet.subnet ?? null,
             })
           }

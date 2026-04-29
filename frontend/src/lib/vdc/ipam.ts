@@ -15,8 +15,10 @@
 // The allocator skips:
 //   - the network address and the broadcast address (handled by ParsedCidr)
 //   - the gateway (always)
-//   - everything outside [dhcp_range_start, dhcp_range_end] when those
-//     columns are populated (subnet's "allocation range" override)
+//
+// Tenants who want to reserve a slice of the subnet for IPs they manage by
+// hand (appliances created in CLI, etc.) just declare a smaller CIDR on
+// their VNet — there is no per-subnet sub-range override.
 //
 // /31 and /32 subnets are supported: ParsedCidr returns the two/single
 // usable hosts, and we still skip the gateway.
@@ -88,14 +90,12 @@ interface SubnetRow {
   vnet_id: string
   cidr: string
   gateway: string
-  dhcp_range_start: string | null
-  dhcp_range_end: string | null
 }
 
 function loadSubnet(subnetId: string): SubnetRow | null {
   return db()
     .prepare(
-      `SELECT id, vnet_id, cidr, gateway, dhcp_range_start, dhcp_range_end
+      `SELECT id, vnet_id, cidr, gateway
        FROM vdc_subnets WHERE id = ?`,
     )
     .get(subnetId) as SubnetRow | null
@@ -123,9 +123,8 @@ function normalizeMac(mac: string): string {
 
 /**
  * Compute the [low, high] uint32 bounds of the allocation range for a given
- * subnet. Defaults to [firstUsable, lastUsable] from the CIDR; narrows to
- * the subnet's dhcp_range_start/end when those are set. Always excludes the
- * gateway by returning a small "skip" callback.
+ * subnet — `[firstUsable, lastUsable]` derived from the CIDR. The gateway
+ * is excluded separately by the caller.
  */
 function buildRangeBounds(subnet: SubnetRow): {
   low: number
@@ -137,22 +136,7 @@ function buildRangeBounds(subnet: SubnetRow): {
   const gatewayInt = ipToInt(subnet.gateway)
   if (gatewayInt === null) throw new Error(`Subnet ${subnet.id} has invalid gateway: ${subnet.gateway}`)
 
-  let low = parsed.firstUsableInt
-  let high = parsed.lastUsableInt
-
-  if (subnet.dhcp_range_start && subnet.dhcp_range_end) {
-    const startInt = ipToInt(subnet.dhcp_range_start)
-    const endInt = ipToInt(subnet.dhcp_range_end)
-    if (startInt !== null && endInt !== null && startInt <= endInt) {
-      // Intersect the user-supplied range with the CIDR's usable bounds so
-      // a stale/invalid range (e.g. CIDR was tightened post-create) can't
-      // give us IPs outside the subnet.
-      low = Math.max(low, startInt)
-      high = Math.min(high, endInt)
-    }
-  }
-
-  return { low, high, gatewayInt }
+  return { low: parsed.firstUsableInt, high: parsed.lastUsableInt, gatewayInt }
 }
 
 // ---------------------------------------------------------------------------

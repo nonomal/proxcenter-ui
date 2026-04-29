@@ -448,8 +448,6 @@ export function getDb() {
       description   TEXT,
       vxlan_tag     INTEGER NOT NULL,
       firewall      INTEGER DEFAULT 1,
-      isolate_ports INTEGER DEFAULT 0,             -- prevent intra-VNet VM-to-VM traffic (private VLAN style)
-      vlan_aware    INTEGER DEFAULT 0,             -- allow VMs to push their own 802.1q tags over the VNet
       created_by    TEXT,
       created_at    TEXT DEFAULT (datetime('now')),
       UNIQUE(vdc_id, pve_name),
@@ -461,15 +459,14 @@ export function getDb() {
     -- VNet (UNIQUE on vnet_id) — multi-subnet (e.g. dual-stack v4/v6) can
     -- relax the constraint later. ipam_enabled is reserved for a future
     -- "bridge-only without IPAM" mode; today it is always 1 when a row
-    -- exists.
+    -- exists. Subnet is mandatory: VNets without one cannot allocate IPs
+    -- (PVE-native IPAM/DHCP are broken on VXLAN zones in PVE 9.x).
     CREATE TABLE IF NOT EXISTS vdc_subnets (
       id                TEXT PRIMARY KEY,
       vnet_id           TEXT NOT NULL UNIQUE REFERENCES vdc_vnets(id) ON DELETE CASCADE,
       cidr              TEXT NOT NULL,
       gateway           TEXT NOT NULL,
       dns_servers       TEXT,                      -- comma-separated, optional
-      dhcp_range_start  TEXT,                      -- optional (enables dnsmasq DHCP)
-      dhcp_range_end    TEXT,
       ipam_enabled      INTEGER NOT NULL DEFAULT 1,
       created_at        TEXT DEFAULT (datetime('now'))
     );
@@ -617,15 +614,26 @@ export function getDb() {
     'CREATE UNIQUE INDEX IF NOT EXISTS idx_vdc_vnets_display_name ON vdc_vnets(vdc_id, display_name)'
   ).run()
 
-  // Advanced VNet flags surfaced to tenants as opt-in toggles.
-  for (const colDef of [
-    'ALTER TABLE vdc_vnets ADD COLUMN isolate_ports INTEGER DEFAULT 0',
-    'ALTER TABLE vdc_vnets ADD COLUMN vlan_aware INTEGER DEFAULT 0',
+  // Cleanup migration: vdc_vnets.isolate_ports / vlan_aware were UI-exposed
+  // toggles whose underlying PVE flags either had no real tenant use case
+  // (isolate-ports) or required a niche networking-savvy audience that
+  // we don't target (vlan-aware). Same for vdc_subnets.dhcp_range_*: the
+  // dnsmasq-on-VXLAN flow is broken on PVE 9.x (the IPAM=pve backend is
+  // broken, and dhcp=dnsmasq depends on it), so the column described a
+  // capability we never actually delivered. Drop them all so they stop
+  // surfacing in queries / SELECTs / type-checks.
+  for (const drop of [
+    'ALTER TABLE vdc_vnets DROP COLUMN isolate_ports',
+    'ALTER TABLE vdc_vnets DROP COLUMN vlan_aware',
+    'ALTER TABLE vdc_subnets DROP COLUMN dhcp_range_start',
+    'ALTER TABLE vdc_subnets DROP COLUMN dhcp_range_end',
   ]) {
     try {
-      db.prepare(colDef).run()
+      db.prepare(drop).run()
     } catch (e: any) {
-      if (!String(e?.message || '').includes('duplicate column')) throw e
+      const msg = String(e?.message || '').toLowerCase()
+      // SQLite: "no such column: X" once the column is already gone.
+      if (!msg.includes('no such column')) throw e
     }
   }
 

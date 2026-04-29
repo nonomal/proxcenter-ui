@@ -28,8 +28,6 @@ function freshDb(): Database.Database {
       cidr TEXT NOT NULL,
       gateway TEXT NOT NULL,
       dns_servers TEXT,
-      dhcp_range_start TEXT,
-      dhcp_range_end TEXT,
       ipam_enabled INTEGER NOT NULL DEFAULT 1
     );
     CREATE TABLE vdc_ipam_allocations (
@@ -53,16 +51,16 @@ function freshDb(): Database.Database {
 
 function seed(
   sqlite: Database.Database,
-  args: { cidr: string; gateway: string; dhcpStart?: string | null; dhcpEnd?: string | null },
+  args: { cidr: string; gateway: string },
 ): { vdcId: string; vnetId: string; subnetId: string; connectionId: string } {
   sqlite.prepare(`INSERT INTO vdcs (id) VALUES ('vdc-1')`).run()
   sqlite.prepare(`INSERT INTO vdc_vnets (id, vdc_id) VALUES ('vnet-1', 'vdc-1')`).run()
   sqlite
     .prepare(
-      `INSERT INTO vdc_subnets (id, vnet_id, cidr, gateway, dhcp_range_start, dhcp_range_end)
-       VALUES ('subnet-1', 'vnet-1', ?, ?, ?, ?)`,
+      `INSERT INTO vdc_subnets (id, vnet_id, cidr, gateway)
+       VALUES ('subnet-1', 'vnet-1', ?, ?)`,
     )
-    .run(args.cidr, args.gateway, args.dhcpStart ?? null, args.dhcpEnd ?? null)
+    .run(args.cidr, args.gateway)
   return { vdcId: 'vdc-1', vnetId: 'vnet-1', subnetId: 'subnet-1', connectionId: 'conn-1' }
 }
 
@@ -84,8 +82,6 @@ describe('allocateIp', () => {
 function seedFresh(opts: {
   cidr: string
   gateway: string
-  dhcpStart?: string | null
-  dhcpEnd?: string | null
 }): { sqlite: Database.Database; ids: ReturnType<typeof seed> } {
   const sqlite = freshDb()
   __setDbForTests(sqlite)
@@ -143,39 +139,11 @@ describe('allocateIp behaviour', () => {
       .toThrow(IpamHintUnavailableError)
   })
 
-  it('respects dhcp_range_start/end as allocation bounds', () => {
-    const { ids } = seedFresh({
-      cidr: '10.42.0.0/24',
-      gateway: '10.42.0.254',
-      dhcpStart: '10.42.0.100',
-      dhcpEnd: '10.42.0.110',
-    })
-    const a = allocateIp({ ...ids, mac: 'AA:00:00:00:00:01' })
-    expect(a.ip).toBe('10.42.0.100')
-  })
-
-  it('rejects a hint outside the allocation range when one is set', () => {
-    const { ids } = seedFresh({
-      cidr: '10.42.0.0/24',
-      gateway: '10.42.0.254',
-      dhcpStart: '10.42.0.100',
-      dhcpEnd: '10.42.0.110',
-    })
-    expect(() => allocateIp({ ...ids, mac: 'AA:00:00:00:00:01', hint: '10.42.0.50' }))
-      .toThrow(IpamHintUnavailableError)
-  })
-
-  it('throws IpamExhaustedError when the range is full', () => {
-    const { ids } = seedFresh({
-      cidr: '10.42.0.0/24',
-      gateway: '10.42.0.254',
-      dhcpStart: '10.42.0.10',
-      dhcpEnd: '10.42.0.12',
-    })
+  it('throws IpamExhaustedError when the CIDR is full', () => {
+    // /30 has 2 usable hosts; one is the gateway → only 1 IP allocatable.
+    const { ids } = seedFresh({ cidr: '10.42.0.0/30', gateway: '10.42.0.1' })
     allocateIp({ ...ids, mac: 'AA:00:00:00:00:01' })
-    allocateIp({ ...ids, mac: 'AA:00:00:00:00:02' })
-    allocateIp({ ...ids, mac: 'AA:00:00:00:00:03' })
-    expect(() => allocateIp({ ...ids, mac: 'AA:00:00:00:00:04' })).toThrow(IpamExhaustedError)
+    expect(() => allocateIp({ ...ids, mac: 'AA:00:00:00:00:02' })).toThrow(IpamExhaustedError)
   })
 
   it('handles /31 RFC 3021 — both IPs usable', () => {

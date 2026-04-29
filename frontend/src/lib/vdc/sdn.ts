@@ -177,31 +177,6 @@ async function listClusterNodeIps(conn: any): Promise<string[]> {
 /**
  * Creates a VXLAN zone on PVE. Caller must invoke applySdn(conn) afterwards.
  */
-/**
- * Idempotently enables `ipam=pve` and `dhcp=dnsmasq` on an existing zone.
- * Mandatory before PVE's per-subnet `dhcp-range` does anything: without
- * `dhcp=dnsmasq` on the zone, PVE keeps the dhcp-range as inert config
- * and never spawns a dnsmasq instance — VMs in the subnet hang at
- * systemd-networkd-wait-online forever.
- *
- * If the dnsmasq package is missing on a cluster node, PVE will surface
- * the failure at the SDN apply step. That's an infrastructure-side
- * problem, not a tenant-side one — we don't probe for it here.
- *
- * Caller must invoke applySdn(conn) afterwards for the change to take
- * effect on the running cluster.
- */
-export async function ensureZoneDhcpBackend(conn: any, zoneName: string): Promise<void> {
-  try {
-    await pveFetch(conn, `/cluster/sdn/zones/${encodeURIComponent(zoneName)}`, {
-      method: 'PUT',
-      body: new URLSearchParams({ ipam: 'pve', dhcp: 'dnsmasq' }),
-    })
-  } catch (err: any) {
-    throw new Error(`Failed to enable DHCP backend on zone "${zoneName}": ${err?.message ?? String(err)}`)
-  }
-}
-
 export async function createZone(conn: any, zoneName: string): Promise<void> {
   const peers = await listClusterNodeIps(conn)
   const params = new URLSearchParams()
@@ -247,12 +222,6 @@ export interface CreateVnetParams {
   /** Friendly label shown in the PVE GUI under the hashed pveName — lets a
    *  provider admin debugging Proxmox identify which tenant VNet this is. */
   alias?: string
-  /** When true, PVE blocks intra-VNet traffic between the attached VMs
-   *  (private-VLAN style). Default false (VMs in the same VNet talk freely). */
-  isolatePorts?: boolean
-  /** When true, attached VMs can push their own 802.1q tags across this VNet —
-   *  needed for router/firewall VMs that multiplex VLANs. Default false. */
-  vlanAware?: boolean
 }
 
 /**
@@ -267,8 +236,6 @@ export async function createVnetPve(conn: any, params: CreateVnetParams): Promis
   body.append('tag', String(params.tag))
   body.append('type', 'vnet')
   if (params.alias) body.append('alias', params.alias)
-  if (params.isolatePorts) body.append('isolate-ports', '1')
-  if (params.vlanAware) body.append('vlanaware', '1')
 
   try {
     await pveFetch(conn, '/cluster/sdn/vnets', { method: 'POST', body })
@@ -280,15 +247,10 @@ export async function createVnetPve(conn: any, params: CreateVnetParams): Promis
 export async function updateVnetPve(
   conn: any,
   pveName: string,
-  patch: { alias?: string; isolatePorts?: boolean; vlanAware?: boolean }
+  patch: { alias?: string }
 ): Promise<void> {
   const body = new URLSearchParams()
   if (patch.alias !== undefined) body.append('alias', patch.alias)
-  // PVE expects the param to be DELETEd (via the `delete` query) rather than
-  // set to 0 to clear a boolean flag. Easier path: always send 0/1 explicitly,
-  // PVE accepts either form.
-  if (patch.isolatePorts !== undefined) body.append('isolate-ports', patch.isolatePorts ? '1' : '0')
-  if (patch.vlanAware !== undefined) body.append('vlanaware', patch.vlanAware ? '1' : '0')
   if ([...body.keys()].length === 0) return
 
   await pveFetch(conn, `/cluster/sdn/vnets/${encodeURIComponent(pveName)}`, { method: 'PUT', body })
@@ -343,112 +305,17 @@ export async function deleteVnetPve(conn: any, pveName: string): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// PVE SDN: subnets (L3 attached to a VNet) + IPAM
+// PVE SDN: subnets used to be mirrored to PVE here. They no longer are —
+// the subnet definition lives only in our DB (`vdc_subnets`), because:
+//   - DHCP via dnsmasq does not work on VXLAN zones in PVE 9.x (the
+//     `dhcp=dnsmasq, ipam=pve` zone backend depends on the broken IPAM)
+//   - SNAT was always disabled (`snat=0`)
+//   - DNS resolvers are pushed via CloudInit, not via PVE
+//   - the gateway is purely declarative on PVE — the VM gets it via
+//     CloudInit `ipconfigN`, never reads it from PVE
+// → the PVE-side subnet had no functional effect on tenant traffic, so
+// keeping it in sync was pure overhead and a source of drift.
 // ---------------------------------------------------------------------------
-
-export interface CreateSubnetParams {
-  cidr: string                  // e.g. "10.42.0.0/24"
-  gateway: string
-  dnsServers?: string[]         // optional list, joined comma-separated for PVE
-  /** Both endpoints required if DHCP is enabled. dnsmasq is provisioned by PVE. */
-  dhcpRange?: { start: string; end: string }
-}
-
-/** PVE's subnet ID in /etc/pve/sdn/subnets.cfg is `<zone>-<cidr-with-dash>`,
- *  but the create endpoint accepts the bare CIDR via the `subnet` field — the
- *  ID is derived. Same for delete: pass the CIDR (slashes encoded).
- *
- *  PVE 9.x subnet schema accepts: subnet, type, gateway, snat, dhcp-range,
- *  dnszoneprefix. IPAM is configured at the *zone* level (default = pve) and
- *  is NOT a per-subnet property. DNS resolvers for VMs (`nameserver=...`) are
- *  pushed via CloudInit, not via PVE — so dnsServers are stored in our DB
- *  but not sent here. */
-export async function createSubnetPve(
-  conn: any,
-  vnetPveName: string,
-  params: CreateSubnetParams,
-): Promise<void> {
-  const body = new URLSearchParams()
-  body.append('subnet', params.cidr)
-  body.append('type', 'subnet')
-  body.append('gateway', params.gateway)
-  body.append('snat', '0')
-  if (params.dhcpRange) {
-    body.append(
-      'dhcp-range',
-      `start-address=${params.dhcpRange.start},end-address=${params.dhcpRange.end}`,
-    )
-  }
-  // dnsServers are intentionally NOT sent to PVE — they are injected into
-  // CloudInit `nameserver` config at VM-create time (see allocateIp caller).
-
-  try {
-    await pveFetch(conn, `/cluster/sdn/vnets/${encodeURIComponent(vnetPveName)}/subnets`, { method: 'POST', body })
-  } catch (err: any) {
-    throw new Error(`Failed to create subnet ${params.cidr} on VNet ${vnetPveName}: ${err?.message}`)
-  }
-}
-
-export interface UpdateSubnetParams {
-  /** Replace gateway (omit to leave unchanged). */
-  gateway?: string
-  /** Replace DHCP range (omit to leave unchanged, set to null to clear). */
-  dhcpRange?: { start: string; end: string } | null
-}
-
-/** PVE's internal subnet identifier inside `/etc/pve/sdn/subnets.cfg` is
- *  `<zone>-<cidr-with-dashes>` (e.g. `znewmspp-10.60.60.0-24`). The API
- *  router accepts the bare CIDR for POST and DELETE, but PUT (introduced in
- *  9.x) requires the full ID — passing the bare CIDR yields a 501. */
-export function buildPveSubnetId(zoneName: string, cidr: string): string {
-  return `${zoneName}-${cidr.replace(/\//g, '-')}`
-}
-
-/** PUT /cluster/sdn/vnets/{vnet}/subnets/{subnetId} — supports gateway and
- *  dhcp-range patches on PVE 9.x. CIDR can't be patched (PVE doesn't allow
- *  renaming a subnet ID); a CIDR change must go through delete + recreate.
- *  `type=subnet` is rejected on PUT (POST-only), so we only send the actual
- *  fields being changed. */
-export async function updateSubnetPve(
-  conn: any,
-  zoneName: string,
-  vnetPveName: string,
-  cidr: string,
-  patch: UpdateSubnetParams,
-): Promise<void> {
-  const body = new URLSearchParams()
-  if (patch.gateway !== undefined) body.append('gateway', patch.gateway)
-  if (patch.dhcpRange === null) {
-    body.append('delete', 'dhcp-range')
-  } else if (patch.dhcpRange) {
-    body.append('dhcp-range', `start-address=${patch.dhcpRange.start},end-address=${patch.dhcpRange.end}`)
-  }
-  if ([...body.keys()].length === 0) return
-  const subnetId = encodeURIComponent(buildPveSubnetId(zoneName, cidr))
-  await pveFetch(conn, `/cluster/sdn/vnets/${encodeURIComponent(vnetPveName)}/subnets/${subnetId}`, { method: 'PUT', body })
-}
-
-/** Idempotent: missing subnets are tolerated so a partial-state cleanup or
- *  external drift doesn't block the higher-level VNet delete. */
-export async function deleteSubnetPve(conn: any, vnetPveName: string, cidr: string): Promise<void> {
-  // PVE wants slashes URL-encoded but otherwise the bare CIDR.
-  const subnetId = encodeURIComponent(cidr)
-  try {
-    await pveFetch(conn, `/cluster/sdn/vnets/${encodeURIComponent(vnetPveName)}/subnets/${subnetId}`, { method: 'DELETE' })
-  } catch (err: any) {
-    const msg = String(err?.message || '')
-    const lower = msg.toLowerCase()
-    const missing =
-      lower.includes('not found') ||
-      msg.includes('404') ||
-      lower.includes('does not exist') ||
-      lower.includes("doesn't exist")
-    if (!missing) {
-      throw new Error(`Failed to delete subnet ${cidr} on VNet ${vnetPveName}: ${msg}`)
-    }
-    console.warn(`[vdc-sdn] subnet ${cidr} on ${vnetPveName} already gone, proceeding`)
-  }
-}
 
 // ---------------------------------------------------------------------------
 // MAC address helper — used when allocating an IP from IPAM before the VM

@@ -38,7 +38,7 @@ export async function GET(_req: Request, ctx: RouteContext) {
     // both rows in one query so we can fail-fast on a missing/foreign vDC.
     const row = db
       .prepare(
-        `SELECT s.id AS subnet_id, s.cidr, s.gateway, s.dhcp_range_start, s.dhcp_range_end,
+        `SELECT s.id AS subnet_id, s.cidr, s.gateway,
                 d.connection_id
          FROM vdc_vnets v
          JOIN vdcs       d ON d.id = v.vdc_id
@@ -47,7 +47,7 @@ export async function GET(_req: Request, ctx: RouteContext) {
          LIMIT 1`,
       )
       .get(vdcId, displayName, tenantId) as
-        | { subnet_id: string; cidr: string; gateway: string; dhcp_range_start: string | null; dhcp_range_end: string | null; connection_id: string }
+        | { subnet_id: string; cidr: string; gateway: string; connection_id: string }
         | undefined
     if (!row) return NextResponse.json({ error: "VNet not found" }, { status: 404 })
 
@@ -91,25 +91,14 @@ export async function GET(_req: Request, ctx: RouteContext) {
       console.warn(`[ipam-list] /cluster/resources lookup failed: ${(err as any)?.message ?? err}`)
     }
 
-    // Compute usable IPs in the subnet's allocation range. Mirrors the
-    // logic in lib/vdc/ipam.ts → buildRangeBounds, kept inline here to
-    // avoid exporting a private helper just for this read-only summary.
+    // Usable = CIDR usable hosts minus the gateway. The IPAM allocates the
+    // entire usable range; tenants who want to reserve some IPs for hand-
+    // managed appliances declare a smaller CIDR.
     const parsed = parseCidr(row.cidr)
     let usable = 0
     if (parsed) {
-      let low = parsed.firstUsableInt
-      let high = parsed.lastUsableInt
-      if (row.dhcp_range_start && row.dhcp_range_end) {
-        // We rely on parseCidr's int form: parsing host strings to compare
-        // ranges would duplicate ipToInt logic; reusing the helper:
-        const startInt = parseCidr(`${row.dhcp_range_start}/32`)?.networkInt
-        const endInt = parseCidr(`${row.dhcp_range_end}/32`)?.networkInt
-        if (typeof startInt === 'number' && typeof endInt === 'number' && startInt <= endInt) {
-          low = Math.max(low, startInt)
-          high = Math.min(high, endInt)
-        }
-      }
-      // Subtract the gateway when it falls inside the range.
+      const low = parsed.firstUsableInt
+      const high = parsed.lastUsableInt
       const gatewayInt = parseCidr(`${row.gateway}/32`)?.networkInt
       const gatewayInRange = typeof gatewayInt === 'number' && gatewayInt >= low && gatewayInt <= high
       usable = Math.max(0, high - low + 1 - (gatewayInRange ? 1 : 0))
@@ -121,8 +110,6 @@ export async function GET(_req: Request, ctx: RouteContext) {
         subnetId: row.subnet_id,
         cidr: row.cidr,
         gateway: row.gateway,
-        rangeStart: row.dhcp_range_start,
-        rangeEnd: row.dhcp_range_end,
         usable,
         used: allocations.length,
         allocations: allocations.map((a) => {

@@ -8,7 +8,7 @@ import { pveFetch } from '@/lib/proxmox/client'
 import { getConnectionById } from '@/lib/connections/getConnection'
 import { prisma } from '@/lib/db/prisma'
 
-import { generateZoneName, createZone, deleteZone, deleteVnetPve, deleteSubnetPve, applySdn } from './sdn'
+import { generateZoneName, createZone, deleteZone, deleteVnetPve, applySdn } from './sdn'
 
 import type {
   Vdc,
@@ -101,7 +101,14 @@ export function listVdcs(tenantId?: string): VdcWithDetails[] {
   const stmtQuota = db.prepare('SELECT * FROM vdc_quotas WHERE vdc_id = ?')
   const stmtUsage = db.prepare('SELECT * FROM vdc_usage_cache WHERE vdc_id = ?')
   const stmtShared = db.prepare('SELECT id, vdc_id, bridge, label, created_at FROM vdc_shared_bridges WHERE vdc_id = ? ORDER BY bridge')
-  const stmtVnets = db.prepare('SELECT id, vdc_id, pve_name, description, vxlan_tag, firewall, created_by, created_at FROM vdc_vnets WHERE vdc_id = ? ORDER BY pve_name')
+  const stmtVnets = db.prepare(`
+    SELECT v.id, v.vdc_id, v.pve_name, v.display_name, v.description, v.vxlan_tag, v.firewall, v.created_by, v.created_at,
+           s.id AS subnet_id, s.cidr, s.gateway, s.dns_servers, s.ipam_enabled, s.created_at AS subnet_created_at
+    FROM vdc_vnets v
+    LEFT JOIN vdc_subnets s ON s.vnet_id = v.id
+    WHERE v.vdc_id = ?
+    ORDER BY v.pve_name
+  `)
   const stmtPbs = db.prepare(
     `SELECT b.id, b.vdc_id, b.pbs_connection_id, b.datastore, b.namespace, b.mode, b.created_at,
             c.name AS pbs_name
@@ -128,9 +135,19 @@ export function listVdcs(tenantId?: string): VdcWithDetails[] {
       id: r.id,
       vdcId: r.vdc_id,
       pveName: r.pve_name,
+      displayName: r.display_name ?? r.pve_name,
       description: r.description ?? null,
       vxlanTag: r.vxlan_tag,
       firewall: !!r.firewall,
+      subnet: {
+        id: r.subnet_id,
+        vnetId: r.id,
+        cidr: r.cidr,
+        gateway: r.gateway,
+        dnsServers: r.dns_servers ? String(r.dns_servers).split(',').map((s: string) => s.trim()).filter(Boolean) : [],
+        ipamEnabled: !!r.ipam_enabled,
+        createdAt: r.subnet_created_at,
+      },
       createdBy: r.created_by ?? null,
       createdAt: r.created_at,
     }))
@@ -187,13 +204,30 @@ export function getVdcById(id: string): VdcWithDetails | null {
     label: r.label ?? null,
     createdAt: r.created_at,
   }))
-  const vnets = (db.prepare('SELECT id, vdc_id, pve_name, description, vxlan_tag, firewall, created_by, created_at FROM vdc_vnets WHERE vdc_id = ? ORDER BY pve_name').all(id) as any[]).map((r) => ({
+  const vnets = (db.prepare(`
+    SELECT v.id, v.vdc_id, v.pve_name, v.display_name, v.description, v.vxlan_tag, v.firewall, v.created_by, v.created_at,
+           s.id AS subnet_id, s.cidr, s.gateway, s.dns_servers, s.ipam_enabled, s.created_at AS subnet_created_at
+    FROM vdc_vnets v
+    LEFT JOIN vdc_subnets s ON s.vnet_id = v.id
+    WHERE v.vdc_id = ?
+    ORDER BY v.pve_name
+  `).all(id) as any[]).map((r) => ({
     id: r.id,
     vdcId: r.vdc_id,
     pveName: r.pve_name,
+    displayName: r.display_name ?? r.pve_name,
     description: r.description ?? null,
     vxlanTag: r.vxlan_tag,
     firewall: !!r.firewall,
+    subnet: {
+      id: r.subnet_id,
+      vnetId: r.id,
+      cidr: r.cidr,
+      gateway: r.gateway,
+      dnsServers: r.dns_servers ? String(r.dns_servers).split(',').map((s: string) => s.trim()).filter(Boolean) : [],
+      ipamEnabled: !!r.ipam_enabled,
+      createdAt: r.subnet_created_at,
+    },
     createdBy: r.created_by ?? null,
     createdAt: r.created_at,
   }))
@@ -537,28 +571,13 @@ export async function deleteVdc(id: string): Promise<void> {
   //    doesn't block the rest of the cascade.
   if (vdc.sdnZoneName) {
     const vnetRows = db.prepare(`
-      SELECT v.id AS vnet_id, v.pve_name, s.cidr AS subnet_cidr
+      SELECT v.id AS vnet_id, v.pve_name
       FROM vdc_vnets v
-      LEFT JOIN vdc_subnets s ON s.vnet_id = v.id
       WHERE v.vdc_id = ?
-    `).all(id) as Array<{ vnet_id: string; pve_name: string; subnet_cidr: string | null }>
+    `).all(id) as Array<{ vnet_id: string; pve_name: string }>
 
-    let anySubnetDeleted = false
-    for (const v of vnetRows) {
-      if (v.subnet_cidr) {
-        try {
-          await deleteSubnetPve(conn, v.pve_name, v.subnet_cidr)
-          anySubnetDeleted = true
-        } catch (err: any) {
-          console.warn(`[vdc] Failed to delete subnet "${v.subnet_cidr}" on VNet "${v.pve_name}": ${err?.message}`)
-        }
-      }
-    }
-    // PVE refuses to remove a VNet whose pending state still shows attached
-    // subnets — apply once between the two cascades.
-    if (anySubnetDeleted) {
-      try { await applySdn(conn) } catch { /* tolerate */ }
-    }
+    // No PVE-side subnet to drop anymore — subnets only live in our DB and
+    // are removed by the vdc_vnets ON DELETE CASCADE / vdc_subnets cascade.
 
     for (const v of vnetRows) {
       try {

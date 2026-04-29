@@ -7,9 +7,6 @@ import {
   usableHostCount,
   ipInCidrUsable,
   gatewayValidForCidr,
-  validateDhcpRange,
-  firstUsableAfterGateway,
-  lastUsableIp,
 } from './network'
 
 describe('isValidIpv4', () => {
@@ -124,41 +121,3 @@ describe('gatewayValidForCidr', () => {
   })
 })
 
-describe('validateDhcpRange', () => {
-  it('valid: range avoids the gateway', () => {
-    expect(validateDhcpRange('10.42.0.0/24', '10.42.0.1', '10.42.0.10', '10.42.0.250'))
-      .toEqual({ ok: true })
-  })
-  it('rejects start outside CIDR', () => {
-    expect(validateDhcpRange('10.42.0.0/24', '10.42.0.1', '10.43.0.10', '10.42.0.250'))
-      .toEqual({ ok: false, reason: 'invalid_start' })
-  })
-  it('rejects end outside CIDR', () => {
-    expect(validateDhcpRange('10.42.0.0/24', '10.42.0.1', '10.42.0.10', '10.43.0.250'))
-      .toEqual({ ok: false, reason: 'invalid_end' })
-  })
-  it('rejects reversed range', () => {
-    expect(validateDhcpRange('10.42.0.0/24', '10.42.0.1', '10.42.0.250', '10.42.0.10'))
-      .toEqual({ ok: false, reason: 'reversed' })
-  })
-  it('rejects gateway-in-range', () => {
-    expect(validateDhcpRange('10.42.0.0/24', '10.42.0.50', '10.42.0.10', '10.42.0.100'))
-      .toEqual({ ok: false, reason: 'gateway_in_range' })
-  })
-  it('accepts single-IP range', () => {
-    expect(validateDhcpRange('10.42.0.0/24', '10.42.0.1', '10.42.0.42', '10.42.0.42'))
-      .toEqual({ ok: true })
-  })
-})
-
-describe('firstUsableAfterGateway / lastUsableIp', () => {
-  it('first usable after gateway .1 on /24 → .2', () => {
-    expect(firstUsableAfterGateway('10.42.0.0/24', '10.42.0.1')).toBe('10.42.0.2')
-  })
-  it('first usable when gateway is in middle → first usable', () => {
-    expect(firstUsableAfterGateway('10.42.0.0/24', '10.42.0.50')).toBe('10.42.0.1')
-  })
-  it('last usable on /24 → .254', () => {
-    expect(lastUsableIp('10.42.0.0/24')).toBe('10.42.0.254')
-  })
-})

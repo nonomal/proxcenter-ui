@@ -74,12 +74,10 @@ export interface VdcVnet {
   description: string | null
   vxlanTag: number
   firewall: boolean
-  /** Block intra-VNet VM-to-VM traffic (private-VLAN style). */
-  isolatePorts: boolean
-  /** Allow attached VMs to push their own 802.1q tags. */
-  vlanAware: boolean
-  /** L3 / IPAM config attached to the VNet, or null for bridge-only. */
-  subnet: VdcSubnet | null
+  /** L3 / IPAM config attached to the VNet. Always present — the VNet is
+   *  unusable without a subnet (the IPAM is the only mechanism to allocate
+   *  IPs on VXLAN, where PVE-native DHCP/IPAM is broken on PVE 9.x). */
+  subnet: VdcSubnet
   createdBy: string | null
   createdAt: string
 }
@@ -90,8 +88,6 @@ export interface VdcSubnet {
   cidr: string
   gateway: string
   dnsServers: string[]
-  dhcpRangeStart: string | null
-  dhcpRangeEnd: string | null
   ipamEnabled: boolean
   createdAt: string
 }

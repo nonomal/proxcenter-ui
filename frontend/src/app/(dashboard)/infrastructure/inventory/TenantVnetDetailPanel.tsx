@@ -14,8 +14,6 @@ interface SubnetView {
   cidr: string
   gateway: string
   dnsServers: string[]
-  dhcpRangeStart: string | null
-  dhcpRangeEnd: string | null
 }
 
 interface VnetDetail {
@@ -26,8 +24,6 @@ interface VnetDetail {
   description: string | null
   vxlanTag: number
   firewall: boolean
-  isolatePorts: boolean
-  vlanAware: boolean
   subnet: SubnetView | null
 }
 
@@ -45,8 +41,6 @@ interface IpamSummary {
   connectionId: string
   cidr: string
   gateway: string
-  rangeStart: string | null
-  rangeEnd: string | null
   usable: number
   used: number
   allocations: IpamAllocation[]
