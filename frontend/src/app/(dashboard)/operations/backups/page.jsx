@@ -47,6 +47,7 @@ import EmptyState from '@/components/EmptyState'
 import { TableSkeleton } from '@/components/skeletons'
 import RestoreVmDialog from '@/components/backup/RestoreVmDialog'
 import { useTenant } from '@/contexts/TenantContext'
+import { useToast } from '@/contexts/ToastContext'
 
 /* -----------------------------
   Helpers
@@ -176,6 +177,18 @@ return () => setPageInfo('', '', '')
 
   // Restore dialog (cross-PVE — user picks target cluster + node).
   const [restoreOpen, setRestoreOpen] = useState(false)
+
+  // Verify (single snapshot re-check) + Delete (with double-click guard
+  // to prevent accidental destruction of a backup).
+  const toast = useToast()
+  const [verifying, setVerifying] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  const [deleteAwaitingConfirm, setDeleteAwaitingConfirm] = useState(false)
+
+  // Reset the destructive-confirm guard whenever the user opens a
+  // different backup so the "Confirm delete" state can't leak across
+  // snapshots.
+  useEffect(() => { setDeleteAwaitingConfirm(false) }, [selectedBackup?.id])
 
   // File explorer state
   const [explorerLoading, setExplorerLoading] = useState(false)
@@ -307,6 +320,77 @@ return () => setPageInfo('', '', '')
     if (isVdcTenant && drawerTab !== 0) setDrawerTab(0)
   }, [isVdcTenant, drawerTab])
 
+  // Force refresh — increment to bypass server cache on next fetch only.
+  // Declared before the verify/delete handlers so they can call it
+  // without tripping the JS TDZ at component instantiation time.
+  const [refreshToken, setRefreshToken] = useState(0)
+  const noCacheRef = useRef(false)
+
+  const handleRefresh = useCallback(() => {
+    noCacheRef.current = true
+    setRefreshToken(n => n + 1)
+  }, [])
+
+  // Verify: trigger a re-verification on PBS. Returns a UPID; we don't
+  // wire a live progress drawer here, just toast and let the user reload.
+  // The verify status chip will update on the next list refresh.
+  const handleVerify = useCallback(async () => {
+    if (!selectedBackup || !selectedPbs) return
+    setVerifying(true)
+    try {
+      const params = new URLSearchParams()
+      if (selectedBackup.namespace) params.set('ns', selectedBackup.namespace)
+      const res = await fetch(
+        `/api/v1/pbs/${encodeURIComponent(selectedPbs)}/backups/${encodeURIComponent(selectedBackup.id)}/verify?${params}`,
+        { method: 'POST' }
+      )
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        toast.error(json?.error || `HTTP ${res.status}`)
+      } else {
+        toast.success(t('backups.verifyStarted'))
+      }
+    } catch (e) {
+      toast.error(e?.message || 'Verify failed')
+    } finally {
+      setVerifying(false)
+    }
+  }, [selectedBackup, selectedPbs, toast, t])
+
+  // Delete: two-click guard. First click flips the button into a
+  // warning-coloured "Confirm delete"; second click actually deletes.
+  const handleDelete = useCallback(async () => {
+    if (!selectedBackup || !selectedPbs) return
+    if (!deleteAwaitingConfirm) {
+      setDeleteAwaitingConfirm(true)
+      return
+    }
+    setDeleting(true)
+    try {
+      const params = new URLSearchParams()
+      if (selectedBackup.namespace) params.set('ns', selectedBackup.namespace)
+      const res = await fetch(
+        `/api/v1/pbs/${encodeURIComponent(selectedPbs)}/backups/${encodeURIComponent(selectedBackup.id)}?${params}`,
+        { method: 'DELETE' }
+      )
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        toast.error(json?.error || `HTTP ${res.status}`)
+        setDeleteAwaitingConfirm(false)
+      } else {
+        toast.success(t('backups.deleteSuccess'))
+        setDrawerOpen(false)
+        setSelectedBackup(null)
+        handleRefresh()
+      }
+    } catch (e) {
+      toast.error(e?.message || 'Delete failed')
+      setDeleteAwaitingConfirm(false)
+    } finally {
+      setDeleting(false)
+    }
+  }, [selectedBackup, selectedPbs, deleteAwaitingConfirm, toast, t, handleRefresh])
+
   // Charger les connexions PBS
   useEffect(() => {
     const loadPbsConnections = async () => {
@@ -385,14 +469,6 @@ return () => setPageInfo('', '', '')
     loadPbsMetadata()
   }, [selectedPbs])
 
-  // Force refresh — increment to bypass server cache on next fetch only
-  const [refreshToken, setRefreshToken] = useState(0)
-  const noCacheRef = useRef(false)
-
-  const handleRefresh = useCallback(() => {
-    noCacheRef.current = true
-    setRefreshToken(n => n + 1)
-  }, [])
 
   // Charger les backups avec pagination côté serveur
   useEffect(() => {
@@ -1085,16 +1161,46 @@ return () => clearTimeout(timer)
                         >
                           {t('audit.actions.restore')}
                         </Button>
-                        <Button size='small' variant='outlined' disabled>
-                          {t('backups.verified')}
+                        <Button
+                          size='small'
+                          variant='outlined'
+                          onClick={handleVerify}
+                          disabled={verifying}
+                          startIcon={verifying
+                            ? <CircularProgress size={14} />
+                            : <i className='ri-shield-check-line' />}
+                        >
+                          {t('backups.verifyAction')}
                         </Button>
-                        <Button size='small' variant='outlined' disabled>
-                          {t('common.download')}
-                        </Button>
-                        <Button size='small' variant='outlined' color='error' disabled>
-                          {t('common.delete')}
+                        <Button
+                          size='small'
+                          variant='outlined'
+                          color={deleteAwaitingConfirm ? 'warning' : 'error'}
+                          onClick={handleDelete}
+                          disabled={deleting || selectedBackup.protected}
+                          startIcon={deleting
+                            ? <CircularProgress size={14} />
+                            : <i className={deleteAwaitingConfirm ? 'ri-alert-line' : 'ri-delete-bin-line'} />}
+                        >
+                          {deleteAwaitingConfirm
+                            ? t('backups.deleteConfirmButton')
+                            : t('common.delete')}
                         </Button>
                       </Box>
+                      {selectedBackup.protected && (
+                        <Typography variant='caption' sx={{ display: 'block', mt: 1, opacity: 0.7 }}>
+                          {t('backups.deleteProtectedHint')}
+                        </Typography>
+                      )}
+                      {deleteAwaitingConfirm && !deleting && (
+                        <Alert severity='warning' sx={{ mt: 1 }} icon={<i className='ri-alert-line' style={{ fontSize: 18 }} />}>
+                          {t('backups.deleteConfirm', {
+                            name: selectedBackup.vmName || selectedBackup.backupId,
+                            id: selectedBackup.backupId,
+                            date: selectedBackup.backupTimeFormatted,
+                          })}
+                        </Alert>
+                      )}
                     </Box>
                   </Stack>
                 )}
