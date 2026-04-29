@@ -218,6 +218,7 @@ export type DetailsPayload = {
     tags?: string[]
     template?: boolean
     isCluster?: boolean
+    lock?: string
   }>
 
   cephHealth?: string
@@ -242,6 +243,7 @@ export type DetailsPayload = {
     uptime?: number
     tags?: string[]
     isCluster?: boolean
+    lock?: string
   }>
   vmsCount?: number
   clusterName?: string | null
