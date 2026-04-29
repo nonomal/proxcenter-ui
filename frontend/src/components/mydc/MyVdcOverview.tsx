@@ -77,7 +77,11 @@ export default function MyVdcOverview({ vdc }: Props) {
             sx={{
               display: 'grid',
               gap: 2,
-              gridTemplateColumns: { xs: 'repeat(2, 1fr)', sm: 'repeat(4, 1fr)' },
+              // 7 quota donuts now (vCPU, RAM, Storage, VMs, VNets,
+              // Snapshots, Backups). 2 cols on phones, 4 on tablets,
+              // a single row of 7 on desktop so the cockpit fits in one
+              // glance without scrolling sideways.
+              gridTemplateColumns: { xs: 'repeat(2, 1fr)', sm: 'repeat(4, 1fr)', md: 'repeat(7, 1fr)' },
               justifyItems: 'center',
             }}
           >
@@ -90,8 +94,30 @@ export default function MyVdcOverview({ vdc }: Props) {
               formatValue={formatMbAsGb}
               unlimitedLabel={unlimitedLabel}
             />
+            <QuotaDonut
+              icon="ri-hard-drive-2-line"
+              label={t('vdc.maxStorage')}
+              used={usage.usedStorageMb || 0}
+              max={quota.maxStorageMb ?? null}
+              formatValue={formatMbAsGb}
+              unlimitedLabel={unlimitedLabel}
+            />
             <QuotaDonut icon="ri-computer-line" label={t('vdc.maxVms')} used={usage.usedVms || 0} max={quota.maxVms} unlimitedLabel={unlimitedLabel} />
             <QuotaDonut icon="ri-git-branch-line" label={t('vdc.maxVnets')} used={(vdc.vnets || []).length} max={quota.maxVnets} unlimitedLabel={unlimitedLabel} />
+            <QuotaDonut
+              icon="ri-camera-lens-line"
+              label={t('vdc.maxSnapshots')}
+              used={usage.usedSnapshots || 0}
+              max={quota.maxSnapshots ?? null}
+              unlimitedLabel={unlimitedLabel}
+            />
+            <QuotaDonut
+              icon="ri-archive-line"
+              label={t('vdc.maxBackups')}
+              used={usage.usedBackups || 0}
+              max={quota.maxBackups ?? null}
+              unlimitedLabel={unlimitedLabel}
+            />
           </Box>
         </Box>
       </Paper>
