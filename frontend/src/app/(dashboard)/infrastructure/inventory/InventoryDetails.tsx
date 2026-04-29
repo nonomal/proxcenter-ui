@@ -2297,23 +2297,34 @@ return (
   }
 
   const onDelete = () => {
-    // Vérifier que la VM est arrêtée
     const status = data?.vmRealStatus || data?.status
+
+    // Short-circuit before opening the confirm dialog so the user does not
+    // have to type the VM name only to be rejected by the API.
+    if (vmLock.locked) {
+      setConfirmAction({
+        action: 'info',
+        title: t('errors.deleteError'),
+        message: t('inventory.deleteVmLockedError', { lock: vmLock.lockType || 'locked' }),
+        vmName: data?.title,
+        onConfirm: async () => setConfirmAction(null),
+      })
+
+      return
+    }
 
     if (status === 'running') {
       setConfirmAction({
         action: 'info',
-        title: t('inventory.vmRunningWarning'),
-        message: t('inventory.vmRunningWarning'),
+        title: t('errors.deleteError'),
+        message: t('inventory.deleteVmRunningError'),
         vmName: data?.title,
-        onConfirm: async () => setConfirmAction(null)
+        onConfirm: async () => setConfirmAction(null),
       })
-      
-return
+
+      return
     }
 
-
-    // Ouvrir le dialog de confirmation
     setDeleteVmConfirmText('')
     setDeleteVmPurge(true)
     setDeleteVmDialogOpen(true)
@@ -2835,6 +2846,7 @@ return vm?.isCluster ?? false
                     vmType={data.vmType}
                     isMigrating={migratingVmIds?.has(`${connId}:${vmid}`)}
                     isPendingAction={pendingActionVmIds?.has(`${connId}:${vmid}`)}
+                    lock={vmLock.locked ? (vmLock.lockType || 'locked') : undefined}
                     size={22}
                   />
 
@@ -2862,14 +2874,23 @@ return vm?.isCluster ?? false
                   )}
                   {vmLock.locked && (
                     <MuiTooltip title={`Lock: ${vmLock.lockType || 'unknown'}`}>
-                      <Chip
-                        size="small"
-                        icon={<i className="ri-lock-line" style={{ fontSize: 12, marginLeft: 6 }} />}
-                        label={vmLock.lockType || 'locked'}
-                        color="warning"
-                        variant="outlined"
-                        sx={{ height: 20, fontSize: '0.7rem', flexShrink: 0 }}
-                      />
+                      <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5, flexShrink: 0 }}>
+                        <Box sx={{
+                          width: 14, height: 14, borderRadius: '50%',
+                          bgcolor: '#ff9800',
+                          display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          '@keyframes lockPulseSidePanel': {
+                            '0%, 100%': { boxShadow: '0 0 4px rgba(255, 152, 0, 0.6)' },
+                            '50%': { boxShadow: '0 0 10px rgba(255, 152, 0, 1)' },
+                          },
+                          animation: 'lockPulseSidePanel 2s ease-in-out infinite',
+                        }}>
+                          <i className="ri-lock-fill" style={{ fontSize: 10, color: '#fff' }} />
+                        </Box>
+                        <Typography variant="body2" sx={{ color: '#ff9800', fontWeight: 600, fontSize: '0.75rem' }}>
+                          {vmLock.lockType || 'locked'}
+                        </Typography>
+                      </Box>
                     </MuiTooltip>
                   )}
                   <Typography variant="body2" noWrap sx={{ color: 'text.secondary', flexShrink: 0 }}>
