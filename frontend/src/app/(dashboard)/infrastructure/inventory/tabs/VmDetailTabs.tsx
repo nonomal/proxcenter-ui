@@ -424,6 +424,12 @@ export default function VmDetailTabs(props: any) {
   const [detachConfirmOpen, setDetachConfirmOpen] = useState(false)
   const [deleteUnusedTarget, setDeleteUnusedTarget] = useState<any | null>(null)
 
+  // Replication log dialog
+  const [replicationLogJob, setReplicationLogJob] = useState<any | null>(null)
+  const [replicationLogOpen, setReplicationLogOpen] = useState(false)
+  const [replicationLogData, setReplicationLogData] = useState<string[]>([])
+  const [replicationLogLoading, setReplicationLogLoading] = useState(false)
+
   return (
     <>
           {/* Onglets pour VMs: Résumé / Matériel / Options / Historique / Sauvegardes / Snapshots / Notes / HA */}
@@ -3813,12 +3819,12 @@ return (
                                     </TableCell>
                                     <TableCell>
                                       <Typography variant="body2" sx={{ fontSize: 12 }}>
-                                        {job.last_sync ? new Date(job.last_sync * 1000).toLocaleString() : '—'}
+                                        {job.lastSync ? new Date(job.lastSync * 1000).toLocaleString() : '—'}
                                       </Typography>
                                     </TableCell>
                                     <TableCell>
                                       <Typography variant="body2" sx={{ fontSize: 12 }}>
-                                        {job.next_sync ? new Date(job.next_sync * 1000).toLocaleString() : '—'}
+                                        {job.nextSync ? new Date(job.nextSync * 1000).toLocaleString() : '—'}
                                       </Typography>
                                     </TableCell>
                                     <TableCell align="center">
@@ -3851,8 +3857,37 @@ return (
                                     </TableCell>
                                     <TableCell align="center">
                                       <Stack direction="row" spacing={0.5} justifyContent="center">
+                                        <MuiTooltip title={t('replication.viewLog')}>
+                                          <IconButton
+                                            size="small"
+                                            onClick={async () => {
+                                              const { connId, node } = parseVmId(selection?.id || '')
+
+                                              setReplicationLogJob(job)
+                                              setReplicationLogOpen(true)
+                                              setReplicationLogLoading(true)
+                                              try {
+                                                const res = await fetch(`/api/v1/connections/${encodeURIComponent(connId)}/nodes/${encodeURIComponent(node)}/replication/${encodeURIComponent(job.id)}?limit=200`, { cache: 'no-store' })
+
+                                                if (res.ok) {
+                                                  const json = await res.json()
+
+                                                  setReplicationLogData(Array.isArray(json.data) ? json.data : [])
+                                                } else {
+                                                  setReplicationLogData([])
+                                                }
+                                              } catch {
+                                                setReplicationLogData([])
+                                              } finally {
+                                                setReplicationLogLoading(false)
+                                              }
+                                            }}
+                                          >
+                                            <i className="ri-file-list-line" style={{ fontSize: 16 }} />
+                                          </IconButton>
+                                        </MuiTooltip>
                                         <MuiTooltip title={t('replication.runNow')}>
-                                          <IconButton 
+                                          <IconButton
                                             size="small"
                                             onClick={async () => {
                                               const { connId, node } = parseVmId(selection?.id || '')
@@ -3868,8 +3903,8 @@ return (
                                           </IconButton>
                                         </MuiTooltip>
                                         <MuiTooltip title={t('common.delete')}>
-                                          <IconButton 
-                                            size="small" 
+                                          <IconButton
+                                            size="small"
                                             color="error"
                                             onClick={() => setDeleteReplicationId(job.id)}
                                           >
@@ -4060,6 +4095,50 @@ return (
                       >
                         {t('common.delete')}
                       </Button>
+                    </DialogActions>
+                  </Dialog>
+
+                  {/* Dialog Replication Log */}
+                  <Dialog
+                    open={replicationLogOpen}
+                    onClose={() => setReplicationLogOpen(false)}
+                    maxWidth="md"
+                    fullWidth
+                  >
+                    <DialogTitle sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      <i className="ri-file-list-line" style={{ fontSize: 20 }} />
+                      {t('replication.logTitle', { id: replicationLogJob?.id || '' })}
+                    </DialogTitle>
+                    <DialogContent dividers>
+                      {replicationLogLoading ? (
+                        <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
+                          <CircularProgress size={24} />
+                        </Box>
+                      ) : replicationLogData.length > 0 ? (
+                        <Box
+                          component="pre"
+                          sx={{
+                            fontSize: 12,
+                            whiteSpace: 'pre-wrap',
+                            wordBreak: 'break-all',
+                            m: 0,
+                            p: 2,
+                            bgcolor: 'background.default',
+                            borderRadius: 1,
+                            maxHeight: '60vh',
+                            overflow: 'auto',
+                          }}
+                        >
+                          {replicationLogData.join('\n')}
+                        </Box>
+                      ) : (
+                        <Box sx={{ p: 4, textAlign: 'center', opacity: 0.6 }}>
+                          <Typography variant="body2">{t('replication.noLog')}</Typography>
+                        </Box>
+                      )}
+                    </DialogContent>
+                    <DialogActions>
+                      <Button onClick={() => setReplicationLogOpen(false)}>{t('common.close')}</Button>
                     </DialogActions>
                   </Dialog>
                 </Box>
