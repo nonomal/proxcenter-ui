@@ -62,6 +62,7 @@ import ChartContainer from '@/components/ChartContainer'
 import { formatBytes } from '@/utils/format'
 import { formatDateTime } from '@/lib/i18n/date'
 import VmFirewallTab from '@/components/VmFirewallTab'
+import RestoreVmDialog from '@/components/backup/RestoreVmDialog'
 import ChangeTrackingTab from './ChangeTrackingTab'
 import { useLicense, Features } from '@/contexts/LicenseContext'
 import { useRBAC } from '@/contexts/RBACContext'
@@ -207,6 +208,8 @@ export default function VmDetailTabs(props: any) {
   // Namespace filter for the BACKUP tab. 'all' shows every namespace, otherwise
   // limits the listing to the chosen one. Reset when a different VM is selected.
   const [vmBackupNamespaceFilter, setVmBackupNamespaceFilter] = useState<string>('all')
+  // Per-backup restore dialog (Backup tab). Null when closed.
+  const [restoreDialog, setRestoreDialog] = useState<{ backup: any } | null>(null)
   const [bootOrderOpen, setBootOrderOpen] = useState(false)
   const [bootDevices, setBootDevices] = useState<Array<{ id: string; enabled: boolean }>>([])
   const [bootSaving, setBootSaving] = useState(false)
@@ -2935,7 +2938,7 @@ return (
                                         key={backup.id || idx}
                                         sx={{
                                           display: 'grid',
-                                          gridTemplateColumns: '1fr 90px 70px 40px',
+                                          gridTemplateColumns: '1fr 90px 70px 40px 32px',
                                           gap: 1, px: 2, pl: 5.5, py: 0.25,
                                           borderBottom: idx < groupBackups.length - 1 ? '1px solid' : 'none',
                                           borderColor: 'divider',
@@ -2974,6 +2977,17 @@ return (
                                         </Box>
                                         <Box sx={{ display: 'flex', justifyContent: 'center' }}>
                                           <i className="ri-arrow-right-s-line" style={{ fontSize: 16, opacity: 0.4 }} />
+                                        </Box>
+                                        <Box sx={{ display: 'flex', justifyContent: 'center' }}>
+                                          <MuiTooltip title={t('inventory.pbsRestoreVm') ?? 'Restore'}>
+                                            <IconButton
+                                              size="small"
+                                              sx={{ p: 0.25 }}
+                                              onClick={(ev) => { ev.stopPropagation(); setRestoreDialog({ backup }) }}
+                                            >
+                                              <i className="ri-history-line" style={{ fontSize: 14 }} />
+                                            </IconButton>
+                                          </MuiTooltip>
                                         </Box>
                                       </Box>
                                     ))}
@@ -4589,6 +4603,20 @@ return (
           </Button>
         </DialogActions>
       </Dialog>
+      {restoreDialog && selection?.type === 'vm' && (() => {
+        const { connId, node, type, vmid } = parseVmId(selection.id)
+        return (
+          <RestoreVmDialog
+            open
+            onClose={() => setRestoreDialog(null)}
+            connectionId={connId}
+            node={node}
+            type={(type === 'lxc' ? 'lxc' : 'qemu')}
+            backup={restoreDialog.backup}
+            sourceVmid={Number(vmid)}
+          />
+        )
+      })()}
     </>
   )
 }
