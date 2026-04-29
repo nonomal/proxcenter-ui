@@ -125,12 +125,26 @@ export async function POST(
       return NextResponse.json({ error: "archive (or pbsBackup) is required" }, { status: 400 })
     }
 
+    // PVE has no /qmrestore or /vzrestore REST endpoint — those are CLI
+    // commands. The actual restore lives behind POST /nodes/{node}/qemu
+    // (with `archive=...`) and POST /nodes/{node}/lxc (with
+    // `ostemplate=...,restore=1`). The original implementation pointed
+    // at the CLI names and 501'd unconditionally.
     const isLxc = type === 'lxc'
-    const endpoint = isLxc ? 'vzrestore' : 'qmrestore'
+    const endpoint = isLxc ? 'lxc' : 'qemu'
 
     const params: Record<string, string> = {
       vmid: String(vmid),
-      archive: archive,
+    }
+
+    if (isLxc) {
+      // For containers, the backup volid goes on `ostemplate` and we
+      // must opt in to restore mode explicitly — otherwise PVE treats
+      // the call as a fresh CT create and complains about missing args.
+      params.ostemplate = archive
+      params.restore = '1'
+    } else {
+      params.archive = archive
     }
 
     if (storage) params.storage = storage
