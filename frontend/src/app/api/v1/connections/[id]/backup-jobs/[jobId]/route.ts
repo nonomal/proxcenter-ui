@@ -3,6 +3,36 @@ import { NextResponse } from "next/server"
 import { pveFetch } from "@/lib/proxmox/client"
 import { getConnectionById } from "@/lib/connections/getConnection"
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
+import { getCurrentTenantId } from "@/lib/tenant"
+import { getAllowedJobPools, isJobOwnedByTenantPools, validateTenantJobBody } from "@/lib/vdc/backupJobs"
+
+/**
+ * Tenant ownership check used by every per-job endpoint. Loads the job
+ * from PVE and verifies its `pool` matches one of the tenant's vDCs on
+ * this connection. Returns the loaded job (so the caller can reuse it
+ * without a second roundtrip), or a Response to short-circuit with
+ * 403/404 on denial.
+ */
+async function loadJobForTenant(conn: any, connectionId: string, jobId: string) {
+  const tenantId = await getCurrentTenantId()
+  const allowedPools = getAllowedJobPools(tenantId, connectionId)
+  let job: any
+  try {
+    job = await pveFetch<any>(conn, `/cluster/backup/${encodeURIComponent(jobId)}`)
+  } catch (err: any) {
+    const msg = String(err?.message || '')
+    if (msg.includes('404') || msg.toLowerCase().includes('not found')) {
+      return { error: NextResponse.json({ error: 'Job not found' }, { status: 404 }) }
+    }
+    throw err
+  }
+  if (allowedPools !== null && !isJobOwnedByTenantPools(job, allowedPools)) {
+    // Don't leak the existence of foreign jobs — same 404 shape as a
+    // truly missing job so probing is no more useful than guessing.
+    return { error: NextResponse.json({ error: 'Job not found' }, { status: 404 }) }
+  }
+  return { job, allowedPools }
+}
 
 export const runtime = "nodejs"
 
@@ -29,10 +59,10 @@ export async function GET(_req: Request, ctx: RouteContext) {
     if (denied) return denied
 
     const conn = await getConnectionById(id)
-    
-    const job = await pveFetch<any>(conn, `/cluster/backup/${encodeURIComponent(jobId)}`)
 
-    return NextResponse.json({ data: job })
+    const owned = await loadJobForTenant(conn, id, jobId)
+    if ('error' in owned) return owned.error
+    return NextResponse.json({ data: owned.job })
   } catch (e: any) {
     console.error("[backup-jobs] GET Error:", e)
     
@@ -60,10 +90,23 @@ export async function PUT(req: Request, ctx: RouteContext) {
     if (denied) return denied
 
     const conn = await getConnectionById(id)
-    
+
+    // Tenant guard: must own the job before we let any field through.
+    const owned = await loadJobForTenant(conn, id, jobId)
+    if ('error' in owned) return owned.error
+    // And: if the body changes the selection (selectionMode/pool/vmid),
+    // re-validate against the tenant's pools to keep them inside their
+    // own vDC. Provider has no extra restriction.
+    if (owned.allowedPools !== null && (body.selectionMode || body.pool || body.vmids || body.excludedVmids)) {
+      const validationError = validateTenantJobBody(body, owned.allowedPools)
+      if (validationError) {
+        return NextResponse.json({ error: validationError }, { status: 403 })
+      }
+    }
+
     // Construire les paramètres
     const params = new URLSearchParams()
-    
+
     // Storage
     if (body.storage) {
       params.set('storage', body.storage)
@@ -235,12 +278,15 @@ export async function DELETE(_req: Request, ctx: RouteContext) {
     if (denied) return denied
 
     const conn = await getConnectionById(id)
-    
+
+    const owned = await loadJobForTenant(conn, id, jobId)
+    if ('error' in owned) return owned.error
+
     await pveFetch<any>(conn, `/cluster/backup/${encodeURIComponent(jobId)}`, {
       method: 'DELETE'
     })
 
-    return NextResponse.json({ 
+    return NextResponse.json({
       message: 'Backup job deleted successfully'
     })
   } catch (e: any) {
@@ -277,8 +323,10 @@ export async function POST(req: Request, ctx: RouteContext) {
       // Exécuter le job immédiatement
       // Note: Proxmox n'a pas d'endpoint direct pour ça, on doit utiliser vzdump
       // avec les mêmes paramètres que le job
-      const job = await pveFetch<any>(conn, `/cluster/backup/${encodeURIComponent(jobId)}`)
-      
+      const owned = await loadJobForTenant(conn, id, jobId)
+      if ('error' in owned) return owned.error
+      const job = owned.job
+
       // Construire la commande vzdump
       const params = new URLSearchParams()
 

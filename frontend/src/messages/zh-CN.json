@@ -2082,6 +2082,8 @@
     "protectedYes": "是",
     "protectedNo": "否",
     "actionsAvailableSoon": "操作将在未来版本中可用",
+    "poolLabel": "vDC pool",
+    "noPoolAvailable": "No vDC available",
     "verifyAction": "Verify",
     "verifyStarted": "Verification task started",
     "deleteSuccess": "Backup deleted",

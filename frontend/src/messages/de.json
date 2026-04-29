@@ -2080,6 +2080,8 @@
     "protectedYes": "Ja",
     "protectedNo": "Nein",
     "actionsAvailableSoon": "Aktionen in einer zukünftigen Version verfügbar",
+    "poolLabel": "vDC pool",
+    "noPoolAvailable": "No vDC available",
     "verifyAction": "Verify",
     "verifyStarted": "Verification task started",
     "deleteSuccess": "Backup deleted",

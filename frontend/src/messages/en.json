@@ -2112,6 +2112,8 @@
     "protectedYes": "Yes",
     "protectedNo": "No",
     "actionsAvailableSoon": "Actions available in a future version",
+    "poolLabel": "vDC pool",
+    "noPoolAvailable": "No vDC available",
     "verifyAction": "Verify",
     "verifyStarted": "Verification task started",
     "deleteSuccess": "Backup deleted",

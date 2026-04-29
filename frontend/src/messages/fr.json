@@ -2113,6 +2113,8 @@
     "protectedYes": "Oui",
     "protectedNo": "Non",
     "actionsAvailableSoon": "Actions disponibles dans une prochaine version",
+    "poolLabel": "Pool de vDC",
+    "noPoolAvailable": "Aucun vDC disponible",
     "verifyAction": "Vérifier",
     "verifyStarted": "Tâche de vérification lancée",
     "deleteSuccess": "Sauvegarde supprimée",

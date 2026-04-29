@@ -3,6 +3,8 @@ import { NextResponse } from "next/server"
 import { pveFetch } from "@/lib/proxmox/client"
 import { getConnectionById } from "@/lib/connections/getConnection"
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
+import { getCurrentTenantId } from "@/lib/tenant"
+import { getAllowedJobPools, isJobOwnedByTenantPools, validateTenantJobBody } from "@/lib/vdc/backupJobs"
 
 export const runtime = "nodejs"
 
@@ -30,9 +32,22 @@ export async function GET(_req: Request, ctx: RouteContext) {
     if (denied) return denied
 
     const conn = await getConnectionById(id)
-    
+
+    // PVE has no per-tenant namespace for /cluster/backup — every job is
+    // returned cluster-wide. Resolve the caller's tenant pool whitelist;
+    // null means provider (full view), empty set means tenant with no
+    // vDC on this connection (nothing visible).
+    const tenantId = await getCurrentTenantId()
+    const allowedPools = getAllowedJobPools(tenantId, id)
+
     // Récupérer les backup jobs
-    const jobs = await pveFetch<any[]>(conn, `/cluster/backup`)
+    let jobs = await pveFetch<any[]>(conn, `/cluster/backup`)
+    if (allowedPools !== null) {
+      // Tenant: only jobs targeting one of their vDC pools. Jobs without
+      // a pool (all=1 or vmid-list) belong to the provider/another tenant
+      // and are filtered out — see lib/vdc/backupJobs.ts for the reasoning.
+      jobs = (jobs || []).filter((j: any) => isJobOwnedByTenantPools(j, allowedPools))
+    }
     
     // Récupérer les storages disponibles pour les backups
     const storages = await pveFetch<any[]>(conn, `/storage`)
@@ -233,10 +248,22 @@ export async function POST(req: Request, ctx: RouteContext) {
     if (denied) return denied
 
     const conn = await getConnectionById(id)
-    
+
+    // Tenant guard: enforce pool-only selection bound to one of the
+    // tenant's vDC pools on this connection. Provider can use any
+    // selectionMode the original payload offers.
+    const tenantId = await getCurrentTenantId()
+    const allowedPools = getAllowedJobPools(tenantId, id)
+    if (allowedPools !== null) {
+      const validationError = validateTenantJobBody(body, allowedPools)
+      if (validationError) {
+        return NextResponse.json({ error: validationError }, { status: 403 })
+      }
+    }
+
     // Construire les paramètres pour Proxmox
     const params = new URLSearchParams()
-    
+
     // Storage obligatoire
     if (!body.storage) {
       return NextResponse.json({ error: "Storage is required" }, { status: 400 })
