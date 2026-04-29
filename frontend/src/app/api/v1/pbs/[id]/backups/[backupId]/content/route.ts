@@ -37,20 +37,35 @@ export async function GET(
     const cookieStore = await cookies()
     const dateLocale = getDateLocale(cookieStore.get('NEXT_LOCALE')?.value || 'en')
 
-    // Décoder le backupId: datastore/type/vmid/timestamp
+    // Decode the backupId composed by /pbs/[id]/backups:
+    //   <datastore>/[<namespace path>/]<backup-type>/<backup-id>/<backup-time>
+    //
+    // Sub-namespaces contain `/` (e.g. tenant-foo/vdc-bar), so a positional
+    // split would assign them to backup-type/backup-id and PBS would 400
+    // with "value is not defined in the enumeration". Anchor on the END of
+    // the path instead — the last three segments are always typed:
+    // [..., type, vmid, time].
     const decodedBackupId = decodeURIComponent(backupId)
     const parts = decodedBackupId.split('/')
 
     if (parts.length < 4) {
-      return NextResponse.json({ error: "Invalid backupId format. Expected: datastore/type/vmid/timestamp" }, { status: 400 })
+      return NextResponse.json({ error: "Invalid backupId format. Expected: datastore/[namespace/]type/vmid/timestamp" }, { status: 400 })
     }
 
-    const [datastore, backupType, vmid, timestamp] = parts
+    const datastore = parts[0]
+    const timestamp = parts[parts.length - 1]
+    const vmid = parts[parts.length - 2]
+    const backupType = parts[parts.length - 3]
+    const namespaceFromId = parts.slice(1, parts.length - 3).join('/')
 
     const url = new URL(req.url)
     const filepath = url.searchParams.get('filepath') || '/' // Chemin à explorer
     const archiveName = url.searchParams.get('archive') // Nom de l'archive (ex: "root.pxar.didx")
-    const ns = url.searchParams.get('ns') || '' // PBS namespace
+    // The query param takes precedence (caller can pass it explicitly when
+    // the id wouldn't carry the namespace), but we fall back to whatever
+    // was embedded between datastore and backup-type. Always one or the
+    // other — never both.
+    const ns = url.searchParams.get('ns') || namespaceFromId
 
     if (access.kind === 'tenant' && !access.allowed.some(a => a.datastore === datastore && a.namespace === ns)) {
       return NextResponse.json({ error: 'Backup not accessible for this tenant' }, { status: 403 })
