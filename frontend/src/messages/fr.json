@@ -563,7 +563,7 @@
     "manageTags": "Gestion des tags",
     "deleteVm": "Supprimer la VM",
     "deleteVmDisks": "Supprimer également les disques associés",
-    "deleteVmLockedError": "La VM est verrouillée dans l'état '{lock}'. Effectuez un clic droit sur la VM dans l'arborescence puis sélectionnez Déverrouiller pour lever le verrou (nécessite SSH activé sur la connexion).",
+    "deleteVmLockedError": "La VM est verrouillée dans l''état « {lock} ». Effectuez un clic droit sur la VM dans l''arborescence puis sélectionnez Déverrouiller pour lever le verrou (nécessite SSH activé sur la connexion).",
     "deleteVmRunningError": "La VM doit être arrêtée avant d'être supprimée. Arrêtez la VM en amont.",
     "vmRunningWarning": "Arrêtez la VM avant de la supprimer",
     "health": {

@@ -85,13 +85,19 @@ export function StatusIcon({ status, type, isMigrating, isPendingAction, mainten
       }} />
       {lock && (
         <Box sx={{
-          position: 'absolute', top: -3, left: -3,
-          width: dotSize, height: dotSize, borderRadius: '50%',
+          position: 'absolute', top: -4, left: -4,
+          width: dotSize + 4, height: dotSize + 4, borderRadius: '50%',
           bgcolor: '#ff9800',
           border: '1.5px solid', borderColor: 'background.paper',
+          boxShadow: '0 0 6px rgba(255, 152, 0, 0.8)',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
+          '@keyframes lockPulse': {
+            '0%, 100%': { boxShadow: '0 0 4px rgba(255, 152, 0, 0.6)' },
+            '50%': { boxShadow: '0 0 10px rgba(255, 152, 0, 1)' },
+          },
+          animation: 'lockPulse 2s ease-in-out infinite',
         }}>
-          <i className="ri-lock-fill" style={{ fontSize: dotSize - 2, color: '#fff' }} />
+          <i className="ri-lock-fill" style={{ fontSize: dotSize, color: '#fff' }} />
         </Box>
       )}
     </Box>
