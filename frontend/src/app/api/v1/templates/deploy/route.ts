@@ -14,6 +14,7 @@ import { resolveVdcForTenant } from "@/lib/vdc/quota"
 import { resolveSubnetForBridge } from "@/lib/vdc/vnets"
 import { generatePveMacAddress } from "@/lib/vdc/sdn"
 import { allocateIp, releaseIp, IpamExhaustedError } from "@/lib/vdc/ipam"
+import { scanUsedIpsForSubnet, scannedToIntSet } from "@/lib/vdc/ipamScan"
 import { parseCidr } from "@/lib/vdc/network"
 
 export const runtime = "nodejs"
@@ -321,6 +322,22 @@ export async function POST(req: Request) {
           // and our IPAM record stays in sync across rebuilds.
           netSpec = `${hw.networkModel}=${mac},bridge=${hw.networkBridge}${hw.vlanTag ? `,tag=${hw.vlanTag}` : ""}`
           try {
+            // Scan the vDC pool for IPs already deployed in PVE configs but
+            // not tracked by our IPAM (CLI-created VMs, restored backups,
+            // etc.). The result merges into the allocator's "taken" set so
+            // we never collide with an out-of-band IP. Cached for 60s.
+            // We use subnet.pvePoolName, NOT vdcInfo.poolName, because the
+            // latter is null when a super-admin (default tenant) deploys
+            // into another tenant's vDC — but the subnet still belongs to
+            // a real pool we can scan.
+            const externalScanned = await scanUsedIpsForSubnet({
+              conn,
+              vdcPoolName: subnet.pvePoolName,
+              vnetPveName: subnet.pveName,
+              subnetId: subnet.subnetId,
+              connectionId: body.connectionId,
+            })
+            const externalIps = scannedToIntSet(externalScanned)
             const allocated = allocateIp({
               vdcId: subnet.vdcId,
               subnetId: subnet.subnetId,
@@ -329,6 +346,7 @@ export async function POST(req: Request) {
               mac,
               vmid: body.vmid,
               hostname: body.vmName || `vm-${body.vmid}`,
+              externalIps,
             })
             ipamAllocation = { subnetId: subnet.subnetId, ip: allocated.ip }
             const cidrInfo = parseCidr(subnet.cidr)

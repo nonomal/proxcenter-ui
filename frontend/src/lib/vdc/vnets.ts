@@ -477,6 +477,9 @@ export interface SubnetForBridge {
   gateway: string
   dnsServers: string[]
   sdnZoneName: string
+  /** PVE pool name backing the vDC. Used by the IPAM scanner to limit
+   *  the search to the vDC's VMs instead of the whole cluster. */
+  pvePoolName: string
 }
 
 /**
@@ -501,6 +504,7 @@ export function resolveSubnetForBridge(
       `SELECT
          d.id   AS vdc_id,
          d.sdn_zone_name AS sdn_zone_name,
+         d.pve_pool_name AS pve_pool_name,
          v.id   AS vnet_id,
          v.pve_name,
          s.id   AS subnet_id,
@@ -517,7 +521,7 @@ export function resolveSubnetForBridge(
        LIMIT 1`,
     )
     .get(connectionId, bridgePveName) as
-      | { vdc_id: string; sdn_zone_name: string; vnet_id: string; pve_name: string; subnet_id: string; cidr: string; gateway: string; dns_servers: string | null }
+      | { vdc_id: string; sdn_zone_name: string; pve_pool_name: string; vnet_id: string; pve_name: string; subnet_id: string; cidr: string; gateway: string; dns_servers: string | null }
       | undefined
   if (!row) return null
   return {
@@ -529,5 +533,6 @@ export function resolveSubnetForBridge(
     gateway: row.gateway,
     dnsServers: row.dns_servers ? row.dns_servers.split(',').map(s => s.trim()).filter(Boolean) : [],
     sdnZoneName: row.sdn_zone_name,
+    pvePoolName: row.pve_pool_name,
   }
 }

@@ -28,6 +28,7 @@ import type Database from 'better-sqlite3'
 
 import { getDb as realGetDb } from '@/lib/db/sqlite'
 import { parseCidr, ipToInt, intToIp, isValidIpv4 } from '@/lib/vdc/network'
+import { invalidateScanCache } from '@/lib/vdc/ipamScan'
 
 // ---------------------------------------------------------------------------
 // Test seam — mirrors the pattern used by lib/db/vdcPbsBindings.ts
@@ -65,6 +66,12 @@ export interface AllocateIpInput {
   hostname?: string | null
   /** Optional preferred IP. If free + in usable range, we take it; else throw. */
   hint?: string
+  /** Optional set of uint32 IPs to treat as already taken on top of what
+   *  the IPAM DB knows. Caller fills this from scanUsedIpsForSubnet so the
+   *  allocator avoids IPs that exist in PVE config but were never tracked
+   *  by us (CLI-created VMs, restored backups, etc.). Empty / omitted →
+   *  pure DB-driven allocation, same as before. */
+  externalIps?: Set<number>
 }
 
 export class IpamExhaustedError extends Error {
@@ -175,23 +182,31 @@ export function allocateIp(input: AllocateIpInput): IpamAllocation {
 
   const { low, high, gatewayInt } = buildRangeBounds(subnet)
 
+  // Build the union of "already taken" IPs: rows from the IPAM DB plus any
+  // IPs the caller learned about by scanning PVE configs (externalIps).
+  // The DB's UNIQUE (subnet_id, ip) is the authoritative guard, but
+  // mixing in externalIps prevents us from picking an IP that's deployed
+  // out-of-band — the next allocation would have collided otherwise.
+  const taken = new Set<number>()
+  if (input.externalIps) for (const n of input.externalIps) taken.add(n)
+  taken.add(gatewayInt)
+
   // Hint path: try to reserve the requested IP if it's in range and free.
   if (input.hint) {
     if (!isValidIpv4(input.hint)) throw new IpamHintUnavailableError(input.hint)
     const hintInt = ipToInt(input.hint)!
-    if (hintInt < low || hintInt > high || hintInt === gatewayInt) {
+    if (hintInt < low || hintInt > high || taken.has(hintInt)) {
       throw new IpamHintUnavailableError(input.hint)
     }
     return insertAllocation({ ...input, mac }, subnet, input.hint, hintInt)
   }
 
-  // Auto: load the set of taken IPs in the subnet and pick the first free.
+  // Auto: load the set of IPAM-tracked IPs and pick the first free.
   // For typical /24s this is < 254 entries — a single SELECT is fine.
   const takenRows = db()
     .prepare(`SELECT ip_int FROM vdc_ipam_allocations WHERE subnet_id = ?`)
     .all(input.subnetId) as Array<{ ip_int: number }>
-  const taken = new Set<number>(takenRows.map((r) => r.ip_int))
-  taken.add(gatewayInt)
+  for (const r of takenRows) taken.add(r.ip_int)
 
   for (let candidate = low; candidate <= high; candidate++) {
     if (!taken.has(candidate)) {
@@ -229,6 +244,10 @@ function insertAllocation(
       input.hostname ?? null,
       now,
     )
+  // Drop the (connection, subnet) scan cache so the next allocation sees
+  // this row and never picks the same IP — the cache could otherwise hand
+  // out the IP we just allocated for another MAC's hint check.
+  invalidateScanCache(input.connectionId, input.subnetId)
   return {
     id,
     vdcId: input.vdcId,
@@ -246,16 +265,27 @@ function insertAllocation(
 
 /** Hard-delete an allocation by IP. Idempotent: missing rows are fine. */
 export function releaseIp(args: { subnetId: string; ip: string }): void {
+  // Read the connection_id before deleting so we can invalidate the right
+  // cache entry. Idempotent — if no row exists we just no-op.
+  const row = db()
+    .prepare(`SELECT connection_id FROM vdc_ipam_allocations WHERE subnet_id = ? AND ip = ?`)
+    .get(args.subnetId, args.ip) as { connection_id: string } | undefined
   db()
     .prepare(`DELETE FROM vdc_ipam_allocations WHERE subnet_id = ? AND ip = ?`)
     .run(args.subnetId, args.ip)
+  if (row) invalidateScanCache(row.connection_id, args.subnetId)
 }
 
 /** Hard-delete an allocation by MAC. Idempotent. */
 export function releaseByMac(args: { subnetId: string; mac: string }): void {
+  const mac = normalizeMac(args.mac)
+  const row = db()
+    .prepare(`SELECT connection_id FROM vdc_ipam_allocations WHERE subnet_id = ? AND mac = ?`)
+    .get(args.subnetId, mac) as { connection_id: string } | undefined
   db()
     .prepare(`DELETE FROM vdc_ipam_allocations WHERE subnet_id = ? AND mac = ?`)
-    .run(args.subnetId, normalizeMac(args.mac))
+    .run(args.subnetId, mac)
+  if (row) invalidateScanCache(row.connection_id, args.subnetId)
 }
 
 /**
@@ -271,6 +301,11 @@ export function releaseAllocationsForVm(connectionId: string, vmid: number): Ipa
   db()
     .prepare(`DELETE FROM vdc_ipam_allocations WHERE connection_id = ? AND vmid = ?`)
     .run(connectionId, vmid)
+  // Each released row may live in a different subnet (multi-NIC VM) — drop
+  // the scan cache for every distinct (connection, subnet) we touched.
+  const subnets = new Set<string>()
+  for (const r of rows) subnets.add(r.subnet_id)
+  for (const subnetId of subnets) invalidateScanCache(connectionId, subnetId)
   return rows.map(rowToAllocation)
 }
 
@@ -286,6 +321,18 @@ export function findAllocationByIp(subnetId: string, ip: string): IpamAllocation
     .prepare(`SELECT * FROM vdc_ipam_allocations WHERE subnet_id = ? AND ip = ?`)
     .get(subnetId, ip) as any
   return r ? rowToAllocation(r) : null
+}
+
+/**
+ * Return every allocation a given (connection, vmid) holds, without
+ * mutating anything. Used by the IPAM sync helpers (PUT config / clone
+ * / restore) to detect whether a VM is already IPAM-tracked before
+ * deciding whether to release-and-reallocate.
+ */
+export function findAllocationsForVm(connectionId: string, vmid: number): IpamAllocation[] {
+  return (db()
+    .prepare(`SELECT * FROM vdc_ipam_allocations WHERE connection_id = ? AND vmid = ?`)
+    .all(connectionId, vmid) as any[]).map(rowToAllocation)
 }
 
 export function listAllocationsForSubnet(subnetId: string): IpamAllocation[] {
