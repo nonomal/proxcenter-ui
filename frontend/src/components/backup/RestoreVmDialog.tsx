@@ -28,6 +28,7 @@ import {
 } from '@mui/material'
 
 import AppDialogTitle from '@/components/ui/AppDialogTitle'
+import { useTenant } from '@/contexts/TenantContext'
 
 interface BackupRef {
   /** Full PVE volid, e.g. `pbs:backup/vm/100/2025-04-01T10:00:00Z`.
@@ -72,6 +73,12 @@ export default function RestoreVmDialog({
   open, onClose, connectionId: connectionIdProp, node: nodeProp, type, backup, sourceVmid, onStarted,
 }: Props) {
   const t = useTranslations()
+  // Tenant mode (vDC) hides every infra picker — VMID, target cluster, node,
+  // storage, MAC/start/live/bandwidth flags. The vDC abstraction owns those
+  // decisions; a tenant just renames the restored VM. Provider / 'default'
+  // tenant keeps the full surface so the operator can pick the target.
+  const { currentTenant, loading: tenantLoading } = useTenant()
+  const isVdcTenant = !tenantLoading && !!currentTenant && currentTenant.id !== 'default'
 
   // When the caller provides connectionId/node, lock them; otherwise we
   // render pickers and the user picks. Internal state holds the effective
@@ -100,7 +107,8 @@ export default function RestoreVmDialog({
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  // Reset when (re)opened.
+  // Reset when (re)opened. In tenant mode, force overrideName=true so the
+  // single tenant-facing field (the new VM name) is always visible.
   useEffect(() => {
     if (!open) return
     setVmid(String(sourceVmid))
@@ -109,12 +117,40 @@ export default function RestoreVmDialog({
     setStart(false)
     setLive(false)
     setBwlimit('')
-    setOverrideName(false)
+    setOverrideName(isVdcTenant)
     setName('')
     setError(null)
     if (!callerLocksConn) setPickedConnectionId('')
     if (!callerLocksNode) setPickedNode('')
-  }, [open, sourceVmid, callerLocksConn, callerLocksNode])
+  }, [open, sourceVmid, callerLocksConn, callerLocksNode, isVdcTenant])
+
+  // Tenant mode + cross-PVE caller (no locked connection) → auto-resolve
+  // the target from the tenant's first active vDC. This keeps the simple-
+  // mode UI (just a Name field) usable from /operations/backups even when
+  // the cluster/node weren't passed in.
+  useEffect(() => {
+    if (!open || !isVdcTenant) return
+    if (callerLocksConn && callerLocksNode) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        const r = await fetch('/api/v1/vdcs', { cache: 'no-store' })
+        if (cancelled) return
+        if (r.ok) {
+          const j = await r.json()
+          const list: any[] = Array.isArray(j?.data) ? j.data : []
+          const first = list.find((v) => v.connectionId)
+          if (first) {
+            if (!callerLocksConn) setPickedConnectionId(first.connectionId)
+            if (!callerLocksNode && Array.isArray(first.nodes) && first.nodes.length > 0) {
+              setPickedNode(first.nodes[0])
+            }
+          }
+        }
+      } catch { /* ignore — falls through to the normal pickers, which we hide anyway */ }
+    })()
+    return () => { cancelled = true }
+  }, [open, isVdcTenant, callerLocksConn, callerLocksNode])
 
   // Load PVE connections list when the user needs to pick one.
   useEffect(() => {
@@ -271,16 +307,19 @@ export default function RestoreVmDialog({
             {backup.backupTimeFormatted ? `${backup.backupTimeFormatted} · ` : ''}{backup.volid || backup.backupPath || ''}
           </Alert>
 
-          {/* Target picker — only rendered when the caller didn't lock
-              connection / node. Used by /operations/backups where the
-              cross-PVE backup row has no inherent target context. */}
-          {!callerLocksConn && (
+          {/* Target pickers + every infra-level field are hidden in tenant
+              (vDC) mode. The vDC abstraction owns target cluster/node,
+              VMID assignment, storage selection, and the MAC/start/live
+              flags — exposing them would break the cloud-style abstraction
+              the tenant signed up for. Provider / 'default' tenant keeps
+              the full surface so the operator can drive every option. */}
+          {!isVdcTenant && !callerLocksConn && (
             <FormControl size="small" fullWidth>
-              <InputLabel>{t('inventory.pbsRestoreTargetCluster') ?? 'Target cluster'}</InputLabel>
+              <InputLabel>{t('inventory.pbsRestoreTargetCluster')}</InputLabel>
               <Select
                 value={pickedConnectionId}
                 onChange={(e) => { setPickedConnectionId(String(e.target.value)); setPickedNode('') }}
-                label={t('inventory.pbsRestoreTargetCluster') ?? 'Target cluster'}
+                label={t('inventory.pbsRestoreTargetCluster')}
               >
                 {pveConnections.map((c) => (
                   <MenuItem key={c.id} value={c.id}>{c.name}</MenuItem>
@@ -288,13 +327,13 @@ export default function RestoreVmDialog({
               </Select>
             </FormControl>
           )}
-          {!callerLocksNode && (
+          {!isVdcTenant && !callerLocksNode && (
             <FormControl size="small" fullWidth disabled={!connectionId}>
-              <InputLabel>{t('inventory.pbsRestoreTargetNode') ?? 'Target node'}</InputLabel>
+              <InputLabel>{t('inventory.pbsRestoreTargetNode')}</InputLabel>
               <Select
                 value={pickedNode}
                 onChange={(e) => setPickedNode(String(e.target.value))}
-                label={t('inventory.pbsRestoreTargetNode') ?? 'Target node'}
+                label={t('inventory.pbsRestoreTargetNode')}
               >
                 {nodes.map((n) => (
                   <MenuItem key={n.node} value={n.node}>{n.node}</MenuItem>
@@ -303,78 +342,87 @@ export default function RestoreVmDialog({
             </FormControl>
           )}
 
-          <TextField
-            size="small"
-            label={t('common.vmId') ?? 'VMID'}
-            value={vmid}
-            onChange={(e) => setVmid(e.target.value.replace(/[^0-9]/g, ''))}
-            error={!!vmid && !vmidValid}
-            helperText={
-              targetExists
-                ? t('inventory.pbsRestoreUniqueAutoEnabled') ?? 'VMID exists — unique MAC enforced'
-                : undefined
-            }
-            fullWidth
-          />
-
-          <FormControl size="small" fullWidth>
-            <InputLabel>{t('inventory.pbsRestoreStorage') ?? 'Storage'}</InputLabel>
-            <Select
-              value={storage}
-              onChange={(e) => setStorage(String(e.target.value))}
-              label={t('inventory.pbsRestoreStorage') ?? 'Storage'}
-            >
-              <MenuItem value="">
-                <em>{t('common.default') ?? 'default'}</em>
-              </MenuItem>
-              {storages.map((s) => (
-                <MenuItem key={s.storage} value={s.storage}>{s.storage}</MenuItem>
-              ))}
-            </Select>
-          </FormControl>
-
-          <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 2 }}>
-            <FormControlLabel
-              control={<Switch checked={unique} onChange={(_, v) => setUnique(v)} disabled={targetExists} />}
-              label={t('inventory.pbsRestoreUnique') ?? 'Regenerate MAC (unique)'}
-            />
-            <FormControlLabel
-              control={<Switch checked={start} onChange={(_, v) => setStart(v)} />}
-              label={t('inventory.pbsRestoreStart') ?? 'Start after restore'}
-            />
-            {type === 'qemu' && (
-              <FormControlLabel
-                control={<Switch checked={live} onChange={(_, v) => setLive(v)} />}
-                label={t('inventory.pbsRestoreLive') ?? 'Live restore'}
-              />
-            )}
-            <FormControlLabel
-              control={<Switch checked={overrideName} onChange={(_, v) => setOverrideName(v)} />}
-              label={t('inventory.pbsRestoreOverrideName') ?? 'Override name'}
-            />
-          </Box>
-
-          {overrideName && (
+          {!isVdcTenant && (
             <TextField
               size="small"
-              label={t('common.name') ?? 'Name'}
-              value={name}
-              onChange={(e) => setName(e.target.value)}
+              label={t('common.vmId')}
+              value={vmid}
+              onChange={(e) => setVmid(e.target.value.replace(/[^0-9]/g, ''))}
+              error={!!vmid && !vmidValid}
+              helperText={
+                targetExists
+                  ? t('inventory.pbsRestoreUniqueAutoEnabled')
+                  : undefined
+              }
               fullWidth
             />
           )}
 
-          <TextField
-            size="small"
-            label={t('inventory.pbsRestoreBandwidth') ?? 'Bandwidth limit (KB/s)'}
-            value={bwlimit}
-            onChange={(e) => setBwlimit(e.target.value.replace(/[^0-9]/g, ''))}
-            placeholder={t('common.unlimited') ?? 'unlimited'}
-            fullWidth
-          />
+          {!isVdcTenant && (
+            <FormControl size="small" fullWidth>
+              <InputLabel>{t('inventory.pbsRestoreStorage')}</InputLabel>
+              <Select
+                value={storage}
+                onChange={(e) => setStorage(String(e.target.value))}
+                label={t('inventory.pbsRestoreStorage')}
+              >
+                <MenuItem value="">
+                  <em>{t('common.default')}</em>
+                </MenuItem>
+                {storages.map((s) => (
+                  <MenuItem key={s.storage} value={s.storage}>{s.storage}</MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+          )}
+
+          {!isVdcTenant && (
+            <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 2 }}>
+              <FormControlLabel
+                control={<Switch checked={unique} onChange={(_, v) => setUnique(v)} disabled={targetExists} />}
+                label={t('inventory.pbsRestoreUnique')}
+              />
+              <FormControlLabel
+                control={<Switch checked={start} onChange={(_, v) => setStart(v)} />}
+                label={t('inventory.pbsRestoreStart')}
+              />
+              {type === 'qemu' && (
+                <FormControlLabel
+                  control={<Switch checked={live} onChange={(_, v) => setLive(v)} />}
+                  label={t('inventory.pbsRestoreLive')}
+                />
+              )}
+              <FormControlLabel
+                control={<Switch checked={overrideName} onChange={(_, v) => setOverrideName(v)} />}
+                label={t('inventory.pbsRestoreOverrideName')}
+              />
+            </Box>
+          )}
+
+          {(overrideName || isVdcTenant) && (
+            <TextField
+              size="small"
+              label={t('common.name')}
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder={isVdcTenant ? backup.backupTimeFormatted ?? '' : ''}
+              fullWidth
+            />
+          )}
+
+          {!isVdcTenant && (
+            <TextField
+              size="small"
+              label={t('inventory.pbsRestoreBandwidth')}
+              value={bwlimit}
+              onChange={(e) => setBwlimit(e.target.value.replace(/[^0-9]/g, ''))}
+              placeholder={t('common.unlimited')}
+              fullWidth
+            />
+          )}
 
           <Typography variant="caption" sx={{ opacity: 0.6 }}>
-            {t('inventory.pbsRestoreIpamNote') ?? 'IP allocation is reconciled automatically after the restore completes.'}
+            {t('inventory.pbsRestoreIpamNote')}
           </Typography>
 
           {error && <Alert severity="error">{error}</Alert>}
