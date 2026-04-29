@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslations } from 'next-intl'
 import {
   Alert,
@@ -207,14 +207,24 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint, r
 
   // Pre-fill (IP, MAC, DNS, prefix) from the IPAM next-free endpoint the
   // first time the user lands on the hardware step with an IPAM-managed
-  // bridge selected in ISO mode. Don't refetch unless the bridge or the
-  // mode changes; we honour any IP the user has already typed.
+  // bridge selected in ISO mode. We track which (vdcId, displayName) pair
+  // we've already prefilled in a ref so a re-render with the same bridge
+  // never overwrites what the user has typed — even if some upstream
+  // setState (bridges, networkBridge) makes the deps look unstable.
+  // Clearing on mode-off is gated on the same ref so it doesn't fight
+  // the user when they first open the dialog with empty fields.
+  const prefilledForRef = useRef<string | null>(null)
   useEffect(() => {
-    if (!open) return
+    if (!open) {
+      prefilledForRef.current = null
+      return
+    }
     if (!isoNeedsReservation || !isoBridgeChoice?.vdcId || !isoBridgeChoice?.displayName) {
-      // Clear when the user moves off ISO / off an IPAM bridge so a stale
-      // pre-fill doesn't sneak into a non-IPAM submit.
-      if (staticIp || staticMac) {
+      // Off an IPAM bridge → drop any prefilled values so they don't
+      // leak into a non-IPAM submit, and reset the prefill marker so a
+      // later mode flip back to ISO+IPAM re-runs the fetch.
+      if (prefilledForRef.current !== null) {
+        prefilledForRef.current = null
         setStaticIp('')
         setStaticMac('')
         setStaticDns([])
@@ -223,6 +233,9 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint, r
       }
       return
     }
+    const key = `${isoBridgeChoice.vdcId}|${isoBridgeChoice.displayName}`
+    if (prefilledForRef.current === key) return
+    prefilledForRef.current = key
     let cancelled = false
     setNextFreeLoading(true)
     setNextFreeError(null)
@@ -238,8 +251,10 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint, r
         }
         const d = j?.data
         if (!d) { setNextFreeError('Invalid response'); return }
-        if (!staticIp) setStaticIp(String(d.ip || ''))
-        if (!staticMac) setStaticMac(String(d.suggestedMac || ''))
+        // Always set on the first prefill for this bridge; the ref guard
+        // above already prevents re-running for the same bridge.
+        setStaticIp(String(d.ip || ''))
+        setStaticMac(String(d.suggestedMac || ''))
         setStaticDns(Array.isArray(d.dnsServers) ? d.dnsServers : [])
         setStaticPrefix(typeof d.prefix === 'number' ? d.prefix : null)
       } catch (e: any) {
@@ -249,7 +264,6 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint, r
       }
     })()
     return () => { cancelled = true }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, isoNeedsReservation, isoBridgeChoice?.vdcId, isoBridgeChoice?.displayName])
 
   // Best-effort guess of "this ISO is a Windows installer" — drives the
