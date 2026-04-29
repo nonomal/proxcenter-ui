@@ -64,7 +64,7 @@ export async function GET(req: Request, ctx: RouteContext) {
     }
 
     type Choice =
-      | { kind: "vnet"; name: string; displayName: string; vdc: string; zone: string; subnet: SubnetInfo | null }
+      | { kind: "vnet"; name: string; displayName: string; vdc: string; vdcId: string | null; zone: string; subnet: SubnetInfo | null }
       | { kind: "shared"; name: string; label: string | null }
       | { kind: "bridge"; name: string; type: string }
 
@@ -87,6 +87,11 @@ export async function GET(req: Request, ctx: RouteContext) {
             name: v.vnet,
             displayName: v.alias ?? v.vnet,
             vdc: "*",
+            // Super-admin (no scope filter) sees PVE VNets directly —
+            // the matching ProxCenter vDC isn't always 1-to-1, so we
+            // leave vdcId null. Endpoints that need a specific vDC
+            // shouldn't be reachable via this path anyway.
+            vdcId: null,
             zone: v.zone,
             subnet: subnetByPveName.get(v.vnet) ?? null,
           })
@@ -101,7 +106,7 @@ export async function GET(req: Request, ctx: RouteContext) {
       // expects in the NIC bridge field) but we expose displayName separately
       // so the picker can render the user-friendly label.
       const vnetRows = db.prepare(`
-        SELECT v.pve_name, v.display_name, d.slug AS vdc_slug, d.sdn_zone_name
+        SELECT v.pve_name, v.display_name, d.id AS vdc_id, d.slug AS vdc_slug, d.sdn_zone_name
         FROM vdc_vnets v
         JOIN vdcs d ON d.id = v.vdc_id
         WHERE d.tenant_id = ? AND d.connection_id = ?
@@ -113,6 +118,11 @@ export async function GET(req: Request, ctx: RouteContext) {
             name: v.pve_name,
             displayName: v.display_name ?? v.pve_name,
             vdc: v.vdc_slug,
+            // Routes that hit /api/v1/vdcs/{id}/... need the UUID, not
+            // the slug. Surface it explicitly so the deploy wizard
+            // (and any future caller) doesn't have to do a second
+            // lookup to translate slug → id.
+            vdcId: v.vdc_id,
             zone: v.sdn_zone_name,
             subnet: subnetByPveName.get(v.pve_name) ?? null,
           })

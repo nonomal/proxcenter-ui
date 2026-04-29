@@ -152,6 +152,9 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint, r
     type: string
     label?: string | null
     vdc?: string | null
+    /** vDC UUID (for /api/v1/vdcs/{id}/... routes). vdc above is the slug,
+     *  surfaced for legacy reasons; vdcId is the only safe identifier. */
+    vdcId?: string | null
     displayName?: string | null
     subnet?: { cidr: string; gateway: string; dnsServers: string[]; subnetId: string } | null
   }
@@ -197,7 +200,10 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint, r
   // reservation block can render and the next-free fetcher knows which
   // VNet to query.
   const isoBridgeChoice = bridges.find((b) => b.iface === networkBridge)
-  const isoNeedsReservation = isIsoMode && !!isoBridgeChoice?.subnet && !!isoBridgeChoice.vdc && !!isoBridgeChoice.displayName
+  // vdcId is the UUID required by /api/v1/vdcs/{id}/... routes; vdc is
+  // a slug kept around for display compatibility — never use it for
+  // route building.
+  const isoNeedsReservation = isIsoMode && !!isoBridgeChoice?.subnet && !!isoBridgeChoice.vdcId && !!isoBridgeChoice.displayName
 
   // Pre-fill (IP, MAC, DNS, prefix) from the IPAM next-free endpoint the
   // first time the user lands on the hardware step with an IPAM-managed
@@ -205,7 +211,7 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint, r
   // mode changes; we honour any IP the user has already typed.
   useEffect(() => {
     if (!open) return
-    if (!isoNeedsReservation || !isoBridgeChoice?.vdc || !isoBridgeChoice?.displayName) {
+    if (!isoNeedsReservation || !isoBridgeChoice?.vdcId || !isoBridgeChoice?.displayName) {
       // Clear when the user moves off ISO / off an IPAM bridge so a stale
       // pre-fill doesn't sneak into a non-IPAM submit.
       if (staticIp || staticMac) {
@@ -222,7 +228,7 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint, r
     setNextFreeError(null)
     ;(async () => {
       try {
-        const url = `/api/v1/vdcs/${encodeURIComponent(isoBridgeChoice.vdc!)}/vnets/${encodeURIComponent(isoBridgeChoice.displayName!)}/ipam/next-free`
+        const url = `/api/v1/vdcs/${encodeURIComponent(isoBridgeChoice.vdcId!)}/vnets/${encodeURIComponent(isoBridgeChoice.displayName!)}/ipam/next-free`
         const r = await fetch(url)
         const j = await r.json()
         if (cancelled) return
@@ -244,7 +250,7 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint, r
     })()
     return () => { cancelled = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, isoNeedsReservation, isoBridgeChoice?.vdc, isoBridgeChoice?.displayName])
+  }, [open, isoNeedsReservation, isoBridgeChoice?.vdcId, isoBridgeChoice?.displayName])
 
   // Best-effort guess of "this ISO is a Windows installer" — drives the
   // OVMF/pre-enrolled-keys default. We check ostype first (most reliable
@@ -460,6 +466,7 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint, r
           type: c.kind === 'vnet' ? 'vnet' : c.kind === 'shared' ? 'shared' : (c.type || 'bridge'),
           label: c.label ?? null,
           vdc: c.vdc ?? null,
+          vdcId: c.vdcId ?? null,
           displayName: c.displayName ?? null,
           subnet: c.subnet ?? null,
         }))
@@ -1246,9 +1253,9 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint, r
                       onClick={async () => {
                         // Regenerate via the same endpoint to keep the
                         // OUI prefix consistent with what the backend uses.
-                        if (!isoBridgeChoice?.vdc || !isoBridgeChoice?.displayName) return
+                        if (!isoBridgeChoice?.vdcId || !isoBridgeChoice?.displayName) return
                         try {
-                          const r = await fetch(`/api/v1/vdcs/${encodeURIComponent(isoBridgeChoice.vdc)}/vnets/${encodeURIComponent(isoBridgeChoice.displayName)}/ipam/next-free`)
+                          const r = await fetch(`/api/v1/vdcs/${encodeURIComponent(isoBridgeChoice.vdcId)}/vnets/${encodeURIComponent(isoBridgeChoice.displayName)}/ipam/next-free`)
                           const j = await r.json()
                           if (r.ok && j?.data?.suggestedMac) setStaticMac(String(j.data.suggestedMac))
                         } catch { /* ignore */ }
