@@ -897,7 +897,7 @@ return (
           const dotColor = vm.template ? 'transparent' : vm.status === 'running' ? '#4caf50' : vm.status === 'paused' ? '#ed6c02' : '#f44336'
 
           return (
-            <Stack direction='row' spacing={0.75} sx={{ alignItems: 'center', overflow: 'hidden', width: '100%' }}>
+            <Stack direction='row' spacing={0.75} sx={{ alignItems: 'center', width: '100%' }}>
               <Tooltip title={`${vm.template ? 'Template' : vm.type === 'lxc' ? 'LXC' : 'VM'} - ${vm.status}${vm.lock ? ` (locked: ${vm.lock})` : ''}`}>
                 <Box sx={{ position: 'relative', display: 'inline-flex', flexShrink: 0 }}>
                   {isMigrating ? (
