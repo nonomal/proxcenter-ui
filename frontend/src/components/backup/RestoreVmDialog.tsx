@@ -382,9 +382,12 @@ export default function RestoreVmDialog({
           <Alert severity="info" variant="outlined" sx={{ fontSize: '0.8rem' }} icon={<i className="ri-information-line" style={{ fontSize: 16 }} />}>
             {(() => {
               const label = type === 'lxc' ? 'CT' : 'VM'
-              const id = backup.vmName || sourceVmid
-              const date = backup.backupTimeFormatted
-              return date ? `${label} ${id} · ${date}` : `${label} ${id}`
+              const head = backup.vmName
+                ? `${label} ${backup.vmName} (${sourceVmid})`
+                : `${label} ${sourceVmid}`
+              return backup.backupTimeFormatted
+                ? `${head} · ${backup.backupTimeFormatted}`
+                : head
             })()}
           </Alert>
 

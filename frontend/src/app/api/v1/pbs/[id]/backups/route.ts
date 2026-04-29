@@ -3,10 +3,13 @@ import { cookies } from "next/headers"
 
 import { demoResponse } from "@/lib/demo/demo-api"
 import { pbsFetch } from "@/lib/proxmox/pbs-client"
-import { getPbsConnectionById, getPbsConnectionByIdUnscoped } from "@/lib/connections/getConnection"
+import { getPbsConnectionById, getPbsConnectionByIdUnscoped, getConnectionById } from "@/lib/connections/getConnection"
+import { pveFetch } from "@/lib/proxmox/client"
+import { prisma as globalPrisma } from "@/lib/db/prisma"
+import { getSessionPrisma } from "@/lib/tenant"
 import { formatBytes } from "@/utils/format"
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
-import { assertVdcPbsAccess } from "@/lib/vdc/scope"
+import { assertVdcPbsAccess, getVdcScope } from "@/lib/vdc/scope"
 import { getDateLocale } from "@/lib/i18n/date"
 import { getDb } from "@/lib/db/sqlite"
 import { getCurrentTenantId } from "@/lib/tenant"
@@ -238,6 +241,60 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> |
     if (access.kind === 'tenant') {
       const allowedSet = new Set(access.allowed.map(p => `${p.datastore}|${p.namespace}`))
       allBackups = allBackups.filter(b => allowedSet.has(`${b.datastore}|${b.namespace}`))
+    }
+
+    // ── vmName enrichment ──
+    // PBS only carries the snapshot's `comment` field — which PVE 8+
+    // populates with `--notes-template "{{guestname}}"` by default but
+    // older clusters / hand-rolled vzdumps leave empty. Cross-reference
+    // with /cluster/resources on every PVE connection the caller can see
+    // to fill in the human-friendly name when the comment is blank.
+    // Single round-trip per PVE connection (cached implicitly by PVE
+    // resource cache), not per backup.
+    const blankNames = allBackups.some(b => !b.vmName)
+    if (blankNames) {
+      try {
+        const tenantId = await getCurrentTenantId()
+        const vdcScope = getVdcScope(tenantId)
+        const sessionPrisma = await getSessionPrisma()
+        const connPrisma = vdcScope ? globalPrisma : sessionPrisma
+        const pveWhere: any = { type: 'pve' }
+        if (vdcScope) pveWhere.id = { in: [...vdcScope.connectionIds] }
+        const pveConns = await connPrisma.connection.findMany({
+          where: pveWhere,
+          select: { id: true, tenantId: true },
+        })
+
+        const vmidToName = new Map<number, string>()
+        await Promise.all(pveConns.map(async (pc) => {
+          try {
+            const conn = await getConnectionById(pc.id, pc.tenantId)
+            const resources = await pveFetch<any[]>(conn, '/cluster/resources?type=vm')
+            for (const r of resources ?? []) {
+              const vmidNum = Number(r?.vmid)
+              const name = String(r?.name ?? '').trim()
+              if (Number.isFinite(vmidNum) && name && !vmidToName.has(vmidNum)) {
+                vmidToName.set(vmidNum, name)
+              }
+            }
+          } catch (err: any) {
+            // Best-effort: a single unreachable cluster shouldn't blank
+            // out the entire backup list.
+            console.warn(`[pbs-backups] vmName lookup failed on connection ${pc.id}: ${err?.message ?? err}`)
+          }
+        }))
+
+        if (vmidToName.size > 0) {
+          allBackups = allBackups.map((b) => {
+            if (b.vmName) return b
+            const vmidNum = Number(b.backupId)
+            const resolved = Number.isFinite(vmidNum) ? vmidToName.get(vmidNum) : undefined
+            return resolved ? { ...b, vmName: resolved } : b
+          })
+        }
+      } catch (err: any) {
+        console.warn(`[pbs-backups] vmName enrichment failed: ${err?.message ?? err}`)
+      }
     }
 
     // Extract available namespaces from all backups (before filtering)
