@@ -7,6 +7,7 @@ import { checkPermission, buildVmResourceId, PERMISSIONS } from "@/lib/rbac"
 import { getCurrentTenantId } from "@/lib/tenant"
 import { resolveVdcForTenant, checkVdcQuota } from "@/lib/vdc/quota"
 import { getAllowedBridgesForTenant, parseBridgeFromNet } from "@/lib/vdc/vnets"
+import { syncIpamForVmConfig, IpamHintUnavailableError, IpamExhaustedError } from "@/lib/vdc/ipamSync"
 
 export const runtime = "nodejs"
 
@@ -258,18 +259,67 @@ export async function PUT(
       return NextResponse.json({ error: "No valid fields to update" }, { status: 400 })
     }
 
-    // Proxmox: PUT /nodes/{node}/{qemu|lxc}/{vmid}/config
-    const result = await pveFetch<any>(
-      conn,
-      `/nodes/${encodeURIComponent(node)}/${type}/${encodeURIComponent(vmid)}/config`,
-      { 
-        method: "PUT",
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded'
-        },
-        body: formData.toString()
+    // ── IPAM sync (qemu only) ──
+    // Reconcile our IPAM DB with the netN/ipconfigN changes the user is
+    // about to push. The helper handles the no-op case (no IPAM-managed
+    // bridge involved) cheaply, so this is safe to call unconditionally.
+    let ipamRollback: (() => void) | null = null
+    if (type === 'qemu') {
+      const before = await pveFetch<any>(
+        conn,
+        `/nodes/${encodeURIComponent(node)}/${type}/${encodeURIComponent(vmid)}/config`
+      )
+      // Build the after-snapshot the helper compares against. body is a
+      // sparse patch — fields not in body inherit from before.
+      const after = { ...before, ...body }
+      try {
+        const sync = await syncIpamForVmConfig({
+          before,
+          after,
+          conn,
+          connectionId: id,
+          vmid: Number(vmid),
+          hostname: typeof body.name === 'string' ? body.name : (before?.name ?? null),
+        })
+        ipamRollback = sync.rollback
+        // Patch the PVE PUT body with any ipconfigN corrections the
+        // allocator emitted (auto-pick, hint conflict resolution).
+        for (const [k, v] of Object.entries(sync.bodyOverrides)) {
+          formData.set(k, v)
+        }
+      } catch (err: any) {
+        if (err instanceof IpamHintUnavailableError) {
+          return NextResponse.json({ error: `IP unavailable: ${err.hint}` }, { status: 409 })
+        }
+        if (err instanceof IpamExhaustedError) {
+          return NextResponse.json({ error: `Subnet is full — no free IP available` }, { status: 409 })
+        }
+        throw err
       }
-    )
+    }
+
+    // Proxmox: PUT /nodes/{node}/{qemu|lxc}/{vmid}/config
+    let result: any
+    try {
+      result = await pveFetch<any>(
+        conn,
+        `/nodes/${encodeURIComponent(node)}/${type}/${encodeURIComponent(vmid)}/config`,
+        {
+          method: "PUT",
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded'
+          },
+          body: formData.toString()
+        }
+      )
+    } catch (err) {
+      // PVE rejected the write — undo the IPAM mutations so the DB doesn't
+      // drift away from the unchanged qm config.
+      if (ipamRollback) {
+        try { ipamRollback() } catch { /* tolerate */ }
+      }
+      throw err
+    }
 
     // Audit
     const { audit } = await import("@/lib/audit")

@@ -16,6 +16,7 @@ import { generatePveMacAddress } from "@/lib/vdc/sdn"
 import { allocateIp, releaseIp, IpamExhaustedError } from "@/lib/vdc/ipam"
 import { scanUsedIpsForSubnet, scannedToIntSet } from "@/lib/vdc/ipamScan"
 import { parseCidr } from "@/lib/vdc/network"
+import { waitForTask } from "@/lib/proxmox/tasks"
 
 export const runtime = "nodejs"
 
@@ -664,29 +665,3 @@ async function runIsoDeploy(args: {
   })
 }
 
-/** Poll a PVE task until it completes or fails */
-async function waitForTask(
-  conn: { baseUrl: string; apiToken: string; insecureDev: boolean; id: string },
-  node: string,
-  upid: string,
-  timeoutMs = 600000
-): Promise<void> {
-  const start = Date.now()
-  const interval = 3000
-
-  while (Date.now() - start < timeoutMs) {
-    const status = await pveFetch<any>(
-      conn,
-      `/nodes/${encodeURIComponent(node)}/tasks/${encodeURIComponent(upid)}/status`
-    )
-
-    if (status?.status === "stopped") {
-      if (status.exitstatus === "OK") return
-      throw new Error(`PVE task failed: ${status.exitstatus || "unknown error"}`)
-    }
-
-    await new Promise(r => setTimeout(r, interval))
-  }
-
-  throw new Error(`PVE task timed out after ${timeoutMs / 1000}s`)
-}
