@@ -5,6 +5,7 @@ import { getConnectionById } from "@/lib/connections/getConnection"
 import { checkPermission, buildVmResourceId, PERMISSIONS } from "@/lib/rbac"
 import { getCurrentTenantId } from "@/lib/tenant"
 import { watchMigrationAndCleanup } from "@/lib/migration/cross-cluster-watcher"
+import { getNodeIp } from "@/lib/ssh/node-ip"
 
 export const runtime = "nodejs"
 
@@ -74,10 +75,15 @@ export async function POST(
     const sourceConn = await getConnectionById(id)
     const targetConn = await getConnectionById(targetConnectionId)
 
-    // Extraire l'host et le port de l'URL de la connexion cible
+    // Resolve the target NODE's address, not the cluster baseUrl, so the
+    // migration lands on the user-selected host. PVE's remote_migrate uses the
+    // host:port in the target-endpoint to reach the cluster API; talking to a
+    // specific node's pveproxy makes that node the receiver. Falling back to
+    // the cluster baseUrl made every cross-cluster migration land on whichever
+    // node baseUrl happens to point at, ignoring the user's choice (issue #282).
     const targetUrl = new URL(targetConn.baseUrl)
-    const targetHost = targetUrl.hostname
     const targetPort = targetUrl.port || '8006'
+    const targetHost = await getNodeIp(targetConn, targetNode)
 
     // Récupérer le fingerprint TLS du certificat du serveur cible
     // C'est le fingerprint SHA-256 du certificat TLS qui est requis par remote_migrate
