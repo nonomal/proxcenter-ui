@@ -85,15 +85,18 @@ return <Chip size='small' color='default' label={t('backups.notVerified')} varia
 }
 
 // Compact state icon for the table column. Three distinct states:
-//   - ok      : verification.state === 'ok' → green check
-//   - failed  : verification.state set, anything else → red cross
-//   - none    : no verification record → grey dash (never verified)
-// Tooltip carries the localised label + last-run date when available.
+//   - ok      : row.verified true (= verification.state === 'ok' on PBS)
+//   - failed  : verification record exists but state !== 'ok'
+//   - none    : no verification record at all → never verified
+//
+// We anchor on `row.verified` (computed by the backend) for the OK case
+// rather than re-deriving from row.verification.state — the cache layer
+// can lose nested fields if PBS's payload shape evolves, but the boolean
+// is precomputed and matches the verifiedCount stat shown in the KPIs.
 const VerifyStateIcon = ({ row, t }) => {
-  const state = row.verification?.state
-  if (state === 'ok') {
+  if (row.verified) {
     const tooltip = row.verifiedAt
-      ? `${t('backups.verifiedOn', { date: row.verifiedAt })}`
+      ? t('backups.verifiedOn', { date: row.verifiedAt })
       : t('backups.verified')
     return (
       <Tooltip title={tooltip} arrow>
@@ -101,10 +104,12 @@ const VerifyStateIcon = ({ row, t }) => {
       </Tooltip>
     )
   }
-  if (state) {
-    // Anything other than 'ok' is a failed/incomplete verification.
+  // verification.state set but not 'ok' → failure path. The state can
+  // legitimately be 'failed', 'none', or other PBS-internal markers.
+  const failState = row.verification?.state
+  if (failState && failState !== 'ok') {
     const tooltip = row.verifiedAt
-      ? `${t('backups.verifyFailedOn', { date: row.verifiedAt })}`
+      ? t('backups.verifyFailedOn', { date: row.verifiedAt })
       : t('backups.verifyFailed')
     return (
       <Tooltip title={tooltip} arrow>
