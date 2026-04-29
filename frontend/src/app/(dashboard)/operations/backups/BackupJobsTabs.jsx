@@ -223,10 +223,13 @@ function PveJobsTab({ pveConnections = [], isVdcTenant = false }) {
     }
   }, [pveConnections, selectedConnection])
 
-  // Tenant mode: load the vDC list scoped to the selected connection so
-  // the job-create dialog can offer the right pool dropdown. Each vDC
-  // exposes `pvePoolName` — that's the value PVE expects in the job's
-  // `pool=` parameter.
+  // Tenant mode: load the vDC list scoped to the selected connection.
+  // We pull the PBS binding's namespace alongside the pool so the
+  // job-create dialog can auto-fill every PBS-side field (storage,
+  // namespace) and the PVE pool from a single "vDC" pick. Schema allows
+  // multiple vDCs per (tenant, connection) but the product invariant is
+  // 1-per-cluster — if we ever see N>1 we log a warning and pick the
+  // first deterministically.
   useEffect(() => {
     if (!isVdcTenant || !selectedConnection) { setTenantPools([]); return }
     let cancelled = false
@@ -239,8 +242,22 @@ function PveJobsTab({ pveConnections = [], isVdcTenant = false }) {
         if (cancelled) return
         const onConn = list
           .filter(v => (v.connectionId || v.connection_id) === selectedConnection)
-          .map(v => ({ poolName: v.pvePoolName || v.pve_pool_name, vdcName: v.name }))
+          .map(v => {
+            const binding = Array.isArray(v.pbsBindings) ? v.pbsBindings[0] : null
+            return {
+              vdcId: v.id,
+              vdcName: v.name,
+              poolName: v.pvePoolName || v.pve_pool_name,
+              namespace: binding?.namespace || '',
+              datastore: binding?.datastore || '',
+            }
+          })
           .filter(p => !!p.poolName)
+        if (onConn.length > 1) {
+          // Defensive: schema allows N vDCs per (tenant, connection),
+          // product invariant is 1. Warn but don't fail — pick [0].
+          console.warn(`[BackupJobsTabs] tenant has ${onConn.length} vDCs on connection ${selectedConnection}; using "${onConn[0].vdcName}".`)
+        }
         setTenantPools(onConn)
       } catch { /* ignore */ }
     })()
@@ -251,6 +268,11 @@ function PveJobsTab({ pveConnections = [], isVdcTenant = false }) {
     // Trouver le premier storage PBS
     const pbsStorage = storages.find(s => s.isPbs || s.type === 'pbs')
 
+    // Tenant: prefill everything from the first (and product-wise only)
+    // vDC on this connection — pool, PBS namespace, and we keep the PBS
+    // storage auto-pick. Provider keeps the open form.
+    const tenantVdc = isVdcTenant ? tenantPools[0] : null
+
     setFormData({
       enabled: true,
       storage: pbsStorage?.id || '',
@@ -258,14 +280,15 @@ function PveJobsTab({ pveConnections = [], isVdcTenant = false }) {
       node: '',
       mode: 'snapshot',
       compress: 'zstd',
-      selectionMode: 'all',
+      selectionMode: isVdcTenant ? 'pool' : 'all',
+      pool: tenantVdc?.poolName || '',
       vmids: [],
       excludedVmids: [],
       comment: '',
       mailto: '',
       mailnotification: 'always',
       maxfiles: 1,
-      namespace: ''
+      namespace: tenantVdc?.namespace || '',
     })
     setDialogMode('create')
     setEditingJob(null)
@@ -588,42 +611,50 @@ return '—'
         </DialogTitle>
         <DialogContent>
           <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, pt: 1 }}>
-            {/* Row 1 */}
-            <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '1fr 1fr 1fr 1fr' }, gap: 2 }}>
-              <FormControl fullWidth size="small">
-                <InputLabel>{t('backups.pbsStorage')}</InputLabel>
-                <Select
-                  value={formData.storage}
-                  onChange={(e) => setFormData(prev => ({ ...prev, storage: e.target.value }))}
-                  label={t('backups.pbsStorage')}
-                >
-                  {storages.filter(s => s.isPbs || s.type === 'pbs').map(s => (
-                    <MenuItem key={s.id} value={s.id}>
-                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                        <i className="ri-server-line" style={{ fontSize: 14, color: '#4CAF50' }} />
-                        {s.name}
-                      </Box>
-                    </MenuItem>
-                  ))}
-                  {storages.filter(s => s.isPbs || s.type === 'pbs').length === 0 && (
-                    <MenuItem disabled>
-                      <Typography variant="body2" sx={{ opacity: 0.5 }}>
-                        {t('backups.noPbsConfigured')}
-                      </Typography>
-                    </MenuItem>
-                  )}
-                </Select>
-              </FormControl>
+            {/* Row 1 — infra pickers (PBS storage, namespace, node)
+                are hidden for tenants because the vDC ABOVE drives all of
+                them: the form was prefilled in handleCreate from
+                tenantPools[0]. The Schedule field stays so the tenant
+                still picks the time. Provider keeps the open form. */}
+            <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: isVdcTenant ? '1fr' : '1fr 1fr 1fr 1fr' }, gap: 2 }}>
+              {!isVdcTenant && (
+                <FormControl fullWidth size="small">
+                  <InputLabel>{t('backups.pbsStorage')}</InputLabel>
+                  <Select
+                    value={formData.storage}
+                    onChange={(e) => setFormData(prev => ({ ...prev, storage: e.target.value }))}
+                    label={t('backups.pbsStorage')}
+                  >
+                    {storages.filter(s => s.isPbs || s.type === 'pbs').map(s => (
+                      <MenuItem key={s.id} value={s.id}>
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                          <i className="ri-server-line" style={{ fontSize: 14, color: '#4CAF50' }} />
+                          {s.name}
+                        </Box>
+                      </MenuItem>
+                    ))}
+                    {storages.filter(s => s.isPbs || s.type === 'pbs').length === 0 && (
+                      <MenuItem disabled>
+                        <Typography variant="body2" sx={{ opacity: 0.5 }}>
+                          {t('backups.noPbsConfigured')}
+                        </Typography>
+                      </MenuItem>
+                    )}
+                  </Select>
+                </FormControl>
+              )}
 
-              <TextField
-                size="small"
-                label={t('backups.namespace')}
-                value={formData.namespace}
-                onChange={(e) => setFormData(prev => ({ ...prev, namespace: e.target.value }))}
-                placeholder="ex: prod/web"
-                helperText={t('common.optional')}
-              />
-              
+              {!isVdcTenant && (
+                <TextField
+                  size="small"
+                  label={t('backups.namespace')}
+                  value={formData.namespace}
+                  onChange={(e) => setFormData(prev => ({ ...prev, namespace: e.target.value }))}
+                  placeholder="ex: prod/web"
+                  helperText={t('common.optional')}
+                />
+              )}
+
               <TextField
                 size="small"
                 label={t('backups.scheduleTime')}
@@ -631,20 +662,22 @@ return '—'
                 onChange={(e) => setFormData(prev => ({ ...prev, schedule: e.target.value }))}
                 placeholder="00:00"
               />
-              
-              <FormControl fullWidth size="small">
-                <InputLabel>{t('backups.node')}</InputLabel>
-                <Select
-                  value={formData.node}
-                  onChange={(e) => setFormData(prev => ({ ...prev, node: e.target.value }))}
-                  label={t('backups.node')}
-                >
-                  <MenuItem value="">{t('backups.allNodes')}</MenuItem>
-                  {nodes.map(n => (
-                    <MenuItem key={n.node} value={n.node}>{n.node}</MenuItem>
-                  ))}
-                </Select>
-              </FormControl>
+
+              {!isVdcTenant && (
+                <FormControl fullWidth size="small">
+                  <InputLabel>{t('backups.node')}</InputLabel>
+                  <Select
+                    value={formData.node}
+                    onChange={(e) => setFormData(prev => ({ ...prev, node: e.target.value }))}
+                    label={t('backups.node')}
+                  >
+                    <MenuItem value="">{t('backups.allNodes')}</MenuItem>
+                    {nodes.map(n => (
+                      <MenuItem key={n.node} value={n.node}>{n.node}</MenuItem>
+                    ))}
+                  </Select>
+                </FormControl>
+              )}
             </Box>
 
             {/* Row 2 */}
@@ -689,53 +722,33 @@ return '—'
 
             <Divider />
 
-            {/* VM Selection */}
-            <Typography variant="subtitle2" fontWeight={600}>{t('backups.vmSelection')}</Typography>
+            {/* VM Selection — hidden for tenants. The vDC pick above
+                already implies "back up everything in this vDC's pool";
+                provider keeps the open all/include/exclude options. */}
+            {!isVdcTenant && (
+              <Typography variant="subtitle2" fontWeight={600}>{t('backups.vmSelection')}</Typography>
+            )}
+            {!isVdcTenant && (
             <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '1fr 2fr' }, gap: 2 }}>
-              {isVdcTenant ? (
-                // Tenant mode: locked to pool selection. Surface the
-                // tenant's own vDC pools as the dropdown options — the
-                // backend rejects anything outside this set.
-                <FormControl fullWidth size="small">
-                  <InputLabel>{t('backups.poolLabel')}</InputLabel>
-                  <Select
-                    value={formData.pool}
-                    onChange={(e) => setFormData(prev => ({ ...prev, pool: e.target.value }))}
-                    label={t('backups.poolLabel')}
-                  >
-                    {tenantPools.length === 0 && (
-                      <MenuItem value="" disabled>
-                        <Typography variant="body2" sx={{ opacity: 0.5 }}>{t('backups.noPoolAvailable')}</Typography>
-                      </MenuItem>
-                    )}
-                    {tenantPools.map(p => (
-                      <MenuItem key={p.poolName} value={p.poolName}>
-                        {p.vdcName} <Typography component="span" variant="caption" sx={{ ml: 1, opacity: 0.6 }}>({p.poolName})</Typography>
-                      </MenuItem>
-                    ))}
-                  </Select>
-                </FormControl>
-              ) : (
-                <FormControl fullWidth size="small">
-                  <InputLabel>{t('backups.selectionMode')}</InputLabel>
-                  <Select
-                    value={formData.selectionMode}
-                    onChange={(e) => setFormData(prev => ({
-                      ...prev,
-                      selectionMode: e.target.value,
-                      vmids: [],
-                      excludedVmids: []
-                    }))}
-                    label={t('backups.selectionMode')}
-                  >
-                    <MenuItem value="all">{t('backups.allVms')}</MenuItem>
-                    <MenuItem value="include">{t('backups.selectVms')}</MenuItem>
-                    <MenuItem value="exclude">{t('backups.allExceptMode')}</MenuItem>
-                  </Select>
-                </FormControl>
-              )}
+              <FormControl fullWidth size="small">
+                <InputLabel>{t('backups.selectionMode')}</InputLabel>
+                <Select
+                  value={formData.selectionMode}
+                  onChange={(e) => setFormData(prev => ({
+                    ...prev,
+                    selectionMode: e.target.value,
+                    vmids: [],
+                    excludedVmids: []
+                  }))}
+                  label={t('backups.selectionMode')}
+                >
+                  <MenuItem value="all">{t('backups.allVms')}</MenuItem>
+                  <MenuItem value="include">{t('backups.selectVms')}</MenuItem>
+                  <MenuItem value="exclude">{t('backups.allExceptMode')}</MenuItem>
+                </Select>
+              </FormControl>
 
-              {!isVdcTenant && formData.selectionMode === 'include' && (
+              {formData.selectionMode === 'include' && (
                 <Autocomplete
                   multiple
                   size="small"
@@ -755,7 +768,7 @@ return '—'
                 />
               )}
 
-              {!isVdcTenant && formData.selectionMode === 'exclude' && (
+              {formData.selectionMode === 'exclude' && (
                 <Autocomplete
                   multiple
                   size="small"
@@ -775,6 +788,7 @@ return '—'
                 />
               )}
             </Box>
+            )}
 
             <Divider />
 
