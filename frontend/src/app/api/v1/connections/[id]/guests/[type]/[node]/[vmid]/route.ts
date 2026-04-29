@@ -30,16 +30,28 @@ export async function DELETE(
 
     const conn = await getConnectionById(id)
 
-    // Vérifier que la VM est arrêtée
+    // Vérifier que la VM est arrêtée et non verrouillée
     const status = await pveFetch<any>(
       conn,
       `/nodes/${encodeURIComponent(node)}/${type}/${encodeURIComponent(vmid)}/status/current`,
       { method: "GET" }
     )
-    
+
+    // A residual lock (postmigrate, snapshot, backup, ...) makes PVE refuse the
+    // delete even if the VM looks stopped. Surface this distinctly so the UI
+    // can point the user at the existing right-click → Unlock action.
+    if (status?.lock) {
+      return NextResponse.json({
+        error: `VM is locked in state '${status.lock}'`,
+        code: 'vm_locked',
+        lock: status.lock,
+      }, { status: 409 })
+    }
+
     if (status?.status === 'running') {
-      return NextResponse.json({ 
-        error: "La VM doit être arrêtée avant d'être supprimée" 
+      return NextResponse.json({
+        error: "VM must be stopped before being deleted",
+        code: 'vm_running',
       }, { status: 400 })
     }
 

@@ -2344,11 +2344,14 @@ return
       
       const url = `/api/v1/connections/${encodeURIComponent(connId)}/guests/${type}/${encodeURIComponent(node)}/${encodeURIComponent(vmid)}?${params.toString()}`
       const res = await fetch(url, { method: 'DELETE' })
-      
+
       if (!res.ok) {
         const err = await res.json().catch(() => ({}))
+        const error: any = new Error(err?.error || `HTTP ${res.status}`)
 
-        throw new Error(err?.error || `HTTP ${res.status}`)
+        error.code = err?.code
+        error.lock = err?.lock
+        throw error
       }
 
       const json = await res.json()
@@ -2382,7 +2385,24 @@ return
         }
       })
     } catch (e: any) {
-      alert(`${t('errors.deleteError')}: ${e?.message || e}`)
+      setDeleteVmDialogOpen(false)
+
+      let message: string
+
+      if (e?.code === 'vm_locked') {
+        message = t('inventory.deleteVmLockedError', { lock: e.lock || 'locked' })
+      } else if (e?.code === 'vm_running') {
+        message = t('inventory.deleteVmRunningError')
+      } else {
+        message = `${t('errors.deleteError')}: ${e?.message || e}`
+      }
+
+      setConfirmAction({
+        action: 'info',
+        title: t('errors.deleteError'),
+        message,
+        onConfirm: async () => setConfirmAction(null),
+      })
     } finally {
       setDeletingVm(false)
     }
