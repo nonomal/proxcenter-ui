@@ -38,6 +38,7 @@ export async function POST(
       cores,
       sockets,
       pbsBackup,
+      force,
     } = body
 
     if (!vmid) {
@@ -152,6 +153,10 @@ export async function POST(
     if (unique) params.unique = '1'
     if (start) params.start = '1'
     if (live && !isLxc) params['live-restore'] = '1'
+    // `force=1` lets PVE overwrite an existing VMID — required when the
+    // tenant chooses "Restore on top of source VM". Without it PVE
+    // refuses with "VM/CT <id> already exists".
+    if (force) params.force = '1'
 
     // Override settings
     if (name) params.name = name

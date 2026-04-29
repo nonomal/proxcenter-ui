@@ -104,6 +104,13 @@ export default function RestoreVmDialog({
   const [overrideName, setOverrideName] = useState(false)
   const [name, setName] = useState('')
 
+  // Tenant-mode-only: pick between overwriting the source VM or spawning
+  // a brand-new VM with a fresh VMID. Defaults to overwrite (the more
+  // common "rollback" flow); `awaitingConfirm` gates the destructive
+  // overwrite behind a second click.
+  const [restoreAsNew, setRestoreAsNew] = useState(false)
+  const [awaitingConfirm, setAwaitingConfirm] = useState(false)
+
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -120,9 +127,16 @@ export default function RestoreVmDialog({
     setOverrideName(isVdcTenant)
     setName('')
     setError(null)
+    setRestoreAsNew(false)
+    setAwaitingConfirm(false)
     if (!callerLocksConn) setPickedConnectionId('')
     if (!callerLocksNode) setPickedNode('')
   }, [open, sourceVmid, callerLocksConn, callerLocksNode, isVdcTenant])
+
+  // Reset the destructive-confirm guard whenever the tenant flips the
+  // mode toggle so a "yes, overwrite" intent can't carry over to a
+  // "create new" submission.
+  useEffect(() => { setAwaitingConfirm(false) }, [restoreAsNew])
 
   // Tenant mode + cross-PVE caller (no locked connection) → auto-resolve
   // the target from the tenant's first active vDC. This keeps the simple-
@@ -239,16 +253,70 @@ export default function RestoreVmDialog({
     return true
   }, [targetVmidNumber])
 
-  const canSubmit = !submitting && !!vmid && vmidValid && !!connectionId && !!node
+  // Tenant: vmid is derived (sourceVmid for overwrite, /cluster/nextid
+  // for new VM) so we don't gate on `vmid` being typed in. Provider:
+  // unchanged, the field is required.
+  const canSubmit = !submitting && !!connectionId && !!node && (
+    isVdcTenant ? true : (!!vmid && vmidValid)
+  )
 
   const handleSubmit = async () => {
     if (!canSubmit) return
+
+    // Tenant mode: overwrite is destructive — require a second click
+    // confirming the intent. The first click flips `awaitingConfirm`
+    // and surfaces a warning Alert; the second proceeds.
+    if (isVdcTenant && !restoreAsNew && !awaitingConfirm) {
+      setAwaitingConfirm(true)
+      return
+    }
+
     setSubmitting(true)
     setError(null)
     try {
+      // Resolve the target VMID. Tenant + restoreAsNew → /cluster/nextid.
+      // Tenant + overwrite → reuse source. Provider → use the typed value.
+      let effectiveVmid = targetVmidNumber
+      if (isVdcTenant) {
+        if (restoreAsNew) {
+          try {
+            const r = await fetch(`/api/v1/connections/${encodeURIComponent(connectionId)}/cluster/nextid`, { cache: 'no-store' })
+            const j = await r.json()
+            if (!r.ok) {
+              setError(j?.error || `nextid HTTP ${r.status}`)
+              setSubmitting(false)
+              return
+            }
+            const candidate = Number(j?.data ?? j?.vmid ?? j)
+            if (!Number.isFinite(candidate)) {
+              setError('Could not allocate a fresh VMID')
+              setSubmitting(false)
+              return
+            }
+            effectiveVmid = candidate
+          } catch (e: any) {
+            setError(e?.message || 'Failed to allocate VMID')
+            setSubmitting(false)
+            return
+          }
+        } else {
+          effectiveVmid = sourceVmid
+        }
+      }
+
       const body: Record<string, any> = {
-        vmid: targetVmidNumber,
+        vmid: effectiveVmid,
         type,
+      }
+      // Overwrite branch only — `force=1` lets PVE replace the existing
+      // VMID. New-VM branch never sets it (the VMID is fresh).
+      if (isVdcTenant && !restoreAsNew) {
+        body.force = true
+      }
+      // Tenant + new VM → ensure unique MACs to avoid an L2 collision
+      // with the still-running source.
+      if (isVdcTenant && restoreAsNew) {
+        body.unique = true
       }
       // Caller provided a fully-qualified PVE volid → use it. Otherwise
       // hand the PBS-side coordinates to the backend so it resolves the
@@ -410,6 +478,24 @@ export default function RestoreVmDialog({
             />
           )}
 
+          {/* Tenant-only mode toggle: overwrite source VM (default) vs
+              spawn a new VM. The new-VM path auto-allocates a fresh VMID
+              via /cluster/nextid and forces unique MACs. */}
+          {isVdcTenant && (
+            <FormControlLabel
+              control={<Switch checked={restoreAsNew} onChange={(_, v) => setRestoreAsNew(v)} />}
+              label={t('inventory.pbsRestoreAsNew')}
+            />
+          )}
+
+          {/* Confirmation banner for the destructive overwrite path —
+              only shown in tenant mode after the first submit click. */}
+          {isVdcTenant && !restoreAsNew && awaitingConfirm && (
+            <Alert severity="warning" icon={<i className="ri-alert-line" style={{ fontSize: 18 }} />}>
+              {t('inventory.pbsRestoreOverwriteConfirm', { vmid: sourceVmid })}
+            </Alert>
+          )}
+
           {!isVdcTenant && (
             <TextField
               size="small"
@@ -430,8 +516,17 @@ export default function RestoreVmDialog({
       </DialogContent>
       <DialogActions>
         <Button onClick={onClose} disabled={submitting}>{t('common.cancel')}</Button>
-        <Button variant="contained" onClick={handleSubmit} disabled={!canSubmit}>
-          {submitting ? <CircularProgress size={16} /> : (t('inventory.pbsRestoreVm') ?? 'Restore')}
+        <Button
+          variant="contained"
+          color={isVdcTenant && !restoreAsNew && awaitingConfirm ? 'warning' : 'primary'}
+          onClick={handleSubmit}
+          disabled={!canSubmit}
+        >
+          {submitting
+            ? <CircularProgress size={16} />
+            : (isVdcTenant && !restoreAsNew && awaitingConfirm
+                ? t('inventory.pbsRestoreOverwriteConfirmButton')
+                : t('inventory.pbsRestoreVm'))}
         </Button>
       </DialogActions>
     </Dialog>
