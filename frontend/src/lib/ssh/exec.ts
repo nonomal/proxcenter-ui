@@ -92,10 +92,16 @@ export async function executeSSH(
     }
   }
 
-  // Prefix command with sudo if configured
+  // Prefix command with sudo if configured AND the SSH user is not root.
+  // The connection-form help text promises this conditional behavior
+  // ("Prefix commands with sudo when the SSH user is not root"). Honoring it
+  // here matters on Debian 13 / PVE 9, where `sudo` is not installed by
+  // default — wrapping a root-user command with `sudo sh -c '...'` would
+  // otherwise fail every check with `bash: sudo: command not found`.
   // Use `sudo sh -c '...'` so compound commands (&&, ||, pipes, redirects)
   // all execute under sudo. Naive `sudo cmd1 && cmd2` only sudo's cmd1.
-  const finalCommand = connection.sshUseSudo ? `sudo sh -c ${shellEscape(command)}` : command
+  const needsSudo = connection.sshUseSudo && user !== 'root'
+  const finalCommand = needsSudo ? `sudo sh -c ${shellEscape(command)}` : command
 
   // 1. Try orchestrator
   try {
