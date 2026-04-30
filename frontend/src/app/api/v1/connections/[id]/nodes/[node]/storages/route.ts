@@ -45,19 +45,21 @@ return contents.includes(contentFilter)
       })
     }
 
-    // Tenant filtering: restrict to storages assigned to the tenant's vDC
-    // AND drop shared storages (ceph/nfs/cifs/…) to avoid cross-tenant
-    // leaks on common backends. Super admin (scope === null) sees
-    // everything.
+    // Tenant filtering: restrict to storages explicitly attached to the
+    // tenant's vDC scope (`primary_storage` + PBS pseudo-storages, see
+    // lib/vdc/scope.ts). Super admin (scope === null) sees everything.
     //
-    // Exception 1 — PVE-PBS storages (type === 'pbs'): they are flagged
-    // shared (network-attached) but isolation between tenants happens at
-    // the namespace level (vdc_pbs_namespaces binding), enforced when
-    // listing snapshots / files. Hiding them here breaks the VM backup
-    // tab — the "New backup" dropdown filtered on content=backup would
-    // never include the PBS target the tenant's vDC is bound to.
+    // Note: we used to also drop `shared === 1` storages here as a
+    // defense against cross-tenant leaks on common backends. That guard
+    // was correct for the legacy multi-storage vDC model, but our new
+    // primary_storage design REQUIRES a shared storage (HA), so the
+    // guard would silently filter out the storage the tenant is
+    // supposed to deploy onto. Cross-tenant isolation now lives one
+    // layer up: each vDC has its own PVE pool (`vdc-<tenant>-<vdc>`)
+    // backed by RBAC, and IPAM scopes the IP range — sharing the
+    // physical backend (ceph-rbd, nfs-…) is safe.
     //
-    // Exception 2 — when the caller asks for content=backup, tenants see
+    // Exception — when the caller asks for content=backup, tenants see
     // ONLY PBS targets. Local PVE storages with content=backup (vzdump
     // tarballs on `local`, NFS-backup, …) are deliberately hidden so a
     // tenant can't dump a backup onto a non-isolated provider storage —
@@ -70,7 +72,7 @@ return contents.includes(contentFilter)
         ? storages.filter((s: any) => {
             if (!allowed.has(s.storage)) return false
             if (contentFilter === 'backup') return s.type === 'pbs'
-            return s.shared !== 1 || s.type === 'pbs'
+            return true
           })
         : []
     }
