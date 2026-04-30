@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useTranslations } from 'next-intl'
 import {
   Alert,
@@ -36,6 +36,7 @@ import type { CloudImage } from '@/lib/templates/cloudImages'
 import { supportsVmDisks } from '@/lib/proxmox/storage'
 import DeploymentProgress from './DeploymentProgress'
 import VendorLogo from './VendorLogo'
+import IsoNetworkReservation from './IsoNetworkReservation'
 import { useTenant } from '@/contexts/TenantContext'
 import VdcQuotaBanner from '@/components/inventory/VdcQuotaBanner'
 
@@ -205,14 +206,44 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint, r
   // route building.
   const isoNeedsReservation = isIsoMode && !!isoBridgeChoice?.subnet && !!isoBridgeChoice.vdcId && !!isoBridgeChoice.displayName
 
-  // Pre-fill (IP, MAC, DNS, prefix) from the IPAM next-free endpoint the
-  // first time the user lands on the hardware step with an IPAM-managed
-  // bridge selected in ISO mode. We track which (vdcId, displayName) pair
-  // we've already prefilled in a ref so a re-render with the same bridge
-  // never overwrites what the user has typed — even if some upstream
-  // setState (bridges, networkBridge) makes the deps look unstable.
-  // Clearing on mode-off is gated on the same ref so it doesn't fight
-  // the user when they first open the dialog with empty fields.
+  const [reservationLoading, setReservationLoading] = useState(false)
+  const [reservationError, setReservationError] = useState<string | null>(null)
+
+  const fetchNextFree = useCallback(async (which: 'both' | 'ip' | 'mac') => {
+    if (!isoBridgeChoice?.vdcId || !isoBridgeChoice?.displayName) return
+    setReservationLoading(true)
+    setReservationError(null)
+    try {
+      const r = await fetch(
+        `/api/v1/vdcs/${encodeURIComponent(isoBridgeChoice.vdcId)}/vnets/${encodeURIComponent(isoBridgeChoice.displayName)}/ipam/next-free`,
+        { cache: 'no-store' },
+      )
+      const j = await r.json()
+      if (!r.ok) {
+        setReservationError(j?.error || `HTTP ${r.status}`)
+        return
+      }
+      const d = j?.data
+      if (!d) { setReservationError('Invalid response'); return }
+      if (which === 'both' || which === 'ip') setStaticIp(String(d.ip || ''))
+      if (which === 'both' || which === 'mac') setStaticMac(String(d.suggestedMac || ''))
+      if (which === 'both') {
+        setStaticDns(Array.isArray(d.dnsServers) ? d.dnsServers : [])
+        setStaticPrefix(typeof d.prefix === 'number' ? d.prefix : null)
+      }
+    } catch (e: any) {
+      setReservationError(e?.message || 'Failed to fetch next free IP')
+    } finally {
+      setReservationLoading(false)
+    }
+  }, [isoBridgeChoice?.vdcId, isoBridgeChoice?.displayName])
+
+  // Auto-prefill (IP, MAC, DNS, prefix) the first time the user lands
+  // on an ISO + IPAM-managed bridge. The ref tracks the (vdcId, vnet)
+  // pair we've already prefilled for so a re-render with the same
+  // bridge never overwrites what the tenant has typed. When they switch
+  // to a non-IPAM bridge we clear the values so they don't leak into
+  // a non-IPAM submit, and reset the marker so a flip back re-fetches.
   const prefilledForRef = useRef<string | null>(null)
   useEffect(() => {
     if (!open) {
@@ -220,51 +251,21 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint, r
       return
     }
     if (!isoNeedsReservation || !isoBridgeChoice?.vdcId || !isoBridgeChoice?.displayName) {
-      // Off an IPAM bridge → drop any prefilled values so they don't
-      // leak into a non-IPAM submit, and reset the prefill marker so a
-      // later mode flip back to ISO+IPAM re-runs the fetch.
       if (prefilledForRef.current !== null) {
         prefilledForRef.current = null
         setStaticIp('')
         setStaticMac('')
         setStaticDns([])
         setStaticPrefix(null)
-        setNextFreeError(null)
+        setReservationError(null)
       }
       return
     }
     const key = `${isoBridgeChoice.vdcId}|${isoBridgeChoice.displayName}`
     if (prefilledForRef.current === key) return
     prefilledForRef.current = key
-    let cancelled = false
-    setNextFreeLoading(true)
-    setNextFreeError(null)
-    ;(async () => {
-      try {
-        const url = `/api/v1/vdcs/${encodeURIComponent(isoBridgeChoice.vdcId!)}/vnets/${encodeURIComponent(isoBridgeChoice.displayName!)}/ipam/next-free`
-        const r = await fetch(url)
-        const j = await r.json()
-        if (cancelled) return
-        if (!r.ok) {
-          setNextFreeError(j?.error || `HTTP ${r.status}`)
-          return
-        }
-        const d = j?.data
-        if (!d) { setNextFreeError('Invalid response'); return }
-        // Always set on the first prefill for this bridge; the ref guard
-        // above already prevents re-running for the same bridge.
-        setStaticIp(String(d.ip || ''))
-        setStaticMac(String(d.suggestedMac || ''))
-        setStaticDns(Array.isArray(d.dnsServers) ? d.dnsServers : [])
-        setStaticPrefix(typeof d.prefix === 'number' ? d.prefix : null)
-      } catch (e: any) {
-        if (!cancelled) setNextFreeError(e?.message || 'Failed to fetch next free IP')
-      } finally {
-        if (!cancelled) setNextFreeLoading(false)
-      }
-    })()
-    return () => { cancelled = true }
-  }, [open, isoNeedsReservation, isoBridgeChoice?.vdcId, isoBridgeChoice?.displayName])
+    fetchNextFree('both')
+  }, [open, isoNeedsReservation, isoBridgeChoice?.vdcId, isoBridgeChoice?.displayName, fetchNextFree])
 
   // Best-effort guess of "this ISO is a Windows installer" — drives the
   // OVMF/pre-enrolled-keys default. We check ostype first (most reliable
@@ -674,7 +675,7 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint, r
     switch (activeStep) {
       case 0: return !!image
       case 1: {
-        const baseOk = !!connectionId && !!node && !!storage && vmid >= 100
+        const baseOk = !!connectionId && !!node && !!storage && vmid >= 100 && !!vmName.trim()
         // ISO mode also requires an ISO-capable storage on the node — if
         // the tenant's vDC has none we surface a blocking message instead
         // of the picker, and the wizard can't advance.
@@ -687,6 +688,12 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint, r
       // must commit to the IP before we let them advance.
       case 2: {
         const baseOk = cores >= 1 && memory >= 128 && !!diskSize && !quotaBlocked
+        // Win11/Server 2025 ISO install needs ≥32 GB or the installer
+        // refuses to start — block Next instead of letting the user walk
+        // into a hard failure on the deploy step.
+        const sizeNum = Number.parseInt(String(diskSize).replace(/G$/i, ''), 10) || 0
+        const ot = ostypeOverride || image?.ostype || ''
+        if (isIsoMode && ot === 'win11' && sizeNum < 32) return false
         if (isoNeedsReservation) {
           const ipOk = /^\d{1,3}(\.\d{1,3}){3}$/.test(staticIp)
           const macOk = /^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$/.test(staticMac)
@@ -698,7 +705,7 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint, r
       case 4: return !quotaBlocked
       default: return false
     }
-  }, [activeStep, image, connectionId, node, storage, vmid, cores, memory, diskSize, quotaBlocked, isIsoMode, isoStorage, isoNeedsReservation, staticIp, staticMac])
+  }, [activeStep, image, connectionId, node, storage, vmid, vmName, cores, memory, diskSize, quotaBlocked, isIsoMode, isoStorage, isoNeedsReservation, ostypeOverride, staticIp, staticMac])
 
   // ─── Step renderers ────────────────────────────────────────────────
 
@@ -1209,14 +1216,14 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint, r
             </FormControl>
           </Box>
           {/* Windows Server 2025 / Win11 install footprint won't fit in
-              <32 GB. Surface a soft warning rather than blocking — small
-              edge installs (eval, embedded) may legitimately want less. */}
+              <32 GB — the installer refuses to start, so we block Next
+              and flag this as an error rather than a soft warning. */}
           {(() => {
             const sizeNum = Number.parseInt(String(diskSize).replace(/G$/i, ''), 10) || 0
             const ot = ostypeOverride || image?.ostype || ''
             const isWin2025OrLater = ot === 'win11'
             return (isWin2025OrLater && sizeNum > 0 && sizeNum < 32) ? (
-              <Alert severity="warning" variant="outlined" sx={{ mt: 1.5 }} icon={<i className="ri-error-warning-line" style={{ fontSize: 18 }} />}>
+              <Alert severity="error" variant="outlined" sx={{ mt: 1.5 }} icon={<i className="ri-error-warning-line" style={{ fontSize: 18 }} />}>
                 {t('templates.deploy.iso.diskWarning')}
               </Alert>
             ) : null
@@ -1229,103 +1236,21 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint, r
           pre-generate a MAC, propose the next free IP, and surface a
           banner instructing the tenant to type these into the OS at
           install time. */}
-      {isoNeedsReservation && (
-        <Box sx={{ mt: 2.5, p: 2, border: '1px solid', borderColor: 'divider', borderRadius: 1.5, bgcolor: (theme) => alpha(theme.palette.warning.main, 0.04) }}>
-          <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1 }}>
-            <Box component="i" className="ri-flashlight-line" sx={{ fontSize: 18, color: 'warning.main' }} />
-            <Typography variant="subtitle2" fontWeight={700}>{t('templates.deploy.iso.networkReservationTitle')}</Typography>
-            {nextFreeLoading && <CircularProgress size={14} sx={{ ml: 'auto' }} />}
-          </Stack>
-          <Alert severity="warning" variant="outlined" sx={{ mb: 1.5, fontSize: '0.8rem' }} icon={<i className="ri-information-line" style={{ fontSize: 16 }} />}>
-            {t('templates.deploy.iso.networkReservationHelp')}
-          </Alert>
-          <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 2 }}>
-            {/* Static IP — editable. Refresh button next to the field
-                (not in endAdornment) to avoid the MUI Tooltip-in-input
-                focus interception that was preventing keystrokes from
-                reaching the input. */}
-            <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 0.5 }}>
-              <TextField
-                size="small"
-                label={t('templates.deploy.iso.staticIp')}
-                value={staticIp}
-                onChange={(e) => setStaticIp(e.target.value)}
-                placeholder="10.42.0.10"
-                error={!!staticIp && !/^\d{1,3}(\.\d{1,3}){3}$/.test(staticIp.trim())}
-                helperText={
-                  isoBridgeChoice?.subnet
-                    ? t('templates.deploy.iso.staticIpHelp', { cidr: isoBridgeChoice.subnet.cidr })
-                    : ''
-                }
-                fullWidth
-                required
-              />
-              <Tooltip title={t('templates.deploy.iso.staticIpAutoPick')} arrow>
-                <IconButton
-                  size="small"
-                  sx={{ mt: 0.5 }}
-                  onClick={async () => {
-                    if (!isoBridgeChoice?.vdcId || !isoBridgeChoice?.displayName) return
-                    try {
-                      const r = await fetch(`/api/v1/vdcs/${encodeURIComponent(isoBridgeChoice.vdcId)}/vnets/${encodeURIComponent(isoBridgeChoice.displayName)}/ipam/next-free`)
-                      const j = await r.json()
-                      if (r.ok && j?.data?.ip) setStaticIp(String(j.data.ip))
-                    } catch { /* ignore */ }
-                  }}
-                >
-                  <Box component="i" className="ri-refresh-line" sx={{ fontSize: 14 }} />
-                </IconButton>
-              </Tooltip>
-            </Box>
-
-            <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 0.5 }}>
-              <TextField
-                size="small"
-                label={t('templates.deploy.iso.staticMac')}
-                value={staticMac}
-                onChange={(e) => setStaticMac(e.target.value.toUpperCase())}
-                error={!!staticMac && !/^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$/.test(staticMac.trim())}
-                fullWidth
-                required
-              />
-              <Tooltip title={t('templates.deploy.iso.regenerateMac')} arrow>
-                <IconButton
-                  size="small"
-                  sx={{ mt: 0.5 }}
-                  onClick={async () => {
-                    if (!isoBridgeChoice?.vdcId || !isoBridgeChoice?.displayName) return
-                    try {
-                      const r = await fetch(`/api/v1/vdcs/${encodeURIComponent(isoBridgeChoice.vdcId)}/vnets/${encodeURIComponent(isoBridgeChoice.displayName)}/ipam/next-free`)
-                      const j = await r.json()
-                      if (r.ok && j?.data?.suggestedMac) setStaticMac(String(j.data.suggestedMac))
-                    } catch { /* ignore */ }
-                  }}
-                >
-                  <Box component="i" className="ri-refresh-line" sx={{ fontSize: 14 }} />
-                </IconButton>
-              </Tooltip>
-            </Box>
-
-            <TextField
-              size="small"
-              label={t('templates.deploy.iso.staticGateway')}
-              value={isoBridgeChoice?.subnet?.gateway ?? ''}
-              fullWidth
-              InputProps={{ readOnly: true }}
-            />
-            <TextField
-              size="small"
-              label={t('templates.deploy.iso.staticDns')}
-              value={staticDns.join(', ')}
-              fullWidth
-              InputProps={{ readOnly: true }}
-              placeholder="—"
-            />
-          </Box>
-          {nextFreeError && (
-            <Alert severity="error" sx={{ mt: 1.5 }}>{nextFreeError}</Alert>
-          )}
-        </Box>
+      {isoNeedsReservation && isoBridgeChoice?.subnet && (
+        <IsoNetworkReservation
+          ip={staticIp}
+          mac={staticMac}
+          subnet={{
+            cidr: isoBridgeChoice.subnet.cidr,
+            gateway: isoBridgeChoice.subnet.gateway,
+            dnsServers: isoBridgeChoice.subnet.dnsServers,
+          }}
+          loading={reservationLoading}
+          error={reservationError}
+          onIpChange={setStaticIp}
+          onMacChange={setStaticMac}
+          onAutoPick={(which) => fetchNextFree(which)}
+        />
       )}
     </Box>
   )
@@ -1584,24 +1509,21 @@ export default function DeployWizard({ open, onClose, image, prefillBlueprint, r
     )
   }
 
-  const stepContent = useMemo(() => {
-    switch (activeStep) {
-      case 0: return renderImageStep()
-      case 1: return renderTargetStep()
-      case 2: return renderHardwareStep()
-      case 3: return renderCloudInitStep()
-      case 4: return renderReviewStep()
-      case 5: return renderProgressStep()
-      default: return null
-    }
-  }, [
-    activeStep, image, connections, connectionId, nodes, node, storages, storage,
-    isoStorages, isoStorage, vmid, vmName, cores, sockets, memory, diskSize, scsihw, networkModel,
-    networkBridge, cpu, agent, bios, ostypeOverride, isIsoMode,
-    ciuser, cipassword, sshKeys, ipOverride, nameserver,
-    searchdomain, saveAsBlueprint, blueprintName, deploymentId, deployError, deploying,
-    quotaBlocked, vdcQuota, vdcUsage, bridges, t,
-  ])
+  // No useMemo here — the previous version's deps array silently went
+  // out of date every time we added a piece of step state (staticIp,
+  // staticMac, reservationLoading, …), which froze the active step's
+  // JSX on a stale closure and made controlled inputs un-typeable. The
+  // render functions are cheap (just JSX construction); React's normal
+  // reconciliation handles the per-render cost just fine.
+  let stepContent: ReactNode = null
+  switch (activeStep) {
+    case 0: stepContent = renderImageStep(); break
+    case 1: stepContent = renderTargetStep(); break
+    case 2: stepContent = renderHardwareStep(); break
+    case 3: stepContent = renderCloudInitStep(); break
+    case 4: stepContent = renderReviewStep(); break
+    case 5: stepContent = renderProgressStep(); break
+  }
 
   const isProgressStep = activeStep === 5
   // Minimize is only meaningful while a deploy is in flight — at that
