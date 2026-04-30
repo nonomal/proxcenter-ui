@@ -160,7 +160,7 @@ export default function StorageDetailPanel({
   }
 
   return (
-    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+    <Box sx={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
       {/* Usage chart card - fixed, never cropped */}
       {si.total > 0 && (
         <Card variant="outlined" sx={{ borderRadius: 2, flexShrink: 0 }}>
