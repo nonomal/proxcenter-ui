@@ -24,6 +24,7 @@ import { executeSSH } from "@/lib/ssh/exec"
 import { soapLogin, soapLogout, soapGetVmConfig, parseVmConfig, buildVmdkDownloadUrl, buildVmdkDescriptorUrl, extractProp, soapCreateSnapshot, soapRemoveAllSnapshots, soapPowerOffVm, soapExportVm, soapWaitForNfcLease, soapNfcLeaseProgress, soapNfcLeaseComplete, soapNfcLeaseAbort } from "@/lib/vmware/soap"
 import { mapEsxiToPveConfig, isWindowsVm } from "./configMapper"
 import type { SoapSession, EsxiVmConfig, EsxiDiskInfo, NfcLeaseDeviceUrl } from "@/lib/vmware/soap"
+import { allocateBlockVolumeAndResolvePath } from "./pvesm-alloc"
 
 type MigrationStatus = "pending" | "preflight" | "creating_vm" | "transferring" | "configuring" | "completed" | "failed" | "cancelled"
 
@@ -446,22 +447,14 @@ export async function runMigrationPipeline(jobId: string, config: MigrationConfi
       const sizeKB = Math.ceil(sizeBytes / 1024)
       const volName = `vm-${targetVmid}-disk-${diskNum}`
 
-      const allocResult = await executeSSH(config.targetConnectionId, nodeIp,
-        `pvesm alloc "${config.targetStorage}" ${targetVmid} "${volName}" ${sizeKB} 2>&1`)
-      if (!allocResult.success || !allocResult.output?.trim()) {
-        throw new Error(`Failed to allocate volume: ${allocResult.error || allocResult.output}`)
-      }
-      // pvesm alloc output varies: "CephStoragePool:vm-201-disk-0" or "successfully created 'CephStoragePool:vm-201-disk-0'"
-      const allocOutput = allocResult.output.trim()
-      const quotedMatch = allocOutput.match(/'([^']+)'/)
-      const volumeId = quotedMatch ? quotedMatch[1] : allocOutput
-
-      const pathResult = await executeSSH(config.targetConnectionId, nodeIp,
-        `pvesm path "${volumeId}" 2>&1`)
-      if (!pathResult.success || !pathResult.output?.trim()) {
-        throw new Error(`Failed to resolve device path for ${volumeId}: ${pathResult.error}`)
-      }
-      let devicePath = pathResult.output.trim()
+      // Allocate the block volume and resolve its device path. Handles every
+      // pvesm output format including LVM on iSCSI multipath.
+      const alloc = await allocateBlockVolumeAndResolvePath(
+        config.targetConnectionId, nodeIp,
+        config.targetStorage, targetVmid, volName, sizeKB,
+      )
+      const volumeId = alloc.volumeId
+      let devicePath = alloc.devicePath
 
       // RBD/Ceph — two path formats depending on the storage's `krbd` option:
       //  - krbd 0 (librbd): pvesm path returns "rbd:pool/image:conf=..." — not a block device; map via `rbd map <pool>/<image>` → /dev/rbdN.

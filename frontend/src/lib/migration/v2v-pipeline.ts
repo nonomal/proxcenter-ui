@@ -24,6 +24,7 @@ import { getNodeIp } from "@/lib/ssh/node-ip"
 import { parseV2vLine, calculateOverallProgress } from "./v2v-progress"
 import { parseV2vXml, buildPveCreateParams } from "./v2vConfigMapper"
 import type { V2vVmConfig } from "./v2vConfigMapper"
+import { allocateBlockVolumeAndResolvePath } from "./pvesm-alloc"
 // SOAP imports for the NFC (HttpNfcLease) transport path used when the source VM
 // has any disk on a vSAN datastore. vpx://+HTTPS /folder/ download is broken for
 // vSAN because vSAN VMDK descriptors reference vsan:// URIs that only ESXi's
@@ -2473,27 +2474,15 @@ export async function runV2vMigrationPipeline(
         const diskNum = maxDiskNum + 1
         const volName = `vm-${targetVmid}-disk-${diskNum}`
 
-        // Allocate volume
-        const allocResult = await executeSSH(
+        // Allocate the block volume and resolve its device path. Handles every
+        // pvesm output format including LVM on iSCSI multipath where alloc
+        // prints '/dev/<vg>/<lv>' directly instead of the volume ID.
+        const alloc = await allocateBlockVolumeAndResolvePath(
           config.targetConnectionId, nodeIp,
-          `pvesm alloc ${shellEscape(config.targetStorage)} ${targetVmid} ${shellEscape(volName)} ${sizeKB} 2>&1`
+          config.targetStorage, targetVmid, volName, sizeKB,
         )
-        if (!allocResult.success || !allocResult.output?.trim()) {
-          throw new Error(`Failed to allocate volume: ${allocResult.error || allocResult.output}`)
-        }
-        const allocOutput = allocResult.output.trim()
-        const quotedMatch = allocOutput.match(/'([^']+)'/)
-        const volumeId = quotedMatch ? quotedMatch[1] : allocOutput
-
-        // Get device path
-        const pathResult = await executeSSH(
-          config.targetConnectionId, nodeIp,
-          `pvesm path ${shellEscape(volumeId)} 2>&1`
-        )
-        if (!pathResult.success || !pathResult.output?.trim()) {
-          throw new Error(`Failed to resolve device path for ${volumeId}: ${pathResult.error}`)
-        }
-        let devicePath = pathResult.output.trim()
+        const volumeId = alloc.volumeId
+        let devicePath = alloc.devicePath
 
         // RBD/Ceph — two path formats depending on the storage's `krbd` option:
         //  - krbd 0 (librbd): pvesm path returns "rbd:pool/image:conf=..." — not a block device; map via `rbd map <pool>/<image>` → /dev/rbdN.
