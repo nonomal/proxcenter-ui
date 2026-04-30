@@ -382,6 +382,11 @@ export function getDb() {
       description     TEXT,
       pve_pool_name   TEXT NOT NULL,
       enabled         INTEGER DEFAULT 1,
+      -- Single shared storage backing the vDC VM disks. Local storages
+      -- and ISO/backup-only storages are excluded by the admin form. The
+      -- legacy vdc_storages table kept a multi-row whitelist; it now
+      -- serves only PBS pseudo-storage bindings (see pbsOrchestrator).
+      primary_storage TEXT,
       created_by      TEXT,
       created_at      TEXT DEFAULT (datetime('now')),
       updated_at      TEXT DEFAULT (datetime('now')),
@@ -593,6 +598,30 @@ export function getDb() {
   db.prepare(
     'CREATE UNIQUE INDEX IF NOT EXISTS idx_vdcs_sdn_zone_name ON vdcs(connection_id, sdn_zone_name)'
   ).run()
+
+  // Single primary storage per vDC. Replaces the legacy `vdc_storages`
+  // multi-row whitelist for VM disk storage. Backfill takes the first
+  // existing storage_id from vdc_storages for each vDC that doesn't
+  // already have one — admin will need to re-pick a shared one if the
+  // backfilled value turns out to be local. New vDCs go through the
+  // shared-only filter at creation time.
+  try {
+    db.prepare('ALTER TABLE vdcs ADD COLUMN primary_storage TEXT').run()
+  } catch (e: any) {
+    if (!String(e?.message || '').includes('duplicate column')) {
+      throw e
+    }
+  }
+  db.prepare(`
+    UPDATE vdcs
+    SET primary_storage = (
+      SELECT storage_id FROM vdc_storages
+      WHERE vdc_storages.vdc_id = vdcs.id
+        AND vdc_storages.storage_id NOT LIKE 'pbs:%'
+      LIMIT 1
+    )
+    WHERE primary_storage IS NULL
+  `).run()
 
   // SDN VNet display_name decoupling — PVE caps VNet IDs at 8 chars and
   // requires them to be unique cluster-wide, which makes "lan" / "dmz" / etc.

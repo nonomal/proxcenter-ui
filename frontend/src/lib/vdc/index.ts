@@ -38,6 +38,7 @@ function rowToVdc(row: any): Vdc {
     description: row.description ?? null,
     pvePoolName: row.pve_pool_name,
     sdnZoneName: row.sdn_zone_name ?? null,
+    primaryStorage: row.primary_storage ?? null,
     enabled: !!row.enabled,
     createdBy: row.created_by ?? null,
     createdAt: row.created_at,
@@ -123,7 +124,13 @@ export function listVdcs(tenantId?: string): VdcWithDetails[] {
   return (rows as any[]).map((row) => {
     const vdc = rowToVdc(row)
     const nodes = (stmtNodes.all(vdc.id) as any[]).map((r) => r.node_name)
-    const storages = (stmtStorages.all(vdc.id) as any[]).map((r) => r.storage_id)
+    // VdcWithDetails.storages = the tenant's full storage scope. Today
+    // that's the primary VM-disk storage plus any PBS pseudo-storages
+    // bound to the vDC (kept in vdc_storages as `pbs:<id>` rows).
+    const pbsStorages = (stmtStorages.all(vdc.id) as any[]).map((r) => r.storage_id)
+    const storages = vdc.primaryStorage
+      ? [vdc.primaryStorage, ...pbsStorages.filter(s => s !== vdc.primaryStorage)]
+      : pbsStorages
     const quota = rowToQuota(stmtQuota.get(vdc.id))
     const usage = rowToUsage(stmtUsage.get(vdc.id))
     const sharedBridges = (stmtShared.all(vdc.id) as any[]).map((r) => ({
@@ -196,7 +203,11 @@ export function getVdcById(id: string): VdcWithDetails | null {
 
   const vdc = rowToVdc(row)
   const nodes = (db.prepare('SELECT node_name FROM vdc_nodes WHERE vdc_id = ?').all(id) as any[]).map((r) => r.node_name)
-  const storages = (db.prepare('SELECT storage_id FROM vdc_storages WHERE vdc_id = ?').all(id) as any[]).map((r) => r.storage_id)
+  // See listVdcs: storages = primary VM-disk storage + PBS pseudo-storages.
+  const pbsStorages = (db.prepare('SELECT storage_id FROM vdc_storages WHERE vdc_id = ?').all(id) as any[]).map((r) => r.storage_id)
+  const storages = vdc.primaryStorage
+    ? [vdc.primaryStorage, ...pbsStorages.filter(s => s !== vdc.primaryStorage)]
+    : pbsStorages
   const quota = rowToQuota(db.prepare('SELECT * FROM vdc_quotas WHERE vdc_id = ?').get(id))
   const usage = rowToUsage(db.prepare('SELECT * FROM vdc_usage_cache WHERE vdc_id = ?').get(id))
   const sharedBridges = (db.prepare('SELECT id, vdc_id, bridge, label, created_at FROM vdc_shared_bridges WHERE vdc_id = ? ORDER BY bridge').all(id) as any[]).map((r) => ({
@@ -324,11 +335,10 @@ export async function createVdc(input: CreateVdcInput, createdBy: string | null)
 
   // 6. DB transaction
   const insertVdc = db.prepare(`
-    INSERT INTO vdcs (id, tenant_id, connection_id, name, slug, description, pve_pool_name, sdn_zone_name, enabled, created_by, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+    INSERT INTO vdcs (id, tenant_id, connection_id, name, slug, description, pve_pool_name, sdn_zone_name, primary_storage, enabled, created_by, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
   `)
   const insertNode = db.prepare('INSERT INTO vdc_nodes (id, vdc_id, node_name) VALUES (?, ?, ?)')
-  const insertStorage = db.prepare('INSERT INTO vdc_storages (id, vdc_id, storage_id) VALUES (?, ?, ?)')
   const insertQuota = db.prepare(`
     INSERT INTO vdc_quotas (id, vdc_id, max_vcpus, max_ram_mb, max_storage_mb, max_vms, max_snapshots, max_backups, max_vnets, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -341,16 +351,17 @@ export async function createVdc(input: CreateVdcInput, createdBy: string | null)
   const runTransaction = db.transaction(() => {
     insertVdc.run(
       id, input.tenantId, input.connectionId, input.name, input.slug,
-      input.description ?? null, poolName, sdnZoneName, createdBy, now, now
+      input.description ?? null, poolName, sdnZoneName, input.primaryStorage, createdBy, now, now
     )
 
     for (const nodeName of input.nodes) {
       insertNode.run(randomUUID(), id, nodeName)
     }
 
-    for (const storageId of input.storages) {
-      insertStorage.run(randomUUID(), id, storageId)
-    }
+    // The legacy `vdc_storages` table is no longer used for the vDC's
+    // VM disk storage — that lives in `vdcs.primary_storage` now. The
+    // table is kept around for PBS pseudo-storage rows inserted by
+    // pbsOrchestrator.bindPbsToVdc.
 
     if (input.quota) {
       insertQuota.run(
@@ -417,14 +428,13 @@ export async function updateVdc(id: string, input: UpdateVdcInput): Promise<VdcW
       name = COALESCE(?, name),
       description = COALESCE(?, description),
       enabled = COALESCE(?, enabled),
+      primary_storage = COALESCE(?, primary_storage),
       updated_at = ?
     WHERE id = ?
   `)
 
   const deleteNodes = db.prepare('DELETE FROM vdc_nodes WHERE vdc_id = ?')
   const insertNode = db.prepare('INSERT INTO vdc_nodes (id, vdc_id, node_name) VALUES (?, ?, ?)')
-  const deleteStorages = db.prepare('DELETE FROM vdc_storages WHERE vdc_id = ?')
-  const insertStorage = db.prepare('INSERT INTO vdc_storages (id, vdc_id, storage_id) VALUES (?, ?, ?)')
 
   // Upsert quota: try UPDATE first, INSERT if no row exists
   const upsertQuota = db.prepare(`
@@ -446,6 +456,7 @@ export async function updateVdc(id: string, input: UpdateVdcInput): Promise<VdcW
       input.name ?? null,
       input.description ?? null,
       input.enabled !== undefined ? (input.enabled ? 1 : 0) : null,
+      input.primaryStorage ?? null,
       now,
       id
     )
@@ -454,13 +465,6 @@ export async function updateVdc(id: string, input: UpdateVdcInput): Promise<VdcW
       deleteNodes.run(id)
       for (const nodeName of input.nodes) {
         insertNode.run(randomUUID(), id, nodeName)
-      }
-    }
-
-    if (input.storages) {
-      deleteStorages.run(id)
-      for (const storageId of input.storages) {
-        insertStorage.run(randomUUID(), id, storageId)
       }
     }
 
@@ -613,8 +617,34 @@ export async function deleteVdc(id: string): Promise<void> {
     }
   }
 
-  // 6. Delete from DB (CASCADE handles child tables)
-  db.prepare('DELETE FROM vdcs WHERE id = ?').run(id)
+  // 6. Delete from DB.
+  //
+  // The schema declares ON DELETE CASCADE on every child table, but
+  // `PRAGMA foreign_keys = ON` is NOT enabled at db init — better-sqlite3
+  // defaults to OFF, so the cascade clauses are decorative. Without
+  // these explicit DELETEs, deleting a vDC leaves orphan rows in
+  // vdc_nodes, vdc_storages, vdc_quotas, vdc_usage_cache,
+  // vdc_shared_bridges, vdc_vnets, vdc_subnets and vdc_ipam_allocations
+  // — functionally inert (nothing queries them once the parent vDC is
+  // gone) but they accumulate and pollute the IPAM count queries on
+  // any future vDC reusing the same subnet IDs.
+  //
+  // Wrapped in a transaction so a partial failure leaves the DB
+  // consistent. PBS namespaces are intentionally NOT deleted here —
+  // the unbindFromVdc loop in step 1 already handles them, including
+  // the PVE-side `pbs:` storage + sub-token cleanup we don't want to
+  // duplicate.
+  db.transaction(() => {
+    db.prepare('DELETE FROM vdc_ipam_allocations WHERE vdc_id = ?').run(id)
+    db.prepare('DELETE FROM vdc_subnets WHERE vnet_id IN (SELECT id FROM vdc_vnets WHERE vdc_id = ?)').run(id)
+    db.prepare('DELETE FROM vdc_vnets WHERE vdc_id = ?').run(id)
+    db.prepare('DELETE FROM vdc_shared_bridges WHERE vdc_id = ?').run(id)
+    db.prepare('DELETE FROM vdc_usage_cache WHERE vdc_id = ?').run(id)
+    db.prepare('DELETE FROM vdc_quotas WHERE vdc_id = ?').run(id)
+    db.prepare('DELETE FROM vdc_storages WHERE vdc_id = ?').run(id)
+    db.prepare('DELETE FROM vdc_nodes WHERE vdc_id = ?').run(id)
+    db.prepare('DELETE FROM vdcs WHERE id = ?').run(id)
+  })()
 }
 
 // ---------------------------------------------------------------------------

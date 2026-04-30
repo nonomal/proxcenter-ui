@@ -6425,6 +6425,8 @@
     "subnetGatewayInvalid": "Gateway muss ein nutzbarer Host innerhalb des CIDRs sein",
     "subnetDns": "DNS-Server (optional)",
     "subnetDnsHint": "Kommagetrennte IPs, z. B. 1.1.1.1, 9.9.9.9",
+    "subnetUsage": "IPs",
+    "subnetUsageTooltip": "{used} von {usable} nutzbaren IPs zugewiesen",
     "subnetEnableDhcp": "Allokationsbereich einschränken",
     "subnetEnableDhcpHelp": "Standardmäßig vergibt ProxCenter IPs aus dem gesamten nutzbaren Bereich des Subnetzes (Gateway ausgenommen). Aktivieren Sie diese Option, um die Vergabe auf einen Teilbereich zu beschränken — nützlich, um .200-.254 für manuelle Reservierungen oder einen im vDC verwalteten DHCP-Server frei zu halten.",
     "subnetIpamBanner": "ProxCenter weist IPs aus diesem Subnetz beim Anlegen der VM via Cloud-Init zu. Das eingebaute DHCP von PVE (dnsmasq) ist auf VXLAN-Zonen nicht verfügbar; für VMs, die echtes DHCP benötigen (PXE, OS ohne cloud-init), stellen Sie eine eigene DHCP-Appliance im VNet bereit.",
@@ -6503,6 +6505,11 @@
     }
   },
   "vdc": {
+    "primaryStorageTitle": "Hauptspeicher",
+    "primaryStorageHint": "Einzelner Shared-Storage, der alle VM-Disks dieser vDC trägt. Lokale und ISO/Backup-only Speicher werden automatisch ausgefiltert.",
+    "primaryStorageLabel": "Speicher",
+    "primaryStorageRequired": "Hauptspeicher ist erforderlich",
+    "noSharedStorage": "Kein Shared-Storage mit content=images auf diesem Cluster gefunden. Eine vDC benötigt HA-fähigen Speicher (CEPH/RBD, NFS…).",
     "pbsBindings": "Backup (PBS)",
     "pbsBindingsDialogTitle": "Backup-Bindings — {name}",
     "pbsAddBinding": "Binding hinzufügen",

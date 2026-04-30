@@ -6422,6 +6422,8 @@
     "subnetGatewayInvalid": "网关必须是 CIDR 内的可用主机",
     "subnetDns": "DNS 服务器（可选）",
     "subnetDnsHint": "逗号分隔的 IP，例如 1.1.1.1, 9.9.9.9",
+    "subnetUsage": "IP",
+    "subnetUsageTooltip": "已分配 {used} / {usable} 个可用 IP",
     "subnetEnableDhcp": "限制分配范围",
     "subnetEnableDhcpHelp": "默认情况下，ProxCenter 在整个子网可用范围（不含网关）内分配 IP。启用此选项可将分配限制在一个子范围内——例如保留 .200-.254 用于手动保留或在 vDC 内自行运行的 DHCP 服务。",
     "subnetIpamBanner": "ProxCenter 在创建 VM 时通过 Cloud-Init 从该子网分配 IP。PVE 自带的 DHCP（dnsmasq）在 VXLAN 区域上不可用；如需真正的 DHCP（PXE 启动、不支持 cloud-init 的系统），请在 VNet 上自行部署 DHCP 设备。",
@@ -6500,6 +6502,11 @@
     }
   },
   "vdc": {
+    "primaryStorageTitle": "主存储",
+    "primaryStorageHint": "承载此 vDC 所有虚拟机磁盘的单个共享存储。本地存储和仅 ISO/备份的存储已自动过滤。",
+    "primaryStorageLabel": "存储",
+    "primaryStorageRequired": "必须设置主存储",
+    "noSharedStorage": "此集群上未检测到 content=images 的共享存储。vDC 需要 HA 兼容的存储（CEPH/RBD、NFS…）。",
     "pbsBindings": "备份 (PBS)",
     "pbsBindingsDialogTitle": "备份绑定 — {name}",
     "pbsAddBinding": "添加绑定",

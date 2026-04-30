@@ -283,6 +283,33 @@ export async function setVnetFirewallEnabled(conn: any, pveName: string, enabled
 }
 
 export async function deleteVnetPve(conn: any, pveName: string): Promise<void> {
+  // PVE refuses to delete a vnet that still has subnets attached
+  // ("Can't delete vnet if subnets exists"). Even though we stopped
+  // mirroring subnets to PVE, vDCs created by older builds still carry
+  // PVE-side subnets; we list and drop them defensively before the vnet
+  // delete so legacy vDCs can be cleaned up.
+  try {
+    const subnets = await pveFetch<any[]>(conn, `/cluster/sdn/vnets/${encodeURIComponent(pveName)}/subnets`)
+    for (const s of subnets || []) {
+      // PVE returns the subnet id either in `subnet` (older 8.x) or `cidr`
+      // (newer 9.x). Both are accepted by the DELETE route as the path
+      // segment after `/subnets/`.
+      const subnetId = String(s?.subnet ?? s?.cidr ?? '').trim()
+      if (!subnetId) continue
+      try {
+        await pveFetch(conn, `/cluster/sdn/vnets/${encodeURIComponent(pveName)}/subnets/${encodeURIComponent(subnetId)}`, { method: 'DELETE' })
+      } catch (err: any) {
+        // Best-effort: log and continue so a single stuck subnet
+        // doesn't block the rest of the vnet teardown.
+        console.warn(`[vdc-sdn] failed to delete PVE subnet "${subnetId}" on vnet "${pveName}": ${err?.message || err}`)
+      }
+    }
+  } catch (err: any) {
+    // 404 / missing vnet → nothing to enumerate; fall through to the vnet
+    // delete which will hit the same idempotent-missing path below.
+    console.warn(`[vdc-sdn] could not list subnets for vnet "${pveName}" before delete: ${err?.message || err}`)
+  }
+
   try {
     await pveFetch(conn, `/cluster/sdn/vnets/${encodeURIComponent(pveName)}`, { method: 'DELETE' })
   } catch (err: any) {

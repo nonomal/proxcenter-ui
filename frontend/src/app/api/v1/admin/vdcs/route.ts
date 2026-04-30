@@ -60,9 +60,9 @@ export async function POST(req: NextRequest) {
       )
     }
 
-    if (!Array.isArray(body.storages) || body.storages.length === 0) {
+    if (typeof body.primaryStorage !== "string" || !body.primaryStorage.trim()) {
       return NextResponse.json(
-        { error: "storages must be a non-empty array" },
+        { error: "primaryStorage is required (a single shared storage advertising content=images)" },
         { status: 400 }
       )
     }
@@ -75,7 +75,7 @@ export async function POST(req: NextRequest) {
         slug: body.slug,
         description: body.description,
         nodes: body.nodes,
-        storages: body.storages,
+        primaryStorage: body.primaryStorage.trim(),
         // Same bug as the PUT route: the body carried sharedBridges but
         // the call site dropped it, so a brand-new vDC was created with
         // an empty uplink list regardless of what the form sent.
@@ -96,7 +96,7 @@ export async function POST(req: NextRequest) {
         connectionId: body.connectionId,
         slug: body.slug,
         nodes: body.nodes,
-        storages: body.storages,
+        primaryStorage: body.primaryStorage,
       },
       status: "success",
     })

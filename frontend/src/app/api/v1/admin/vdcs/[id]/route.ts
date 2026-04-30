@@ -57,7 +57,9 @@ export async function PUT(req: Request, ctx: RouteContext) {
       description: body.description,
       enabled: body.enabled,
       nodes: body.nodes,
-      storages: body.storages,
+      primaryStorage: typeof body.primaryStorage === 'string' && body.primaryStorage.trim()
+        ? body.primaryStorage.trim()
+        : undefined,
       // Forward sharedBridges so the VdcTab "Shared bridges (uplinks)"
       // checkbox actually persists. Previously dropped here, the next GET
       // returned the old value and the UI rolled back the change.

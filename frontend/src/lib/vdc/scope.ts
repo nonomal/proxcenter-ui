@@ -93,11 +93,11 @@ function buildVdcScope(tenantId: string): VdcScope | null {
   // 1. Find all enabled vDCs for this tenant
   const vdcRows = db
     .prepare(
-      `SELECT v.id, v.connection_id, v.pve_pool_name
+      `SELECT v.id, v.connection_id, v.pve_pool_name, v.primary_storage
        FROM vdcs v
        WHERE v.tenant_id = ? AND v.enabled = 1`
     )
-    .all(tenantId) as Array<{ id: string; connection_id: string; pve_pool_name: string }>
+    .all(tenantId) as Array<{ id: string; connection_id: string; pve_pool_name: string; primary_storage: string | null }>
 
   // No vDCs for this tenant - backwards compatible, no restrictions
   if (vdcRows.length === 0) return null
@@ -131,9 +131,17 @@ function buildVdcScope(tenantId: string): VdcScope | null {
       nodesByConnection.get(connId)!.add(nr.node_name)
     }
 
-    // Storages: merge across multiple vDCs on the same connection
+    // Storages: merge across multiple vDCs on the same connection.
+    // Includes the vDC's primary VM-disk storage (`vdcs.primary_storage`)
+    // and any PBS pseudo-storages bound to the vDC (`vdc_storages` rows
+    // managed by pbsOrchestrator). Together these form the tenant's
+    // visible storage scope for inventory and deploy paths.
     if (!storagesByConnection.has(connId)) {
       storagesByConnection.set(connId, new Set())
+    }
+
+    if (row.primary_storage) {
+      storagesByConnection.get(connId)!.add(row.primary_storage)
     }
 
     const storageRows = stmtStorages.all(row.id) as Array<{ storage_id: string }>

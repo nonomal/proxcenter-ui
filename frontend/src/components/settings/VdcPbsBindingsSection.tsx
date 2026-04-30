@@ -135,8 +135,8 @@ export default function VdcPbsBindingsSection({ vdcId, tenantSlug, vdcSlug, pbsC
         <Box sx={{ mt: 2, p: 2, border: '1px dashed', borderColor: 'divider', borderRadius: 1 }}>
           <Stack spacing={2}>
             <FormControlLabel
-              control={<Switch size="small" checked={form.mode === 'manual'} onChange={e => setForm(f => ({ ...f, mode: e.target.checked ? 'manual' : 'auto', pbsConnectionId: '', datastore: '' }))} />}
-              label={t(form.mode === 'manual' ? 'vdc.pbsModeManual' : 'vdc.pbsModeAuto')}
+              control={<Switch size="small" checked={form.mode === 'auto'} onChange={e => setForm(f => ({ ...f, mode: e.target.checked ? 'auto' : 'manual', pbsConnectionId: '', datastore: '' }))} />}
+              label={t('vdc.pbsModeAuto')}
             />
             <TextField select size="small" label={t('vdc.pbsPbsConnection')} value={form.pbsConnectionId} onChange={e => setForm(f => ({ ...f, pbsConnectionId: e.target.value, datastore: '' }))}>
               {eligible.map(c => <MenuItem key={c.id} value={c.id}>{c.name}{!c.fingerprint ? ' (no fingerprint)' : ''}</MenuItem>)}

@@ -78,27 +78,32 @@ export async function GET(req: Request, ctx: RouteContext) {
         .map((r) => r.pve_storage_name),
     )
 
+    // vDC primary storage requirements: shared (HA-capable) and able to
+    // host VM disk images. Local storages are filtered out because a
+    // VM that lands on one cannot live-migrate, breaking the HA promise
+    // of a vDC. Storages that only advertise iso/backup/vztmpl content
+    // are excluded too — they can't back a VM disk. PBS pseudo-storages
+    // are removed earlier in the chain (hiddenPbsStorages).
+    const isImagesContent = (content: any) => {
+      const tokens = String(content || '').split(',').map((t: string) => t.trim())
+      return tokens.includes('images') || tokens.includes('rootdir')
+    }
+
     const storages = storagesRaw
       .filter((s: any) => !hiddenPbsStorages.has(s.storage))
+      .filter((s: any) => !!s.shared && isImagesContent(s.content) && s.enabled !== 0)
       .map((s: any) => {
         const nodeEntries = storageNodeUsage[s.storage] || []
-        // For shared storages: all nodes report the same usage, take first entry
-        // For local storages: sum across nodes
-        let disk = 0, maxdisk = 0
-        if (s.shared) {
-          disk = nodeEntries[0]?.disk || 0
-          maxdisk = nodeEntries[0]?.maxdisk || 0
-        } else {
-          for (const ne of nodeEntries) { disk += ne.disk; maxdisk += ne.maxdisk }
-        }
+        // Shared storage: all nodes report identical usage, take first.
+        const disk = nodeEntries[0]?.disk || 0
+        const maxdisk = nodeEntries[0]?.maxdisk || 0
 
         return {
           id: s.storage,
           type: s.type,
           content: s.content,
-          shared: !!s.shared,
+          shared: true,
           nodes: s.nodes || null,
-          nodeDetails: !s.shared ? nodeEntries : null,
           disk,
           maxdisk,
         }

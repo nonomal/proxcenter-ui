@@ -7,6 +7,11 @@ export interface Vdc {
   description: string | null
   pvePoolName: string
   sdnZoneName: string | null
+  /** Single shared storage backing this vDC's VM disks. Null on legacy
+   *  vDCs created before the migration; the admin must re-pick a shared
+   *  storage before tenants can deploy. New vDCs are validated to point
+   *  at a shared+images storage. */
+  primaryStorage: string | null
   enabled: boolean
   createdBy: string | null
   createdAt: string
@@ -113,7 +118,9 @@ export interface CreateVdcInput {
   slug: string
   description?: string
   nodes: string[]
-  storages: string[]
+  /** Single shared storage. Validated against the connection's storage
+   *  list (must be `shared=true` and advertise `content=images`). */
+  primaryStorage: string
   quota?: Partial<VdcQuota>
   sharedBridges?: Array<{ bridge: string; label?: string }>
 }
@@ -123,7 +130,7 @@ export interface UpdateVdcInput {
   description?: string
   enabled?: boolean
   nodes?: string[]
-  storages?: string[]
+  primaryStorage?: string
   quota?: Partial<VdcQuota>
   sharedBridges?: Array<{ bridge: string; label?: string }>
 }

@@ -16,9 +16,13 @@ import {
   DialogContent,
   DialogTitle,
   Divider,
+  FormControl,
   FormControlLabel,
   IconButton,
+  InputLabel,
   LinearProgress,
+  MenuItem,
+  Select,
   Stack,
   Switch,
   TextField,
@@ -41,7 +45,11 @@ interface VdcFormState {
   tenantId: string
   connectionId: string
   nodes: string[]
-  storages: string[]
+  /** Single shared storage (CEPH/NFS) that backs all VM disks for this
+   *  vDC. Local storages and ISO/backup-only storages are filtered out
+   *  by the available-resources route — the form only sees candidates
+   *  that pass the `shared && content includes images` filter. */
+  primaryStorage: string
   maxVcpus: string
   maxRamGb: string
   maxStorageGb: string
@@ -64,7 +72,7 @@ const emptyForm: VdcFormState = {
   tenantId: '',
   connectionId: '',
   nodes: [],
-  storages: [],
+  primaryStorage: '',
   maxVcpus: '',
   maxRamGb: '',
   maxStorageGb: '',
@@ -130,6 +138,19 @@ export default function VdcTab() {
 
   // PBS bindings (inline in the edit dialog, below Nodes)
   const [pbsConnections, setPbsConnections] = useState<Array<{ id: string; name: string; fingerprint: string | null }>>([])
+
+  // Draft PBS binding collected during vDC creation. When `enabled`, the
+  // create flow will POST a /pbs-bindings request with these fields right
+  // after the vDC POST returns its new id. Populated only in create mode;
+  // edit mode uses the existing VdcPbsBindingsSection list manager.
+  const [pbsDraft, setPbsDraft] = useState({
+    enabled: false,
+    mode: 'auto' as 'auto' | 'manual',
+    pbsConnectionId: '',
+    datastore: '',
+    namespace: '',
+  })
+  const [pbsDraftDatastores, setPbsDraftDatastores] = useState<string[]>([])
 
   // Node statuses keyed `${connectionId}|${nodeName}` -> 'online' | 'offline' | …
   // Populated once vDCs are loaded by hitting available-resources for each
@@ -256,17 +277,25 @@ export default function VdcTab() {
         if (!cancelled) {
           const resources = data.data || null
           setAvailableResources(resources)
-          // Auto-embed all nodes + all storages of the cluster into the
-          // form when creating. The granular pickers used to drive these
-          // arrays via checkboxes; now the UI just shows the cluster's
-          // contents informationally and we send everything to the API.
-          // Edit mode keeps the existing values so the caller can still
-          // tighten the scope manually if they ever need to.
+          // Auto-embed all nodes (HA cluster: every node can run any VM)
+          // and auto-pick a sensible default primary storage when the
+          // form has none yet. Available-resources only returns shared +
+          // images-capable storages, so any candidate works. We prefer
+          // RBD/CEPH (largest first) for typical clusters, then fall
+          // back to the largest other shared storage.
           if (!editingVdc && resources) {
+            const candidates: any[] = (resources.storages || [])
+            const ranked = [...candidates].sort((a, b) => {
+              const aIsCeph = String(a.type || '').toLowerCase() === 'rbd' ? 1 : 0
+              const bIsCeph = String(b.type || '').toLowerCase() === 'rbd' ? 1 : 0
+              if (aIsCeph !== bIsCeph) return bIsCeph - aIsCeph
+              return (b.maxdisk || 0) - (a.maxdisk || 0)
+            })
+            const autoPick = ranked[0]?.id || ''
             setForm((f) => ({
               ...f,
               nodes: (resources.nodes || []).map((n: any) => n.name).filter(Boolean),
-              storages: (resources.storages || []).map((s: any) => s.id).filter(Boolean),
+              primaryStorage: f.primaryStorage || autoPick,
             }))
           }
         }
@@ -285,6 +314,40 @@ export default function VdcTab() {
 
     return () => { cancelled = true }
   }, [form.connectionId, editingVdc?.id])
+
+  // Datastores for the create-time PBS draft. Mirrors the load done by
+  // VdcPbsBindingsSection in edit mode but lives here because the draft
+  // state lives here. Cleared whenever the picked PBS connection changes
+  // so a stale list never carries over.
+  useEffect(() => {
+    if (!pbsDraft.enabled || !pbsDraft.pbsConnectionId) {
+      setPbsDraftDatastores([])
+      return
+    }
+    let cancelled = false
+    ;(async () => {
+      try {
+        const r = await fetch(`/api/v1/admin/pbs-connections/${encodeURIComponent(pbsDraft.pbsConnectionId)}/datastores`)
+        const j = await r.json()
+        if (!cancelled) setPbsDraftDatastores(Array.isArray(j.data) ? j.data : [])
+      } catch {
+        if (!cancelled) setPbsDraftDatastores([])
+      }
+    })()
+    return () => { cancelled = true }
+  }, [pbsDraft.enabled, pbsDraft.pbsConnectionId])
+
+  // Default the PBS namespace to `tenant-<slug>/vdc-<slug>` once both are
+  // known. The user can still override; we only set when empty so any
+  // manual edit survives a re-render.
+  useEffect(() => {
+    if (!pbsDraft.enabled) return
+    if (pbsDraft.namespace) return
+    const tSlug = getTenantSlug(form.tenantId)
+    if (!tSlug || !form.slug) return
+    setPbsDraft((d) => (d.namespace ? d : { ...d, namespace: `tenant-${tSlug}/vdc-${form.slug}` }))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pbsDraft.enabled, form.tenantId, form.slug])
 
   // Fetch provider bridges when connectionId changes
   useEffect(() => {
@@ -346,6 +409,8 @@ export default function VdcTab() {
     setForm(emptyForm)
     setAvailableResources(null)
     setSelectedSharedBridges(new Map())
+    setPbsDraft({ enabled: false, mode: 'auto', pbsConnectionId: '', datastore: '', namespace: '' })
+    setPbsDraftDatastores([])
     setDialogOpen(true)
   }
 
@@ -358,7 +423,7 @@ export default function VdcTab() {
       tenantId: vdc.tenantId,
       connectionId: vdc.connectionId,
       nodes: vdc.nodes,
-      storages: vdc.storages,
+      primaryStorage: vdc.primaryStorage || '',
       maxVcpus: vdc.quota?.maxVcpus ? String(vdc.quota.maxVcpus) : '',
       maxRamGb: vdc.quota?.maxRamMb ? String(Math.round(vdc.quota.maxRamMb / 1024)) : '',
       maxStorageGb: vdc.quota?.maxStorageMb ? String(Math.round(vdc.quota.maxStorageMb / 1024)) : '',
@@ -416,20 +481,19 @@ export default function VdcTab() {
         label: label.trim() || undefined,
       }))
 
-      // Snapshot nodes/storages from the live resources at submit time.
-      // form.nodes/form.storages get auto-filled by the resources fetch
-      // useEffect, but a race (slow PVE, fetch retry, user clicking
-      // Submit right after Connection select) can leave them empty —
-      // backend then 400s on "nodes must be a non-empty array". Reading
-      // straight from availableResources here closes that window.
+      // Snapshot nodes from the live resources at submit time —
+      // form.nodes gets auto-filled by the resources fetch useEffect,
+      // but a race (slow PVE, fetch retry, user clicking Submit right
+      // after Connection select) can leave it empty. Reading straight
+      // from availableResources here closes that window.
       const liveNodes = (availableResources?.nodes || [])
         .map((n: any) => n.name)
         .filter(Boolean)
-      const liveStorages = (availableResources?.storages || [])
-        .map((s: any) => s.id)
-        .filter(Boolean)
       const nodesPayload = (editingVdc ? form.nodes : (form.nodes.length > 0 ? form.nodes : liveNodes))
-      const storagesPayload = (editingVdc ? form.storages : (form.storages.length > 0 ? form.storages : liveStorages))
+
+      if (!form.primaryStorage) {
+        throw new Error(t('vdc.primaryStorageRequired'))
+      }
 
       if (editingVdc) {
         // PUT - update
@@ -437,7 +501,7 @@ export default function VdcTab() {
           name: form.name,
           description: form.description || undefined,
           nodes: nodesPayload,
-          storages: storagesPayload,
+          primaryStorage: form.primaryStorage,
           sharedBridges: sharedBridgesPayload,
           quota,
         }
@@ -461,7 +525,7 @@ export default function VdcTab() {
           slug: form.slug,
           description: form.description || undefined,
           nodes: nodesPayload,
-          storages: storagesPayload,
+          primaryStorage: form.primaryStorage,
           sharedBridges: sharedBridgesPayload,
           quota: Object.keys(quota).some((k) => quota[k] !== null) ? quota : undefined,
         }
@@ -475,6 +539,44 @@ export default function VdcTab() {
         if (!res.ok) {
           const err = await res.json().catch(() => ({}))
           throw new Error(err.error || t('vdc.failedSave'))
+        }
+
+        // Optional second step: bind a PBS datastore right after the
+        // vDC is created. The vDC stays even if this fails — the admin
+        // can retry from the edit dialog. We surface a partial-success
+        // message rather than a hard error so they don't think the
+        // create itself failed.
+        if (
+          pbsDraft.enabled &&
+          pbsDraft.pbsConnectionId &&
+          pbsDraft.datastore &&
+          pbsDraft.namespace
+        ) {
+          const created = await res.json().catch(() => ({}))
+          const newVdcId = created?.data?.id
+          if (newVdcId) {
+            try {
+              const bindRes = await fetch(
+                `/api/v1/admin/vdcs/${encodeURIComponent(newVdcId)}/pbs-bindings`,
+                {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    mode: pbsDraft.mode,
+                    pbsConnectionId: pbsDraft.pbsConnectionId,
+                    datastore: pbsDraft.datastore,
+                    namespace: pbsDraft.namespace,
+                  }),
+                },
+              )
+              if (!bindRes.ok) {
+                const bindErr = await bindRes.json().catch(() => ({}))
+                setError(t('vdc.pbsBindCreatedVdcFailedBind', { error: bindErr.error || `HTTP ${bindRes.status}` }))
+              }
+            } catch (e: any) {
+              setError(t('vdc.pbsBindCreatedVdcFailedBind', { error: e?.message || String(e) }))
+            }
+          }
         }
       }
 
@@ -812,44 +914,121 @@ export default function VdcTab() {
     label: string,
     valueKey: keyof VdcFormState,
     unlimitedKey: keyof VdcFormState,
-  ) => (
-    <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-      <Typography variant="body2" sx={{ minWidth: 130 }}>
-        {label}
-      </Typography>
-      <FormControlLabel
-        control={
-          <Switch
-            size="small"
-            checked={form[unlimitedKey] as boolean}
-            onChange={(e) => {
-              const unlimited = e.target.checked
-              setForm((f) => ({
-                ...f,
-                [unlimitedKey]: unlimited,
-                ...(unlimited ? { [valueKey]: '' } : {}),
-              }))
-            }}
-          />
-        }
-        label={
-          <Typography variant="caption">{t('vdc.quotaUnlimited')}</Typography>
-        }
-        sx={{ minWidth: 120 }}
-      />
-      <TextField
-        type="number"
-        size="small"
-        value={form[valueKey] as string}
-        onChange={(e) => setForm((f) => ({ ...f, [valueKey]: e.target.value }))}
-        disabled={form[unlimitedKey] as boolean}
-        sx={{ width: 120 }}
-        slotProps={{ htmlInput: { min: 0 } }}
-      />
-    </Box>
-  )
+    cluster?: { total: number; unit: string },
+  ) => {
+    const unlimited = form[unlimitedKey] as boolean
+    const numeric = Number.parseFloat((form[valueKey] as string) || '')
+    const hasValue = !unlimited && Number.isFinite(numeric) && numeric > 0
+    const overCap = !!cluster && cluster.total > 0 && hasValue && numeric > cluster.total
+    const pct =
+      cluster && cluster.total > 0 && hasValue
+        ? Math.min(100, (numeric / cluster.total) * 100)
+        : 0
+    const barColor = overCap || pct >= 90 ? 'error' : pct >= 70 ? 'warning' : 'success'
+
+    return (
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+        <Typography variant="body2" sx={{ minWidth: 130 }}>
+          {label}
+        </Typography>
+        <FormControlLabel
+          control={
+            <Switch
+              size="small"
+              checked={unlimited}
+              onChange={(e) => {
+                const v = e.target.checked
+                setForm((f) => ({
+                  ...f,
+                  [unlimitedKey]: v,
+                  ...(v ? { [valueKey]: '' } : {}),
+                }))
+              }}
+            />
+          }
+          label={
+            <Typography variant="caption">{t('vdc.quotaUnlimited')}</Typography>
+          }
+          sx={{ minWidth: 120 }}
+        />
+        <TextField
+          type="number"
+          size="small"
+          value={form[valueKey] as string}
+          onChange={(e) => {
+            // Hard-cap against the cluster ceiling. If the cluster total
+            // is known, clamp the typed value so the user can't allocate
+            // more than the cluster physically has — same guard as the
+            // Save-button gate, applied per keystroke for instant
+            // feedback rather than letting the error linger.
+            const raw = e.target.value
+            if (raw === '' || !cluster || cluster.total <= 0) {
+              setForm((f) => ({ ...f, [valueKey]: raw }))
+              return
+            }
+            const n = Number.parseFloat(raw)
+            const capped = Number.isFinite(n) && n > cluster.total ? String(cluster.total) : raw
+            setForm((f) => ({ ...f, [valueKey]: capped }))
+          }}
+          disabled={unlimited}
+          error={overCap}
+          helperText={overCap ? t('vdc.quotaExceedsCluster', { total: cluster!.total, unit: cluster!.unit }) : undefined}
+          sx={{ width: 120 }}
+          slotProps={{ htmlInput: { min: 0, max: cluster?.total } }}
+        />
+        {cluster && cluster.total > 0 && (
+          <Stack direction="row" alignItems="center" spacing={1} sx={{ ml: 'auto', minWidth: 220 }}>
+            <LinearProgress
+              variant="determinate"
+              value={pct}
+              color={barColor}
+              sx={{ flex: 1, height: 6, borderRadius: 3, opacity: hasValue ? 1 : 0.35 }}
+            />
+            <Typography variant="caption" color="text.secondary" sx={{ whiteSpace: 'nowrap', minWidth: 110, textAlign: 'right' }}>
+              {hasValue
+                ? `${numeric.toLocaleString()} / ${cluster.total.toLocaleString()} ${cluster.unit} (${Math.round(pct)}%)`
+                : `— / ${cluster.total.toLocaleString()} ${cluster.unit}`}
+            </Typography>
+          </Stack>
+        )}
+      </Box>
+    )
+  }
 
   // ------- Render -------
+
+  // Cluster physical capacity derived from availableResources + the
+  // currently selected primary storage. Computed once per render and
+  // shared between renderQuotaField (the per-row progress bars) and
+  // the Save-button gate (block when an existing edited vDC carries a
+  // quota that exceeds today's cluster — e.g. a node was decommissioned
+  // since the vDC was created).
+  const clusterVcpuTotal = (availableResources?.nodes || []).reduce(
+    (acc: number, n: any) => acc + (Number(n.maxcpu) || 0),
+    0,
+  )
+  const clusterRamGbTotal = Math.round(
+    (availableResources?.nodes || []).reduce(
+      (acc: number, n: any) => acc + (Number(n.maxmem) || 0),
+      0,
+    ) / (1024 ** 3),
+  )
+  const clusterStorageGbTotal = (() => {
+    const primary = (availableResources?.storages || []).find(
+      (s: any) => s.id === form.primaryStorage,
+    )
+    return primary ? Math.round((Number(primary.maxdisk) || 0) / (1024 ** 3)) : 0
+  })()
+
+  const exceeds = (raw: string, total: number) => {
+    if (!total) return false
+    const n = Number.parseFloat(raw || '')
+    return Number.isFinite(n) && n > total
+  }
+  const quotaOverCapacity =
+    (!form.unlimitedVcpus && exceeds(form.maxVcpus, clusterVcpuTotal)) ||
+    (!form.unlimitedRam && exceeds(form.maxRamGb, clusterRamGbTotal)) ||
+    (!form.unlimitedStorage && exceeds(form.maxStorageGb, clusterStorageGbTotal))
 
   return (
     <Box>
@@ -960,7 +1139,7 @@ export default function VdcTab() {
             onChange={(_, v) => {
               setForm((f) => {
                 if (editingVdc) {
-                  return { ...f, connectionId: v?.id || '', nodes: [], storages: [] }
+                  return { ...f, connectionId: v?.id || '', nodes: [], primaryStorage: '' }
                 }
                 // Re-derive slug now that the connection is known —
                 // see computeVdcSlug for the format. Without this, a
@@ -971,7 +1150,7 @@ export default function VdcTab() {
                   ...f,
                   connectionId: v?.id || '',
                   nodes: [],
-                  storages: [],
+                  primaryStorage: '',
                   slug: computeVdcSlug(tenant, v?.id || ''),
                 }
               })
@@ -995,6 +1174,74 @@ export default function VdcTab() {
                 </Box>
               ) : availableResources ? (
                 <>
+                  {/* Primary storage — the single shared storage backing
+                      all VM disks for this vDC. /available-resources
+                      already filters to shared+images candidates, so
+                      whichever the admin picks is HA-capable. Local
+                      and ISO/backup-only storages never reach this list. */}
+                  {(() => {
+                    const candidates: Array<{ id: string; type: string; maxdisk?: number; disk?: number }> =
+                      availableResources?.storages || []
+                    if (candidates.length === 0) {
+                      return (
+                        <Alert severity="error" sx={{ mt: 1 }} icon={<i className="ri-error-warning-line" style={{ fontSize: 18 }} />}>
+                          {t('vdc.noSharedStorage')}
+                        </Alert>
+                      )
+                    }
+                    return (
+                      <Box sx={{ mt: 2 }}>
+                        <Stack direction="row" alignItems="center" spacing={0.75} sx={{ mb: 1.5 }}>
+                          <Typography variant="subtitle2">
+                            {t('vdc.primaryStorageTitle')}
+                          </Typography>
+                          <Tooltip arrow title={t('vdc.primaryStorageHint')} placement="top">
+                            <Box component="i" className="ri-information-line" sx={{ fontSize: 14, opacity: 0.55, cursor: 'help' }} />
+                          </Tooltip>
+                        </Stack>
+                        <FormControl fullWidth size="small" required>
+                          <InputLabel>{t('vdc.primaryStorageLabel')}</InputLabel>
+                          <Select
+                            value={form.primaryStorage}
+                            label={t('vdc.primaryStorageLabel')}
+                            onChange={(e) => setForm((f) => ({ ...f, primaryStorage: String(e.target.value) }))}
+                          >
+                            {candidates.map((s) => {
+                              const totalGb = (s.maxdisk || 0) / (1024 ** 3)
+                              const usedGb = (s.disk || 0) / (1024 ** 3)
+                              const pct = s.maxdisk ? Math.min(100, (usedGb / totalGb) * 100) : 0
+                              return (
+                                <MenuItem key={s.id} value={s.id}>
+                                  <Stack direction="row" alignItems="center" spacing={1.5} sx={{ width: '100%' }}>
+                                    <Typography variant="body2" sx={{ fontWeight: 600, minWidth: 140 }}>
+                                      {s.id}
+                                    </Typography>
+                                    <Chip size="small" label={s.type} sx={{ height: 18, fontSize: 10 }} />
+                                    {s.maxdisk ? (
+                                      <Stack direction="row" alignItems="center" spacing={1} sx={{ ml: 'auto' }}>
+                                        <LinearProgress
+                                          variant="determinate"
+                                          value={pct}
+                                          color={pct >= 90 ? 'error' : pct >= 70 ? 'warning' : 'success'}
+                                          sx={{ width: 80, height: 6, borderRadius: 3 }}
+                                        />
+                                        <Typography variant="caption" color="text.secondary" sx={{ whiteSpace: 'nowrap' }}>
+                                          {usedGb.toFixed(0)} / {totalGb.toFixed(0)} GB ({Math.round(pct)}%)
+                                        </Typography>
+                                      </Stack>
+                                    ) : null}
+                                  </Stack>
+                                </MenuItem>
+                              )
+                            })}
+                          </Select>
+                        </FormControl>
+                      </Box>
+                    )
+                  })()}
+
+                  <Divider />
+
                   {/* PBS bindings (only when editing an existing vDC).
                       The Pool / Nodes / Storages summary that used to live
                       here was dropped: a vDC now spans the entire cluster
@@ -1009,6 +1256,116 @@ export default function VdcTab() {
                         vdcSlug={editingVdc.slug || form.slug}
                         pbsConnections={pbsConnections}
                       />
+                      <Divider />
+                    </>
+                  )}
+
+                  {/* Create-time PBS draft. Lets the admin attach a backup
+                      target right at vDC creation instead of forcing a
+                      two-step "create then bind" flow. The form mirrors
+                      VdcPbsBindingsSection but does not POST to the server
+                      — the parent submit handler chains the binding call
+                      after the vDC is created. Multiple bindings are still
+                      added later from the edit dialog. */}
+                  {!editingVdc && (
+                    <>
+                      <Box>
+                        <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1 }}>
+                          <Typography variant="subtitle2" sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                            <i className="ri-save-3-line" />
+                            {t('vdc.pbsBindings')}
+                          </Typography>
+                          <Box sx={{ flex: 1 }} />
+                          <FormControlLabel
+                            control={
+                              <Switch
+                                size="small"
+                                checked={pbsDraft.enabled}
+                                onChange={(e) => setPbsDraft((d) => ({ ...d, enabled: e.target.checked }))}
+                                disabled={pbsConnections.length === 0}
+                              />
+                            }
+                            label={
+                              <Typography variant="caption" color="text.secondary">
+                                {t('vdc.pbsConfigureAtCreate')}
+                              </Typography>
+                            }
+                          />
+                        </Stack>
+                        {pbsConnections.length === 0 && (
+                          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontStyle: 'italic' }}>
+                            {t('vdc.pbsNoConnections')}
+                          </Typography>
+                        )}
+                        {pbsDraft.enabled && pbsConnections.length > 0 && (
+                          <Stack spacing={1.5} sx={{ mt: 1 }}>
+                            <Stack direction="row" alignItems="center" spacing={0.75}>
+                              <FormControlLabel
+                                control={
+                                  <Switch
+                                    size="small"
+                                    checked={pbsDraft.mode === 'auto'}
+                                    onChange={(e) =>
+                                      setPbsDraft((d) => ({
+                                        ...d,
+                                        mode: e.target.checked ? 'auto' : 'manual',
+                                        pbsConnectionId: '',
+                                        datastore: '',
+                                      }))
+                                    }
+                                  />
+                                }
+                                label={<Typography variant="caption">{t('vdc.pbsModeAuto')}</Typography>}
+                              />
+                              <Tooltip
+                                arrow
+                                placement="top"
+                                title={pbsDraft.mode === 'auto' ? t('vdc.pbsModeAutoHint') : t('vdc.pbsModeManualHint')}
+                              >
+                                <Box component="i" className="ri-information-line" sx={{ fontSize: 14, opacity: 0.55, cursor: 'help' }} />
+                              </Tooltip>
+                            </Stack>
+                            <TextField
+                              select
+                              size="small"
+                              label={t('vdc.pbsPbsConnection')}
+                              value={pbsDraft.pbsConnectionId}
+                              onChange={(e) =>
+                                setPbsDraft((d) => ({ ...d, pbsConnectionId: e.target.value, datastore: '' }))
+                              }
+                              fullWidth
+                            >
+                              {(pbsDraft.mode === 'auto'
+                                ? pbsConnections.filter((c) => c.fingerprint)
+                                : pbsConnections
+                              ).map((c) => (
+                                <MenuItem key={c.id} value={c.id}>{c.name}</MenuItem>
+                              ))}
+                            </TextField>
+                            <TextField
+                              select
+                              size="small"
+                              label={t('vdc.pbsDatastore')}
+                              value={pbsDraft.datastore}
+                              onChange={(e) => setPbsDraft((d) => ({ ...d, datastore: e.target.value }))}
+                              disabled={!pbsDraft.pbsConnectionId}
+                              fullWidth
+                            >
+                              {pbsDraftDatastores.map((d) => (
+                                <MenuItem key={d} value={d}>{d}</MenuItem>
+                              ))}
+                            </TextField>
+                            <TextField
+                              size="small"
+                              label={t('vdc.pbsNamespace')}
+                              value={pbsDraft.namespace}
+                              onChange={(e) => setPbsDraft((d) => ({ ...d, namespace: e.target.value }))}
+                              helperText={t('vdc.pbsNamespaceHelper')}
+                              fullWidth
+                            />
+                          </Stack>
+                        )}
+                      </Box>
                       <Divider />
                     </>
                   )}
@@ -1078,9 +1435,15 @@ export default function VdcTab() {
                 {t('vdc.quotas')}
               </Typography>
 
-              {renderQuotaField(t('vdc.maxVcpus'), 'maxVcpus', 'unlimitedVcpus')}
-              {renderQuotaField(t('vdc.maxRam'), 'maxRamGb', 'unlimitedRam')}
-              {renderQuotaField(t('vdc.maxStorage'), 'maxStorageGb', 'unlimitedStorage')}
+              {/* Cluster capacity ratios shown next to vCPU / RAM / Storage —
+                  helps the admin gauge "is this allocation reasonable
+                  given what the cluster actually has". VMs / Snapshots /
+                  Backups stay bar-less because PVE doesn't expose a
+                  global cluster ceiling for those (they're soft per-VM
+                  limits, not capacity-bound). */}
+              {renderQuotaField(t('vdc.maxVcpus'), 'maxVcpus', 'unlimitedVcpus', clusterVcpuTotal > 0 ? { total: clusterVcpuTotal, unit: 'vCPU' } : undefined)}
+              {renderQuotaField(t('vdc.maxRam'), 'maxRamGb', 'unlimitedRam', clusterRamGbTotal > 0 ? { total: clusterRamGbTotal, unit: 'GB' } : undefined)}
+              {renderQuotaField(t('vdc.maxStorage'), 'maxStorageGb', 'unlimitedStorage', clusterStorageGbTotal > 0 ? { total: clusterStorageGbTotal, unit: 'GB' } : undefined)}
               {renderQuotaField(t('vdc.maxVms'), 'maxVms', 'unlimitedVms')}
               {renderQuotaField(t('vdc.maxSnapshots'), 'maxSnapshots', 'unlimitedSnapshots')}
               {renderQuotaField(t('vdc.maxBackups'), 'maxBackups', 'unlimitedBackups')}
@@ -1107,11 +1470,17 @@ export default function VdcTab() {
               saving ||
               !form.tenantId ||
               !form.connectionId ||
+              !form.primaryStorage ||
               // Hold the click until /available-resources has populated
-              // form.nodes and form.storages — without this gate the user
-              // could submit before the auto-fill ran and the backend
-              // would 400 on "nodes must be a non-empty array".
-              resourcesLoading
+              // form.nodes and the primary storage candidate list —
+              // without this gate the user could submit before the
+              // auto-fill ran and the backend would 400.
+              resourcesLoading ||
+              // Defense-in-depth: per-keystroke clamping in renderQuotaField
+              // already prevents typing past the cluster total, but an
+              // edited vDC could carry a legacy quota that exceeds the
+              // current cluster (e.g. node decommissioned since create).
+              quotaOverCapacity
             }
           >
             {saving ? t('vdc.saving') : editingVdc ? t('common.update') : t('common.create')}
