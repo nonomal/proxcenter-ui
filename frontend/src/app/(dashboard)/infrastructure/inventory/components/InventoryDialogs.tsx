@@ -248,7 +248,7 @@ export interface InventoryDialogsProps {
   migNodes: any[]
   migStorages: any[]
   migSshfsAvailable: boolean | null
-  vcenterPreflight: { checked: boolean; ok: boolean; installing: boolean; errors: string[]; virtV2vInstalled: boolean; virtioWinInstalled: boolean; nbdkitInstalled: boolean; nbdcopyInstalled: boolean; guestfsToolsInstalled: boolean; ovmfInstalled: boolean; detectedDisks: string[]; tempStorages: { path: string; availableBytes: number; totalBytes: number; filesystem: string }[] } | null
+  vcenterPreflight: { checked: boolean; ok: boolean; installing: boolean; errors: string[]; virtV2vInstalled: boolean; virtioWinInstalled: boolean; nbdkitInstalled: boolean; nbdcopyInstalled: boolean; guestfsToolsInstalled: boolean; ovmfInstalled: boolean; detectedDisks: string[]; tempStorages: { path: string; availableBytes: number; totalBytes: number; filesystem: string }[]; installError?: { hintKey?: '401_enterprise'; output: string } } | null
   setVcenterPreflight: (v: any) => void
   migStarting: boolean
   setMigStarting: (v: boolean) => void
@@ -407,6 +407,118 @@ export default function InventoryDialogs(props: InventoryDialogsProps) {
   React.useEffect(() => {
     return () => { if (virtioWinPollRef.current) clearInterval(virtioWinPollRef.current) }
   }, [])
+
+  // Shared error Alert rendered above the missing-tools list when the apt
+  // install just failed. Identical between the single-VM v2v dialog and the
+  // bulk migration dialog, so kept as one render closure.
+  const installErrorAlert = vcenterPreflight?.installError ? (
+    <Alert
+      severity="error"
+      sx={{ fontSize: 12, mb: 1, '& .MuiAlert-message': { width: '100%' } }}
+      icon={<i className="ri-error-warning-line" style={{ fontSize: 18 }} />}
+    >
+      <Typography variant="body2" fontWeight={600} sx={{ mb: 0.5 }}>
+        {t('inventoryPage.esxiMigration.installFailedTitle')}
+      </Typography>
+      {vcenterPreflight.installError.hintKey === '401_enterprise' && (
+        <>
+          <Typography variant="body2" sx={{ mb: 1 }}>
+            {t('inventoryPage.esxiMigration.installFailed401EnterpriseHint')}
+          </Typography>
+          <Box
+            component="pre"
+            sx={{
+              m: 0, mb: 1, p: 1,
+              bgcolor: 'background.default',
+              borderRadius: 1,
+              fontSize: 11,
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-all',
+            }}
+          >{`sed -i "s|^deb https://enterprise.proxmox.com|# &|" /etc/apt/sources.list.d/pve-enterprise.list
+echo "deb http://download.proxmox.com/debian/pve $(. /etc/os-release && echo $VERSION_CODENAME) pve-no-subscription" > /etc/apt/sources.list.d/pve-no-subscription.list`}</Box>
+        </>
+      )}
+      <Typography variant="caption" sx={{ opacity: 0.7, display: 'block', mb: 0.5 }}>
+        {t('inventoryPage.esxiMigration.installFailedShowOutput')}
+      </Typography>
+      <Box
+        component="pre"
+        sx={{
+          m: 0, p: 1,
+          bgcolor: 'background.default',
+          borderRadius: 1,
+          fontSize: 11,
+          maxHeight: 200,
+          overflow: 'auto',
+          whiteSpace: 'pre-wrap',
+          wordBreak: 'break-all',
+        }}
+      >{vcenterPreflight.installError.output}</Box>
+    </Alert>
+  ) : null
+
+  // Shared install helper used by both the per-VM v2v dialog and the bulk
+  // migration dialog. Runs the apt install on every requested node, captures
+  // per-node responses so we can surface apt failures (e.g. 401 Unauthorized
+  // on enterprise.proxmox.com when no subscription is attached) instead of
+  // silently re-checking and showing the same red list, then re-runs preflight
+  // and aggregates results with AND semantics.
+  const runV2vInstall = React.useCallback(async (nodes: string[]) => {
+    setVcenterPreflight(prev => prev ? { ...prev, installing: true, installError: undefined } : prev)
+    try {
+      const installResponses = await Promise.all(nodes.map(async (node: string) => {
+        const r = await fetch('/api/v1/migrations/preflight', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ targetConnectionId: migTargetConn, targetNode: node, action: 'install' }),
+        })
+        const json = await r.json().catch(() => ({}))
+        return { node, ok: r.ok && json.success !== false, output: String(json.output || ''), error: String(json.error || '') }
+      }))
+
+      const failedInstalls = installResponses.filter(r => !r.ok)
+      let installError: { hintKey?: '401_enterprise'; output: string } | undefined
+
+      if (failedInstalls.length > 0) {
+        const aggregated = failedInstalls.map(f => `=== ${f.node} ===\n${f.error || '(no error string)'}\n${f.output.slice(-2000)}`).join('\n\n')
+        const looks401Enterprise = /\b401\b/i.test(aggregated) && /enterprise\.proxmox\.com/i.test(aggregated)
+        installError = {
+          output: aggregated,
+          hintKey: looks401Enterprise ? '401_enterprise' : undefined,
+        }
+      }
+
+      const results = await Promise.all(nodes.map(async (node: string) => {
+        const r2 = await fetch('/api/v1/migrations/preflight', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ targetConnectionId: migTargetConn, targetNode: node }),
+        })
+        return r2.json()
+      }))
+
+      const firstWithDisks = results.find((r: any) => r.detectedDisks && r.detectedDisks.length > 0)
+      const firstWithStorages = results[0]
+      setVcenterPreflight({
+        checked: true,
+        ok: results.every((r: any) => !(r.errors || []).length),
+        installing: false,
+        errors: [],
+        virtV2vInstalled: results.every((r: any) => !!r.virtV2vInstalled),
+        virtioWinInstalled: results.every((r: any) => !!r.virtioWinInstalled),
+        nbdkitInstalled: results.every((r: any) => !!r.nbdkitInstalled),
+        nbdcopyInstalled: results.every((r: any) => !!r.nbdcopyInstalled),
+        guestfsToolsInstalled: results.every((r: any) => !!r.guestfsToolsInstalled),
+        ovmfInstalled: results.every((r: any) => !!r.ovmfInstalled),
+        detectedDisks: firstWithDisks?.detectedDisks || [],
+        tempStorages: firstWithStorages?.tempStorages || [],
+        installError,
+      })
+    } catch {
+      setVcenterPreflight(prev => prev ? { ...prev, installing: false } : prev)
+    }
+  }, [migTargetConn, setVcenterPreflight])
 
   // Source datastore pre-flight: detect vSAN-backed source disks for direct-ESXi sources so
   // we can block the migration upfront with a clear message rather than letting the user fill
@@ -2072,6 +2184,7 @@ return
                     ]
                     return (
                       <>
+                      {installErrorAlert}
                       {missingApt && <Alert
                         severity="warning"
                         sx={{ fontSize: 12, '& .MuiAlert-message': { width: '100%' } }}
@@ -2113,57 +2226,14 @@ return
                           disabled={vcenterPreflight.installing}
                           startIcon={vcenterPreflight.installing ? <CircularProgress size={14} color="inherit" /> : <i className="ri-download-line" />}
                           onClick={async () => {
-                            setVcenterPreflight(prev => prev ? { ...prev, installing: true } : prev)
-                            try {
-                              // Install target = every online node of the cluster when Auto
-                              // is selected, otherwise just the single chosen node. apt-get
-                              // is idempotent so re-installing on nodes that already have
-                              // the deps is a no-op. We run in parallel for speed.
-                              // NOTE: apt-install only covers virt-v2v + nbdkit + libnbd-bin.
-                              // virtio-win is a separate ISO the user must fetch manually
-                              // (see the instructions block below). Don't mix them here.
-                              const installNodes = migTargetNode === '__auto__'
-                                ? migNodeOptions.filter((o: any) => o.connId === migTargetConn && o.status === 'online').map((o: any) => o.node)
-                                : [migTargetNode]
-                              await Promise.all(installNodes.map((node: string) => fetch('/api/v1/migrations/preflight', {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ targetConnectionId: migTargetConn, targetNode: node, action: 'install' }),
-                              })))
-                              // Re-check across the same node set and aggregate (AND semantics).
-                              const results = await Promise.all(installNodes.map(async (node: string) => {
-                                const r2 = await fetch('/api/v1/migrations/preflight', {
-                                  method: 'POST',
-                                  headers: { 'Content-Type': 'application/json' },
-                                  body: JSON.stringify({ targetConnectionId: migTargetConn, targetNode: node }),
-                                })
-                                return r2.json()
-                              }))
-                              const allVirtV2v = results.every((r: any) => !!r.virtV2vInstalled)
-                              const allNbdkit = results.every((r: any) => !!r.nbdkitInstalled)
-                              const allNbdcopy = results.every((r: any) => !!r.nbdcopyInstalled)
-                              const allGuestfsTools = results.every((r: any) => !!r.guestfsToolsInstalled)
-                              const allOvmf = results.every((r: any) => !!r.ovmfInstalled)
-                              const allVirtioWin = results.every((r: any) => !!r.virtioWinInstalled)
-                              const firstWithDisks = results.find((r: any) => r.detectedDisks && r.detectedDisks.length > 0)
-                              const firstWithStorages = results[0]
-                              setVcenterPreflight({
-                                checked: true,
-                                ok: results.every((r: any) => !(r.errors || []).length),
-                                installing: false,
-                                errors: [],
-                                virtV2vInstalled: allVirtV2v,
-                                virtioWinInstalled: allVirtioWin,
-                                nbdkitInstalled: allNbdkit,
-                                nbdcopyInstalled: allNbdcopy,
-                                guestfsToolsInstalled: allGuestfsTools,
-                                ovmfInstalled: allOvmf,
-                                detectedDisks: firstWithDisks?.detectedDisks || [],
-                                tempStorages: firstWithStorages?.tempStorages || [],
-                              })
-                            } catch {
-                              setVcenterPreflight(prev => prev ? { ...prev, installing: false } : prev)
-                            }
+                            // Install target = every online node of the cluster when Auto
+                            // is selected, otherwise just the single chosen node. apt-get
+                            // is idempotent so re-installing on nodes that already have
+                            // the deps is a no-op.
+                            const installNodes = migTargetNode === '__auto__'
+                              ? migNodeOptions.filter((o: any) => o.connId === migTargetConn && o.status === 'online').map((o: any) => o.node)
+                              : [migTargetNode]
+                            await runV2vInstall(installNodes)
                           }}
                           sx={{ textTransform: 'none', fontSize: 11, whiteSpace: 'nowrap' }}
                         >
@@ -3114,6 +3184,7 @@ return
                   }
                   return (
                     <>
+                    {installErrorAlert}
                     {missingAptBulk && <Alert
                       severity="warning"
                       sx={{ fontSize: 12, '& .MuiAlert-message': { width: '100%' } }}
@@ -3147,45 +3218,12 @@ return
                         disabled={vcenterPreflight.installing}
                         startIcon={vcenterPreflight.installing ? <CircularProgress size={14} color="inherit" /> : <i className="ri-download-line" />}
                         onClick={async () => {
-                          setVcenterPreflight(prev => prev ? { ...prev, installing: true } : prev)
-                          try {
-                            // Bulk install target = every online node of the cluster when
-                            // Auto is selected. apt-installs virt-v2v + nbdkit + libnbd-bin
-                            // only. virtio-win is manual and handled in the instruction
-                            // block below.
-                            const installNodes = migTargetNode === '__auto__'
-                              ? migNodeOptions.filter((o: any) => o.connId === migTargetConn && o.status === 'online').map((o: any) => o.node)
-                              : [migTargetNode]
-                            await Promise.all(installNodes.map((node: string) => fetch('/api/v1/migrations/preflight', {
-                              method: 'POST',
-                              headers: { 'Content-Type': 'application/json' },
-                              body: JSON.stringify({ targetConnectionId: migTargetConn, targetNode: node, action: 'install' }),
-                            })))
-                            const results = await Promise.all(installNodes.map(async (node: string) => {
-                              const r2 = await fetch('/api/v1/migrations/preflight', {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ targetConnectionId: migTargetConn, targetNode: node }),
-                              })
-                              return r2.json()
-                            }))
-                            setVcenterPreflight({
-                              checked: true,
-                              ok: results.every((r: any) => !(r.errors || []).length),
-                              installing: false,
-                              errors: [],
-                              virtV2vInstalled: results.every((r: any) => !!r.virtV2vInstalled),
-                              virtioWinInstalled: results.every((r: any) => !!r.virtioWinInstalled),
-                              nbdkitInstalled: results.every((r: any) => !!r.nbdkitInstalled),
-                              nbdcopyInstalled: results.every((r: any) => !!r.nbdcopyInstalled),
-                              guestfsToolsInstalled: results.every((r: any) => !!r.guestfsToolsInstalled),
-                              ovmfInstalled: results.every((r: any) => !!r.ovmfInstalled),
-                              detectedDisks: [],
-                              tempStorages: results[0]?.tempStorages || [],
-                            })
-                          } catch {
-                            setVcenterPreflight(prev => prev ? { ...prev, installing: false } : prev)
-                          }
+                          // Bulk install target = every online node of the cluster when
+                          // Auto is selected, otherwise just the single chosen node.
+                          const installNodes = migTargetNode === '__auto__'
+                            ? migNodeOptions.filter((o: any) => o.connId === migTargetConn && o.status === 'online').map((o: any) => o.node)
+                            : [migTargetNode]
+                          await runV2vInstall(installNodes)
                         }}
                         sx={{ textTransform: 'none', fontSize: 11, whiteSpace: 'nowrap' }}
                       >
