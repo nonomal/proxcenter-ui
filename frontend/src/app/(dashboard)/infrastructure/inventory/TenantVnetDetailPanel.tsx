@@ -351,26 +351,17 @@ export default function TenantVnetDetailPanel({ selectionId }: Props) {
                                   ) : (
                                     <Box component="i" className="ri-bookmark-line" sx={{ fontSize: 16, opacity: 0.45 }} />
                                   )}
-                                  <Tooltip
-                                    arrow
-                                    title={orphaned
-                                      ? t('myVdc.ipamOrphanTooltip')
-                                      : vm
-                                        ? `${vm.name} (${vm.status}) on ${vm.node}`
-                                        : t('myVdc.ipamReservedNoVm')}
+                                  <Typography
+                                    variant="body2"
+                                    sx={{
+                                      fontSize: 12,
+                                      fontWeight: vm ? 500 : 400,
+                                      opacity: vm ? 1 : 0.55,
+                                      fontStyle: vm ? 'normal' : 'italic',
+                                    }}
                                   >
-                                    <Typography
-                                      variant="body2"
-                                      sx={{
-                                        fontSize: 12,
-                                        fontWeight: vm ? 500 : 400,
-                                        opacity: vm ? 1 : 0.55,
-                                        fontStyle: vm ? 'normal' : 'italic',
-                                      }}
-                                    >
-                                      {vm?.name ?? a.hostname ?? t('myVdc.ipamReservedLabel')}
-                                    </Typography>
-                                  </Tooltip>
+                                    {vm?.name ?? a.hostname ?? t('myVdc.ipamReservedLabel')}
+                                  </Typography>
                                 </Stack>
                               </TableCell>
                               <TableCell sx={{ fontSize: 12, py: 0.75 }}>

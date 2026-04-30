@@ -341,6 +341,36 @@ export function listAllocationsForSubnet(subnetId: string): IpamAllocation[] {
     .all(subnetId) as any[]).map(rowToAllocation)
 }
 
+export function countAllocationsForSubnet(subnetId: string): number {
+  const row = db()
+    .prepare(`SELECT COUNT(*) AS n FROM vdc_ipam_allocations WHERE subnet_id = ?`)
+    .get(subnetId) as { n: number } | undefined
+  return row?.n ?? 0
+}
+
+/**
+ * Compute (used, usable) for a subnet without fetching every allocation row.
+ * `usable` mirrors the allocator's own definition: CIDR usable hosts minus
+ * the gateway when it falls inside the usable range. Tenants who want a
+ * smaller pool just declare a smaller CIDR — there is no separate reserve.
+ *
+ * Used by the VNets list endpoint to surface "used / usable" counts in the
+ * dashboard without an extra round-trip per row.
+ */
+export function getSubnetUsage(subnetId: string, cidr: string, gateway: string): { used: number; usable: number } {
+  const used = countAllocationsForSubnet(subnetId)
+  const parsed = parseCidr(cidr)
+  let usable = 0
+  if (parsed) {
+    const low = parsed.firstUsableInt
+    const high = parsed.lastUsableInt
+    const gatewayInt = parseCidr(`${gateway}/32`)?.networkInt
+    const gatewayInRange = typeof gatewayInt === 'number' && gatewayInt >= low && gatewayInt <= high
+    usable = Math.max(0, high - low + 1 - (gatewayInRange ? 1 : 0))
+  }
+  return { used, usable }
+}
+
 export function listAllocationsForVdc(vdcId: string): IpamAllocation[] {
   return (db()
     .prepare(`SELECT * FROM vdc_ipam_allocations WHERE vdc_id = ? ORDER BY ip_int`)

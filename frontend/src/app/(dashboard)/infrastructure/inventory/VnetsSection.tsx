@@ -3,10 +3,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useTranslations } from 'next-intl'
 import {
+  Box,
   Button,
   Card, CardContent,
   Chip,
   CircularProgress,
+  Dialog, DialogContent,
   IconButton,
   Stack,
   Table, TableBody, TableCell, TableContainer, TableHead, TableRow,
@@ -19,6 +21,7 @@ import {
 import VnetCreateDialog from '@/components/mydc/VnetCreateDialog'
 import VnetEditDialog from '@/components/mydc/VnetEditDialog'
 import VnetDeleteDialog from '@/components/mydc/VnetDeleteDialog'
+import TenantVnetDetailPanel from './TenantVnetDetailPanel'
 
 interface Vdc { id: string; name: string; connectionId?: string }
 
@@ -26,6 +29,11 @@ interface SubnetView {
   cidr: string
   gateway: string
   dnsServers: string[]
+}
+
+interface IpamUsage {
+  used: number
+  usable: number
 }
 
 interface VnetRow {
@@ -41,6 +49,8 @@ interface VnetRow {
   firewall?: boolean
   /** L3 / IPAM info attached to the VNet. Always present in the new model. */
   subnet: SubnetView | null
+  /** IPAM allocation counts (used / usable). Always returned by the API. */
+  ipamUsage: IpamUsage
 }
 
 interface Props {
@@ -58,8 +68,17 @@ export default function VnetsSection({ connectionIds }: Props) {
   const [createOpen, setCreateOpen] = useState(false)
   const [editVnet, setEditVnet] = useState<{ row: VnetRow } | null>(null)
   const [deleteVnet, setDeleteVnet] = useState<{ row: VnetRow } | null>(null)
+  // Detail modal: opened by clicking a row. Reuses TenantVnetDetailPanel
+  // so we don't duplicate the IPAM table / VM lookup / edit flow.
+  const [detailVnet, setDetailVnet] = useState<{ row: VnetRow } | null>(null)
 
-  const connFilter = useMemo(() => new Set(connectionIds), [connectionIds])
+  // Stabilize the conn filter by deriving a string key — the parent
+  // rebuilds the connectionIds array on every render (Set spread in
+  // InventoryDetails), and using the array reference directly as a memo
+  // dep would invalidate `connFilter` → `reload` → useEffect on every
+  // poll, kicking the table back to a spinner.
+  const connKey = connectionIds.slice().sort((a, b) => a.localeCompare(b)).join(',')
+  const connFilter = useMemo(() => new Set(connKey ? connKey.split(',') : []), [connKey])
 
   const reload = useCallback(async () => {
     setLoading(true)
@@ -88,6 +107,10 @@ export default function VnetsSection({ connectionIds }: Props) {
                   dnsServers: Array.isArray(sn.dnsServers) ? sn.dnsServers : [],
                 }
               : null
+            const u = vnet.ipamUsage
+            const ipamUsage: IpamUsage = u && typeof u === 'object'
+              ? { used: Number(u.used) || 0, usable: Number(u.usable) || 0 }
+              : { used: 0, usable: 0 }
             all.push({
               id: vnet.id,
               vdcId: v.id,
@@ -98,6 +121,7 @@ export default function VnetsSection({ connectionIds }: Props) {
               vxlanTag: vnet.vxlanTag,
               firewall: vnet.firewall,
               subnet,
+              ipamUsage,
             })
           }
         } catch { /* skip */ }
@@ -137,7 +161,10 @@ export default function VnetsSection({ connectionIds }: Props) {
             </Tooltip>
           </Stack>
 
-          {loading ? (
+          {/* Only swap the table for a spinner on the initial load. Once
+              we have rows, keep showing them during background refreshes
+              so the section doesn't flicker on every inventory poll. */}
+          {loading && rows.length === 0 ? (
             <Stack alignItems="center" sx={{ py: 4 }}>
               <CircularProgress size={20} />
             </Stack>
@@ -155,6 +182,7 @@ export default function VnetsSection({ connectionIds }: Props) {
                     <TableCell sx={{ fontWeight: 700, fontSize: 12, opacity: 0.65, py: 1 }}>{t('myVdc.subnetColumn')}</TableCell>
                     <TableCell sx={{ fontWeight: 700, fontSize: 12, opacity: 0.65, py: 1 }}>{t('myVdc.subnetGateway')}</TableCell>
                     <TableCell sx={{ fontWeight: 700, fontSize: 12, opacity: 0.65, py: 1 }}>{t('myVdc.subnetDns')}</TableCell>
+                    <TableCell align="right" sx={{ fontWeight: 700, fontSize: 12, opacity: 0.65, py: 1 }}>{t('myVdc.subnetUsage')}</TableCell>
                     <TableCell sx={{ fontWeight: 700, fontSize: 12, opacity: 0.65, py: 1 }}>{t('myVdc.vnetDescription')}</TableCell>
                     <TableCell align="center" sx={{ fontWeight: 700, fontSize: 12, opacity: 0.65, py: 1 }}>{t('myVdc.vnetFirewall')}</TableCell>
                     <TableCell align="right" sx={{ fontWeight: 700, fontSize: 12, opacity: 0.65, py: 1 }}></TableCell>
@@ -164,7 +192,11 @@ export default function VnetsSection({ connectionIds }: Props) {
                   {rows.map((r) => {
                     const sn = r.subnet
                     return (
-                    <TableRow key={r.id} sx={{ '&:last-child td': { border: 0 }, '&:hover': { bgcolor: alpha(theme.palette.action.hover, 0.5) } }}>
+                    <TableRow
+                      key={r.id}
+                      onClick={() => setDetailVnet({ row: r })}
+                      sx={{ '&:last-child td': { border: 0 }, cursor: 'pointer' }}
+                    >
                       <TableCell sx={{ py: 1 }}>
                         <Tooltip title={`PVE ID: ${r.pveName} · vDC: ${r.vdcName}${r.vxlanTag ? ` · VNI ${r.vxlanTag}` : ''}`} arrow placement="top">
                           <Typography variant="body2" fontWeight={600} sx={{ fontSize: 12 }}>{r.displayName}</Typography>
@@ -181,6 +213,32 @@ export default function VnetsSection({ connectionIds }: Props) {
                           ? sn.dnsServers.join(', ')
                           : <span style={{ opacity: 0.45 }}>—</span>}
                       </TableCell>
+                      <TableCell align="right" sx={{ py: 1 }}>
+                        {(() => {
+                          const { used, usable } = r.ipamUsage
+                          if (usable === 0) {
+                            return <span style={{ opacity: 0.45, fontSize: 12 }}>—</span>
+                          }
+                          const pct = Math.min(100, Math.round((used / usable) * 100))
+                          const barColor = pct >= 90
+                            ? theme.palette.error.main
+                            : pct >= 70
+                              ? theme.palette.warning.main
+                              : theme.palette.success.main
+                          return (
+                            <Tooltip title={t('myVdc.subnetUsageTooltip', { used, usable })} arrow placement="top">
+                              <Stack spacing={0.5} alignItems="flex-end" sx={{ minWidth: 64, display: 'inline-flex' }}>
+                                <Typography variant="caption" sx={{ fontSize: 11, fontFamily: 'JetBrains Mono, monospace', lineHeight: 1.2 }}>
+                                  {used} / {usable}
+                                </Typography>
+                                <Box sx={{ width: 64, height: 4, bgcolor: alpha(theme.palette.divider, 0.4), borderRadius: 2, overflow: 'hidden' }}>
+                                  <Box sx={{ width: `${pct}%`, height: '100%', bgcolor: barColor, transition: 'width 200ms ease, background-color 200ms ease' }} />
+                                </Box>
+                              </Stack>
+                            </Tooltip>
+                          )
+                        })()}
+                      </TableCell>
                       <TableCell sx={{ py: 1, fontSize: 12, opacity: 0.75 }}>{r.description || '—'}</TableCell>
                       <TableCell align="center" sx={{ py: 1 }}>
                         <Chip
@@ -192,8 +250,19 @@ export default function VnetsSection({ connectionIds }: Props) {
                       </TableCell>
                       <TableCell align="right" sx={{ py: 0.5 }}>
                         <Stack direction="row" spacing={0.5} justifyContent="flex-end">
-                          <IconButton size="small" onClick={() => setEditVnet({ row: r })}><i className="ri-pencil-line" /></IconButton>
-                          <IconButton size="small" color="error" onClick={() => setDeleteVnet({ row: r })}><i className="ri-delete-bin-line" /></IconButton>
+                          <IconButton
+                            size="small"
+                            onClick={(e) => { e.stopPropagation(); setEditVnet({ row: r }) }}
+                          >
+                            <i className="ri-pencil-line" />
+                          </IconButton>
+                          <IconButton
+                            size="small"
+                            color="error"
+                            onClick={(e) => { e.stopPropagation(); setDeleteVnet({ row: r }) }}
+                          >
+                            <i className="ri-delete-bin-line" />
+                          </IconButton>
                         </Stack>
                       </TableCell>
                     </TableRow>
@@ -228,6 +297,35 @@ export default function VnetsSection({ connectionIds }: Props) {
           onDeleted={() => { setDeleteVnet(null); void reload() }}
         />
       )}
+
+      {/* Click-on-row detail modal — reuses the side-panel layout from
+          TenantVnetDetailPanel so we keep one source of truth for the
+          IPAM table, VM lookup, status pastilles and edit dialog.
+          The panel renders its own header (icon + name + CIDR + edit
+          button), so we deliberately skip a DialogTitle and just float
+          a close button in the top-right corner. */}
+      <Dialog
+        open={!!detailVnet}
+        onClose={() => { setDetailVnet(null); void reload() }}
+        maxWidth="lg"
+        fullWidth
+      >
+        <DialogContent sx={{ pt: 3, position: 'relative' }}>
+          <IconButton
+            size="small"
+            onClick={() => { setDetailVnet(null); void reload() }}
+            sx={{ position: 'absolute', top: 8, right: 8, zIndex: 1 }}
+            aria-label="close"
+          >
+            <i className="ri-close-line" style={{ fontSize: 18 }} />
+          </IconButton>
+          {detailVnet && (
+            <TenantVnetDetailPanel
+              selectionId={`${detailVnet.row.vdcId}:${detailVnet.row.displayName}`}
+            />
+          )}
+        </DialogContent>
+      </Dialog>
     </>
   )
 }

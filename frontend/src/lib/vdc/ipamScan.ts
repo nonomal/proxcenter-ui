@@ -112,23 +112,32 @@ const NET_KEY_REGEX = /^net(\d+)$/
 const NET_MODEL_TOKENS = new Set(['virtio', 'e1000', 'e1000-82540em', 'e1000-82544gc', 'e1000-82545em', 'rtl8139', 'vmxnet3'])
 
 /**
- * Parse a `netN` line. Extract the bridge name and the MAC pinned in the
- * model token (e.g. `virtio=BC:24:11:AA:BB:CC`). MAC is null when PVE
- * auto-generates it (no `=mac` after the model name).
+ * Parse a `netN` line. Extract the bridge and MAC. PVE accepts two MAC
+ * forms — both must be supported, otherwise IPAM sync silently drops
+ * allocations on edits made via the UI:
+ *
+ *   1. Canonical (what PVE returns on read): `virtio=BC:24:11:AA:BB:CC,bridge=X`
+ *   2. Alt form (what `EditNetworkDialog` writes): `virtio,bridge=X,macaddr=BC:24:11:AA:BB:CC`
+ *
+ * The canonical form wins when both are present; fall back to `macaddr=`
+ * when the model token has no MAC pinned to it. MAC stays null when PVE
+ * is going to auto-generate it (no MAC anywhere on the line).
  */
 export function parseNetLine(value: string): { bridge: string | null; mac: string | null } {
   const parts = String(value || '').split(',')
   let bridge: string | null = null
-  let mac: string | null = null
+  let modelMac: string | null = null
+  let macaddrMac: string | null = null
   for (const part of parts) {
     const eq = part.indexOf('=')
     if (eq < 0) continue
     const k = part.slice(0, eq).trim()
     const v = part.slice(eq + 1).trim()
     if (k === 'bridge') bridge = v
-    else if (NET_MODEL_TOKENS.has(k)) mac = v.toUpperCase()
+    else if (NET_MODEL_TOKENS.has(k)) modelMac = v.toUpperCase()
+    else if (k === 'macaddr') macaddrMac = v.toUpperCase()
   }
-  return { bridge, mac }
+  return { bridge, mac: modelMac ?? macaddrMac }
 }
 
 /**

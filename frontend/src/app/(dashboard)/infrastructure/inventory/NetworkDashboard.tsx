@@ -402,7 +402,10 @@ export default function NetworkDashboard({ connectionIds, connectionNames }: Pro
     }
   }, [networkData, connectionNames])
 
-  if (loading) {
+  // Only block the dashboard with a spinner on the initial load — after
+  // that, background refetches keep the existing KPIs / tables visible
+  // so the page doesn't flicker on every inventory poll.
+  if (loading && networkData.length === 0) {
     return (
       <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', py: 8 }}>
         <CircularProgress />
