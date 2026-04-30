@@ -1,5 +1,5 @@
 import { Client } from "ssh2"
-import { getSessionPrisma } from "@/lib/tenant"
+import { prisma } from "@/lib/db/prisma"
 import { decryptSecret } from "@/lib/crypto/secret"
 
 const ORCHESTRATOR_URL = process.env.ORCHESTRATOR_URL || "http://localhost:8080"
@@ -30,7 +30,15 @@ export async function executeSSH(
   command: string,
   timeoutMs: number = 30_000
 ): Promise<SSHResult> {
-  const prisma = await getSessionPrisma()
+  // Load via the global (unscoped) prisma. SSH credentials live on the
+  // connection record owned by the provider tenant; a tenant in vDC mode
+  // legitimately needs to reach those credentials to run commands on
+  // their own VMs (e.g. qm unlock). Authorisation is the caller's job —
+  // the route that hits executeSSH must already have verified the
+  // tenant's claim on this connection (RBAC permission + vDC scope).
+  // Using the tenant-scoped prisma here would silently return null for
+  // any cross-tenant lookup and the "SSH not enabled" error would lie
+  // about the actual root cause.
   const connection = await prisma.connection.findUnique({
     where: { id: connectionId },
     select: {

@@ -1,6 +1,6 @@
 import { pveFetch } from "@/lib/proxmox/client"
 import { resolveManagementIp } from "@/lib/proxmox/resolveManagementIp"
-import { getSessionPrisma } from "@/lib/tenant"
+import { prisma } from "@/lib/db/prisma"
 
 /**
  * Resolve the management IP of a Proxmox node.
@@ -18,9 +18,13 @@ export async function getNodeIp(conn: any, nodeName: string): Promise<string> {
 
   // 0. Check for user-configured SSH address override
   // 1. Check for stored management IP from DB
+  // We use the global (unscoped) prisma because ManagedHost rows belong
+  // to the connection's owner tenant; a vDC tenant calling getNodeIp on
+  // a provider-owned connection would otherwise get null and fall
+  // through to the slower probing paths even when a managed-IP record
+  // already exists. Authorisation on the connection is the caller's job.
   try {
     if (connId) {
-      const prisma = await getSessionPrisma()
       const host = await prisma.managedHost.findUnique({
         where: { connectionId_node: { connectionId: connId, node: nodeName } },
         select: { sshAddress: true, ip: true },
