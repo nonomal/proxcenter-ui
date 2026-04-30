@@ -43,6 +43,10 @@ interface MigrationConfig {
   networkBridge: string
   startAfterMigration: boolean
   migrationType?: "cold" | "live"
+  // User-selected scratch directory on the PVE node for VHD download +
+  // qemu-img conversion. When set, overrides the default heuristic that picks
+  // the target storage's images dir (file-based) or /var/lib/vz/tmp (block).
+  tempStorage?: string
 }
 
 interface LogEntry {
@@ -353,10 +357,16 @@ export async function runXcpngMigrationPipeline(jobId: string, config: Migration
     const isFileBased = isFileBasedStorage(storageType)
     const importFormat = isFileBased ? "qcow2" : "raw"
 
-    // Resolve temp directory for VHD downloads
-    // File-based: use target storage path (plenty of space)
-    // Block: use /var/lib/vz (VHD is temporary, converted directly to block device)
-    if (isFileBased) {
+    // Resolve temp directory for VHD downloads.
+    // Priority: user-selected tempStorage from the migration dialog.
+    // Falls back to the auto-pick heuristic when nothing is set.
+    // File-based fallback: use target storage path (plenty of space).
+    // Block fallback: use /var/lib/vz/tmp (VHD is converted directly to the
+    // block device, then the scratch file is removed).
+    const userTempStorage = config.tempStorage?.trim().replace(/\/+$/, '') || ''
+    if (userTempStorage) {
+      storageTempDir = `${userTempStorage}/proxcenter-xcpng-migration/${targetVmid}`
+    } else if (isFileBased) {
       const storagePath = storageConfig?.path || '/var/lib/vz'
       storageTempDir = `${storagePath}/images/${targetVmid}`
     } else {
