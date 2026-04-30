@@ -101,7 +101,12 @@ export function EditNetworkDialog({ open, onClose, onSave, onDelete, connId, nod
       setModel(network.model || 'virtio')
       setVlanTag(network.vlan ? String(network.vlan) : '')
       setMacAddress(network.mac || '')
-      setFirewall(network.firewall !== false)
+      // PVE convention: missing `firewall=` parameter = firewall OFF.
+      // Our parser leaves network.firewall as undefined when the key isn't
+      // present in the config, so map undefined to false to match PVE,
+      // instead of the previous `!== false` which mapped undefined to true
+      // and silently flipped the firewall on when the user clicked Save.
+      setFirewall(network.firewall === true)
       setDisconnect(network.linkDown || false)
       setRateLimit(network.rate ? String(network.rate) : '')
       setMtu(network.mtu ? String(network.mtu) : '')
