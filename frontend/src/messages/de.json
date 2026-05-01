@@ -3549,6 +3549,7 @@
       "confirmDeleteTitle": "Mirror-Snapshots löschen",
       "confirmDeleteDesc": "Sie sind dabei, {count} Mirror-Snapshot(s) zu löschen. Dieser Vorgang kann nicht rückgängig gemacht werden.",
       "confirmDeleteActiveWarn": "Einige Snapshots gehören zu aktiven Replikationsaufträgen. Ihr Löschen erzwingt eine vollständige Synchronisierung beim nächsten Lauf.",
+      "deletingItem": "Lösche {name}…",
       "andMore": "{count} weitere"
     },
     "status": {

@@ -3589,6 +3589,7 @@
       "confirmDeleteTitle": "Supprimer des snapshots mirror",
       "confirmDeleteDesc": "Vous êtes sur le point de supprimer {count} snapshot(s) mirror. Cette action est irréversible.",
       "confirmDeleteActiveWarn": "Certains snapshots appartiennent à des jobs actifs. Les supprimer forcera un full sync à la prochaine exécution.",
+      "deletingItem": "Suppression de {name}…",
       "andMore": "{count} de plus"
     },
     "status": {

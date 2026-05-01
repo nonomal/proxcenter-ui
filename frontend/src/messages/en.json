@@ -3589,6 +3589,7 @@
       "confirmDeleteTitle": "Delete mirror snapshots",
       "confirmDeleteDesc": "You are about to delete {count} mirror snapshot(s). This action cannot be undone.",
       "confirmDeleteActiveWarn": "Some of the selected snapshots belong to active replication jobs. Deleting them will force a full re-sync on the next run.",
+      "deletingItem": "Deleting {name}…",
       "andMore": "{count} more"
     },
     "status": {

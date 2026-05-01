@@ -3551,6 +3551,7 @@
       "confirmDeleteTitle": "删除 mirror 快照",
       "confirmDeleteDesc": "即将删除 {count} 个 mirror 快照，此操作不可撤销。",
       "confirmDeleteActiveWarn": "部分选中的快照属于活动复制任务。删除后下次同步将触发完整重新同步。",
+      "deletingItem": "正在删除 {name}…",
       "andMore": "还有 {count} 个"
     },
     "status": {
