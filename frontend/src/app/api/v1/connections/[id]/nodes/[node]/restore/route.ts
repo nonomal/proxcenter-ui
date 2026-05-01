@@ -126,6 +126,13 @@ export async function POST(
       return NextResponse.json({ error: "archive (or pbsBackup) is required" }, { status: 400 })
     }
 
+    // PVE's PBSPlugin volname regex requires the timestamp to end strictly in
+    // `Z`, no fractions: `\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$`. Any caller
+    // that built the path from a raw `Date.toISOString()` (which always emits
+    // `.NNNZ`) without stripping the millis would 500 here. Strip defensively
+    // so any upstream miss doesn't surface as "unable to parse PBS volume name".
+    archive = archive.replace(/(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})\.\d{1,6}Z$/, '$1Z')
+
     // PVE has no /qmrestore or /vzrestore REST endpoint — those are CLI
     // commands. The actual restore lives behind POST /nodes/{node}/qemu
     // (with `archive=...`) and POST /nodes/{node}/lxc (with
