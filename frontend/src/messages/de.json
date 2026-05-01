@@ -6509,6 +6509,7 @@
     "primaryStorageHint": "Einzelner Shared-Storage, der alle VM-Disks dieser vDC trägt. Lokale und ISO/Backup-only Speicher werden automatisch ausgefiltert.",
     "primaryStorageLabel": "Speicher",
     "primaryStorageRequired": "Hauptspeicher ist erforderlich",
+    "pbsFieldsRequired": "Alle Felder der PBS-Bindung sind erforderlich, wenn die Option aktiviert ist",
     "noSharedStorage": "Kein Shared-Storage mit content=images auf diesem Cluster gefunden. Eine vDC benötigt HA-fähigen Speicher (CEPH/RBD, NFS…).",
     "pbsBindings": "Backup (PBS)",
     "pbsBindingsDialogTitle": "Backup-Bindings — {name}",

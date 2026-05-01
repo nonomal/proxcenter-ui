@@ -6506,6 +6506,7 @@
     "primaryStorageHint": "承载此 vDC 所有虚拟机磁盘的单个共享存储。本地存储和仅 ISO/备份的存储已自动过滤。",
     "primaryStorageLabel": "存储",
     "primaryStorageRequired": "必须设置主存储",
+    "pbsFieldsRequired": "启用此选项时，所有 PBS 绑定字段均为必填项",
     "noSharedStorage": "此集群上未检测到 content=images 的共享存储。vDC 需要 HA 兼容的存储（CEPH/RBD、NFS…）。",
     "pbsBindings": "备份 (PBS)",
     "pbsBindingsDialogTitle": "备份绑定 — {name}",

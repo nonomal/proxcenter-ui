@@ -6486,6 +6486,7 @@
     "primaryStorageHint": "Single shared storage backing all VM disks for this vDC. Local storages and ISO/backup-only storages are filtered out automatically — only HA-capable disk-image storages are listed.",
     "primaryStorageLabel": "Storage",
     "primaryStorageRequired": "Primary storage is required",
+    "pbsFieldsRequired": "All PBS binding fields are required when the option is enabled",
     "noSharedStorage": "No shared storage with content=images detected on this cluster. A vDC requires an HA-capable storage (CEPH/RBD, NFS…). Configure one in Datacenter → Storage and retry.",
     "sharedBridgesTitle": "Shared bridges (uplinks)",
     "sharedBridgesHint": "Bridges from the cluster that this vDC is allowed to attach to (in addition to its own VNets). Typically used for WAN or management uplinks.",

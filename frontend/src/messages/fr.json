@@ -6487,6 +6487,7 @@
     "primaryStorageHint": "Stockage partagé unique qui héberge tous les disques VM de ce vDC. Les stockages locaux et ceux uniquement ISO/backup sont filtrés automatiquement — seuls les stockages partagés capables d'héberger des disques sont listés.",
     "primaryStorageLabel": "Stockage",
     "primaryStorageRequired": "Le stockage principal est obligatoire",
+    "pbsFieldsRequired": "Tous les champs du binding PBS sont obligatoires lorsque l'option est activée",
     "noSharedStorage": "Aucun stockage partagé avec content=images détecté sur ce cluster. Un vDC nécessite un stockage HA-capable (CEPH/RBD, NFS…). Configurez-en un dans Datacenter → Storage puis réessayez.",
     "sharedBridgesTitle": "Bridges partagés (uplinks)",
     "sharedBridgesHint": "Bridges du cluster que ce vDC peut utiliser en plus de ses propres VNets. Typiquement pour les uplinks WAN ou management.",

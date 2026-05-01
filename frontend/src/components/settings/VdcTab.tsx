@@ -495,6 +495,12 @@ export default function VdcTab() {
         throw new Error(t('vdc.primaryStorageRequired'))
       }
 
+      if (!editingVdc && pbsDraft.enabled) {
+        if (!pbsDraft.pbsConnectionId || !pbsDraft.datastore || !pbsDraft.namespace) {
+          throw new Error(t('vdc.pbsFieldsRequired'))
+        }
+      }
+
       if (editingVdc) {
         // PUT - update
         const body: any = {
@@ -1328,6 +1334,7 @@ export default function VdcTab() {
                             <TextField
                               select
                               size="small"
+                              required
                               label={t('vdc.pbsPbsConnection')}
                               value={pbsDraft.pbsConnectionId}
                               onChange={(e) =>
@@ -1345,6 +1352,7 @@ export default function VdcTab() {
                             <TextField
                               select
                               size="small"
+                              required
                               label={t('vdc.pbsDatastore')}
                               value={pbsDraft.datastore}
                               onChange={(e) => setPbsDraft((d) => ({ ...d, datastore: e.target.value }))}
@@ -1357,6 +1365,7 @@ export default function VdcTab() {
                             </TextField>
                             <TextField
                               size="small"
+                              required
                               label={t('vdc.pbsNamespace')}
                               value={pbsDraft.namespace}
                               onChange={(e) => setPbsDraft((d) => ({ ...d, namespace: e.target.value }))}
@@ -1480,7 +1489,13 @@ export default function VdcTab() {
               // already prevents typing past the cluster total, but an
               // edited vDC could carry a legacy quota that exceeds the
               // current cluster (e.g. node decommissioned since create).
-              quotaOverCapacity
+              quotaOverCapacity ||
+              // PBS draft: when the toggle is ON at create time, all three
+              // sub-fields must be filled. Otherwise the bind step is silently
+              // skipped after the vDC is created.
+              (!editingVdc && pbsDraft.enabled && (
+                !pbsDraft.pbsConnectionId || !pbsDraft.datastore || !pbsDraft.namespace
+              ))
             }
           >
             {saving ? t('vdc.saving') : editingVdc ? t('common.update') : t('common.create')}
