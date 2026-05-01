@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server'
 import { pveFetch } from '@/lib/proxmox/client'
 import { getConnectionById } from '@/lib/connections/getConnection'
 import { getSessionPrisma } from "@/lib/tenant"
+import { prisma as globalPrisma } from "@/lib/db/prisma"
 import { checkPermission, PERMISSIONS } from '@/lib/rbac'
 
 export const runtime = 'nodejs'
@@ -57,7 +58,7 @@ return 'info'
 
 export async function GET(req: Request) {
   try {
-    const prisma = await getSessionPrisma()
+    const sessionPrisma = await getSessionPrisma()
     // connection.view baseline — tenants get a scoped feed filtered by their
     // vDC's nodes below. Super admins (no scope) see everything.
     const permError = await checkPermission(PERMISSIONS.CONNECTION_VIEW)
@@ -71,10 +72,15 @@ export async function GET(req: Request) {
     const limit = Math.min(Number.parseInt(searchParams.get('limit') || '100'), 500)
     const source = searchParams.get('source') || 'all' // 'tasks', 'logs', 'all'
 
-    // Récupérer uniquement les connexions PVE (pas PBS)
-    const connections = await prisma.connection.findMany({
-      where: { type: 'pve' }
-    })
+    // For vDC tenants, the PVE connections their vDC consumes are owned by a
+    // different tenant (the provider) so the session-scoped client can't see
+    // them. Use the global client + an explicit id whitelist from the scope,
+    // mirroring /api/v1/guests/{vmid}/backups. Without this fix the tenant
+    // gets an empty connections list and zero tasks in the taskbar.
+    const connPrisma = vdcScope ? globalPrisma : sessionPrisma
+    const connWhere: any = { type: 'pve' }
+    if (vdcScope) connWhere.id = { in: [...vdcScope.connectionIds] }
+    const connections = await connPrisma.connection.findMany({ where: connWhere })
     
     if (connections.length === 0) {
       return NextResponse.json({ data: [] })
