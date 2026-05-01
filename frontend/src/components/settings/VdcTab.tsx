@@ -19,6 +19,7 @@ import {
   FormControl,
   FormControlLabel,
   IconButton,
+  InputAdornment,
   InputLabel,
   LinearProgress,
   MenuItem,
@@ -1123,7 +1124,20 @@ export default function VdcTab() {
             }}
             disabled={!!editingVdc}
             renderInput={(params) => (
-              <TextField {...params} label={t('vdc.tenant')} placeholder={t('vdc.selectTenant')} required />
+              <TextField
+                {...params}
+                label={t('vdc.tenant')}
+                placeholder={t('vdc.selectTenant')}
+                required
+                InputProps={{
+                  ...params.InputProps,
+                  startAdornment: (
+                    <InputAdornment position="start">
+                      <i className="ri-building-line" style={{ fontSize: 18, color: 'var(--mui-palette-primary-main)' }} />
+                    </InputAdornment>
+                  ),
+                }}
+              />
             )}
           />
 
@@ -1164,7 +1178,20 @@ export default function VdcTab() {
             }}
             disabled={!!editingVdc}
             renderInput={(params) => (
-              <TextField {...params} label={t('vdc.connection')} placeholder={t('vdc.selectConnection')} required />
+              <TextField
+                {...params}
+                label={t('vdc.connection')}
+                placeholder={t('vdc.selectConnection')}
+                required
+                InputProps={{
+                  ...params.InputProps,
+                  startAdornment: (
+                    <InputAdornment position="start">
+                      <i className="ri-cloud-line" style={{ fontSize: 18, color: 'var(--mui-palette-primary-main)' }} />
+                    </InputAdornment>
+                  ),
+                }}
+              />
             )}
           />
 
@@ -1411,7 +1438,7 @@ export default function VdcTab() {
                                     }}
                                   />
                                 }
-                                label={<Typography fontFamily="monospace">{pb.iface}</Typography>}
+                                label={<Typography>{pb.iface}</Typography>}
                               />
                               <TextField
                                 size="small"
