@@ -7,6 +7,8 @@ import { syncIpamForVmConfig } from "@/lib/vdc/ipamSync"
 import { releaseAllocationsForVm } from "@/lib/vdc/ipam"
 import { waitForTask } from "@/lib/proxmox/tasks"
 import { prisma } from "@/lib/db/prisma"
+import { getCurrentTenantId, DEFAULT_TENANT_ID } from "@/lib/tenant"
+import { getDb } from "@/lib/db/sqlite"
 
 export const runtime = "nodejs"
 
@@ -197,12 +199,62 @@ export async function POST(
     // upcoming Restore UI will default unique=1 in that case. For
     // now, the sync runs best-effort and any collision surfaces in
     // the server logs.
-    if (!isLxc && result) {
+    // Resolve the tenant's vDC pool eagerly (cookies are gone after the
+    // response is sent and `after()` runs). qmrestore/vzrestore land VMs
+    // outside any pool — without this placement the restored VM is invisible
+    // in the tenant's vDC scope (vDC membership is keyed on PVE pool).
+    let targetPool: string | null = null
+    try {
+      const tenantId = await getCurrentTenantId()
+      if (tenantId !== DEFAULT_TENANT_ID) {
+        const db = getDb()
+        const row = db.prepare(`
+          SELECT v.pve_pool_name
+          FROM vdcs v
+          JOIN vdc_nodes vn ON vn.vdc_id = v.id
+          WHERE v.tenant_id = ? AND v.connection_id = ? AND vn.node_name = ? AND v.enabled = 1
+          LIMIT 1
+        `).get(tenantId, id, node) as { pve_pool_name: string } | undefined
+        targetPool = row?.pve_pool_name ?? null
+      }
+    } catch (err: any) {
+      console.error(`[restore-pool] failed to resolve target pool: ${err?.message ?? err}`)
+    }
+
+    if (result) {
       const upid = String(result)
       const numericVmid = Number(vmid)
       after(async () => {
         try {
           await waitForTask(conn, node, upid)
+        } catch (err: any) {
+          console.error(`[restore] waitForTask failed for vmid=${vmid}: ${err?.message ?? err}`)
+          return
+        }
+
+        // Pool placement (tenant vDC scope only — provider doesn't auto-pool).
+        // Applies to both qemu and lxc since both are scoped via PVE pools.
+        if (targetPool) {
+          try {
+            await pveFetch(
+              conn,
+              `/pools/${encodeURIComponent(targetPool)}`,
+              {
+                method: 'PUT',
+                body: new URLSearchParams({ vms: String(numericVmid) }).toString(),
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+              } as any
+            )
+          } catch (err: any) {
+            console.error(`[restore-pool] failed to add vmid=${numericVmid} to pool ${targetPool}: ${err?.message ?? err}`)
+          }
+        }
+
+        // IPAM sync — qemu only (lxc network config is shaped differently
+        // and isn't tracked by syncIpamForVmConfig today).
+        if (isLxc) return
+
+        try {
           const restoredConfig = await pveFetch<any>(
             conn,
             `/nodes/${encodeURIComponent(node)}/qemu/${encodeURIComponent(String(numericVmid))}/config`
