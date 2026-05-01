@@ -60,7 +60,7 @@ export default function EmptyState({
     >
       {illustration ? (
         <Box sx={{ mb: 2 }}>{illustration}</Box>
-      ) : (
+      ) : icon ? (
         <Box
           sx={{
             color: 'text.secondary',
@@ -71,7 +71,7 @@ export default function EmptyState({
         >
           <i className={icon} style={{ fontSize: config.iconSize }} />
         </Box>
-      )}
+      ) : null}
       <Typography
         variant={config.titleVariant}
         sx={{ fontWeight: 600, color: 'text.primary', mb: description ? 0.5 : 0 }}

@@ -9,7 +9,6 @@ import {
 } from '@mui/material'
 
 import EmptyState from '@/components/EmptyState'
-import SiteRecoveryIllustration from '@/components/illustrations/SiteRecoveryIllustration'
 
 import type { RecoveryPlan, RecoveryExecution, RecoveryPlanStatus } from '@/lib/orchestrator/site-recovery.types'
 
@@ -191,7 +190,7 @@ export default function RecoveryPlansTab({
       {/* Plan Cards Grid */}
       {(plans || []).length === 0 ? (
         <EmptyState
-          illustration={<SiteRecoveryIllustration />}
+          icon=''
           title={t('siteRecovery.plans.noPlans')}
           description={t('siteRecovery.plans.noPlansDesc')}
           size='large'

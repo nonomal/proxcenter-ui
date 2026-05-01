@@ -12,7 +12,6 @@ import { AreaChart, Area, XAxis, YAxis, Tooltip as RTooltip, Legend, CartesianGr
 import ChartContainer from '@/components/ChartContainer'
 
 import EmptyState from '@/components/EmptyState'
-import SiteRecoveryIllustration from '@/components/illustrations/SiteRecoveryIllustration'
 
 import type {
   ReplicationHealthStatus, ReplicationActivity, JobStatusSummary,
@@ -942,7 +941,7 @@ export default function DashboardTab({ health, loading, jobs, connections, vmNam
   if (!health || health.sites.length === 0) {
     return (
       <EmptyState
-        illustration={<SiteRecoveryIllustration />}
+        icon=''
         title={t('siteRecovery.dashboard.noSitesTitle')}
         description={t('siteRecovery.dashboard.noSitesDesc')}
         size='large'
