@@ -1105,6 +1105,9 @@ function ConnectionsTab() {
         <Tabs
           value={connTab}
           onChange={(_, v) => setConnTab(v)}
+          variant="scrollable"
+          scrollButtons="auto"
+          allowScrollButtonsMobile
           sx={{ '& .MuiTab-root': { minHeight: 48 } }}
         >
           <Tab
@@ -2592,6 +2595,9 @@ export default function SettingsPage() {
             <Tabs
               value={mainTab}
               onChange={(_, v) => handleTabChange(v)}
+              variant="scrollable"
+              scrollButtons="auto"
+              allowScrollButtonsMobile
               sx={{
                 '& .MuiTab-root': {
                   minHeight: 56,
