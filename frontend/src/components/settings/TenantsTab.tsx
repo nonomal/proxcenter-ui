@@ -277,7 +277,7 @@ export default function TenantsTab() {
       flex: 1,
       minWidth: 120,
       renderCell: (params) => (
-        <Chip label={params.value} size="small" sx={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '0.75rem' }} />
+        <Chip label={params.value} size="small" sx={{ fontSize: '0.75rem' }} />
       ),
     },
     {
@@ -292,9 +292,11 @@ export default function TenantsTab() {
       width: 100,
       renderCell: (params) => (
         <Chip
-          label={params.value ? t('tenants.active') : t('common.disabled')}
+          icon={params.value ? undefined : <i className="ri-lock-2-line" style={{ fontSize: 14, marginLeft: 6 }} />}
+          label={params.value ? t('tenants.active') : t('tenants.locked')}
           size="small"
-          color={params.value ? 'success' : 'default'}
+          color={params.value ? 'success' : 'warning'}
+          variant={params.value ? 'filled' : 'outlined'}
         />
       ),
     },
@@ -421,7 +423,16 @@ export default function TenantsTab() {
                 disabled={editingTenant?.id === 'default'}
               />
             }
-            label={t('common.enabled')}
+            label={
+              <Box sx={{ display: 'flex', flexDirection: 'column' }}>
+                <Typography variant="body2">{t('tenants.active')}</Typography>
+                {!form.enabled && (
+                  <Typography variant="caption" color="warning.main">
+                    {t('tenants.lockedHint')}
+                  </Typography>
+                )}
+              </Box>
+            }
           />
 
           {/* Users section — only in edit mode */}

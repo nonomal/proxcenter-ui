@@ -6309,6 +6309,8 @@
     "slug": "Slug",
     "slugHelp": "Lowercase letters, numbers, and hyphens only",
     "active": "Active",
+    "locked": "Locked",
+    "lockedHint": "Tenant users lose UI access. Proxmox resources, backups and IPAM are preserved and the action is reversible.",
     "users": "Users",
     "addUser": "Add user",
     "searchUser": "Search by name or email...",

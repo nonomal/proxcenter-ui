@@ -6310,6 +6310,8 @@
     "slug": "Slug",
     "slugHelp": "Lettres minuscules, chiffres et tirets uniquement",
     "active": "Actif",
+    "locked": "Verrouillé",
+    "lockedHint": "Les utilisateurs du tenant n'ont plus accès à l'UI. Ressources Proxmox, sauvegardes et IPAM préservés et réversibles.",
     "users": "Utilisateurs",
     "addUser": "Ajouter un utilisateur",
     "searchUser": "Rechercher par nom ou email...",

@@ -6253,6 +6253,8 @@
     "slug": "标识符",
     "slugHelp": "仅限小写字母、数字和连字符",
     "active": "活跃",
+    "locked": "已锁定",
+    "lockedHint": "租户用户将失去 UI 访问权限。Proxmox 资源、备份和 IPAM 均保留，且操作可逆。",
     "users": "用户",
     "addUser": "添加用户",
     "searchUser": "按名称或邮箱搜索...",
