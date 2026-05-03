@@ -29,6 +29,23 @@ export async function orchestratorFetch<T>(
     headers['X-API-Key'] = ORCHESTRATOR_API_KEY
   }
 
+  // Forward the current tenant so backend endpoints that scope by tenant
+  // (reports, schedules) can filter results. Skipped for the provider
+  // tenant ('default') so super-admin / provider sessions keep the
+  // unrestricted view of legacy data without a tenant_id.
+  // Lazy import to keep this module free of an upfront dependency on the
+  // tenant/auth chain (callers running outside a request context — e.g.
+  // background jobs — silently get the no-tenant fallback).
+  try {
+    const { getCurrentTenantId, DEFAULT_TENANT_ID } = await import('@/lib/tenant')
+    const tid = await getCurrentTenantId()
+    if (tid && tid !== DEFAULT_TENANT_ID) {
+      headers['X-Tenant-ID'] = tid
+    }
+  } catch {
+    // No session / not in a request: send without tenant header (provider mode)
+  }
+
   const controller = new AbortController()
   const timeoutId = setTimeout(() => controller.abort(), timeout)
 

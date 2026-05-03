@@ -485,11 +485,28 @@ return () => setPageInfo('', '', '')
         flex: 1,
         minWidth: 200,
         renderCell: params => (
-          <Box sx={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', minWidth: 0 }}>
-            <Typography variant='body2' noWrap sx={{ fontWeight: 600, lineHeight: 1.3 }}>{params.row.email}</Typography>
-            {params.row.name && (
-              <Typography variant='caption' noWrap sx={{ opacity: 0.6, lineHeight: 1.2 }}>{params.row.name}</Typography>
-            )}
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, minWidth: 0, width: '100%' }}>
+            <Box
+              sx={{
+                width: 32,
+                height: 32,
+                borderRadius: '50%',
+                bgcolor: 'action.hover',
+                color: 'text.secondary',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                flexShrink: 0,
+              }}
+            >
+              <i className='ri-user-line' style={{ fontSize: 16 }} />
+            </Box>
+            <Box sx={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', minWidth: 0 }}>
+              <Typography variant='body2' noWrap sx={{ fontWeight: 600, lineHeight: 1.3 }}>{params.row.email}</Typography>
+              {params.row.name && (
+                <Typography variant='caption' noWrap sx={{ opacity: 0.6, lineHeight: 1.2 }}>{params.row.name}</Typography>
+              )}
+            </Box>
           </Box>
         ),
       },
@@ -612,18 +629,14 @@ return () => setPageInfo('', '', '')
                     loading={loading}
                     pageSizeOptions={[10, 25, 50]}
                     disableRowSelectionOnClick
-                    density='compact'
+                    rowHeight={52}
+                    columnHeaderHeight={40}
                     sx={{
                       border: 'none',
-                      '& .MuiDataGrid-row': {
-                        minHeight: '40px !important',
-                        maxHeight: '40px !important',
-                      },
                       '& .MuiDataGrid-cell': {
                         display: 'flex',
                         alignItems: 'center',
                         overflow: 'hidden',
-                        py: 0.5,
                       },
                       '& .MuiDataGrid-columnHeaders': {
                         borderBottom: '1px solid',

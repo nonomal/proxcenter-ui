@@ -2,7 +2,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 
 import { orchestratorFetch } from '@/lib/orchestrator'
-import { getTenantConnectionIds } from '@/lib/tenant'
+import { DEFAULT_TENANT_ID, getCurrentTenantId } from '@/lib/tenant'
 import { checkPermission, PERMISSIONS } from '@/lib/rbac'
 
 const ORCHESTRATOR_URL = process.env.ORCHESTRATOR_URL || 'http://localhost:8080'
@@ -21,20 +21,18 @@ export async function GET(
 
     const { id } = await params
 
-    // Verify report belongs to tenant
-    const report = await orchestratorFetch(`/reports/${id}`) as any
-    if (report?.connection_id) {
-      const tenantConnectionIds = await getTenantConnectionIds()
-      if (!tenantConnectionIds.has(report.connection_id)) {
-        return NextResponse.json({ error: 'Report not found' }, { status: 404 })
-      }
-    }
-
+    // Tenant ownership is enforced by the orchestrator: orchestratorFetch
+    // does not stream binary, so we hit the download URL directly here and
+    // forward the X-Tenant-ID header explicitly.
     const url = `${ORCHESTRATOR_URL}/api/v1/reports/${id}/download`
 
     const headers: Record<string, string> = {}
     if (ORCHESTRATOR_API_KEY) {
       headers['X-API-Key'] = ORCHESTRATOR_API_KEY
+    }
+    const tid = await getCurrentTenantId()
+    if (tid && tid !== DEFAULT_TENANT_ID) {
+      headers['X-Tenant-ID'] = tid
     }
 
     const response = await fetch(url, {

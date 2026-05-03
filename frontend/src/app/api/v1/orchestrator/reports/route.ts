@@ -4,10 +4,13 @@ import { NextRequest, NextResponse } from 'next/server'
 import { orchestratorFetch } from '@/lib/orchestrator'
 import { getTenantConnectionIds } from '@/lib/tenant'
 import { checkPermission, PERMISSIONS } from '@/lib/rbac'
+import { assertReportTypeAllowed, buildScopePayloadForCurrentTenant } from '@/lib/reports/tenantScope'
 
 export const runtime = 'nodejs'
 
-// GET /api/v1/orchestrator/reports - List reports (filtered by tenant)
+// GET /api/v1/orchestrator/reports - List reports.
+// Tenant scoping is enforced by the orchestrator via the X-Tenant-ID header
+// injected in orchestratorFetch; this route just forwards pagination params.
 export async function GET(request: NextRequest) {
   try {
     const denied = await checkPermission(PERMISSIONS.REPORTS_VIEW)
@@ -19,26 +22,12 @@ export async function GET(request: NextRequest) {
     const type = searchParams.get('type') || ''
     const status = searchParams.get('status') || ''
 
-    let url = `/reports?limit=500&offset=0`
+    let url = `/reports?limit=${limit}&offset=${offset}`
     if (type) url += `&type=${type}`
     if (status) url += `&status=${status}`
 
-    const tenantConnectionIds = await getTenantConnectionIds()
     const data = await orchestratorFetch(url)
-
-    // Filter reports by tenant connections
-    const items = Array.isArray(data) ? data : ((data as any)?.data || [])
-    const filtered = Array.isArray(items)
-      ? items.filter((r: any) => !r.connection_id || tenantConnectionIds.has(r.connection_id))
-      : items
-
-    const sliced = Array.isArray(filtered) ? filtered.slice(offset, offset + limit) : filtered
-
-    return NextResponse.json({
-      ...(typeof data === 'object' && !Array.isArray(data) ? data : {}),
-      data: sliced,
-      total: Array.isArray(filtered) ? filtered.length : 0,
-    })
+    return NextResponse.json(data)
   } catch (error: any) {
     if ((error as any)?.code !== 'ORCHESTRATOR_UNAVAILABLE') {
       console.error('Failed to get reports:', error)
@@ -58,9 +47,22 @@ export async function POST(request: NextRequest) {
 
     const body = await request.json()
 
-    // Inject tenant connection_ids so the orchestrator only includes this tenant's data
+    const typeDenied = await assertReportTypeAllowed(body?.type)
+    if (typeDenied) return typeDenied
+
+    // Pin the report to the tenant's reachable connections.
     const tenantConnectionIds = await getTenantConnectionIds()
     body.connection_ids = Array.from(tenantConnectionIds)
+
+    // For vDC tenants: attach node/vmid/storage filters so the orchestrator
+    // generates only the tenant's slice. Provider tenants get null and the
+    // orchestrator runs unscoped.
+    const scope = await buildScopePayloadForCurrentTenant()
+    if (scope) {
+      body.node_filter = scope.node_filter
+      body.vmid_filter = scope.vmid_filter
+      body.storage_filter = scope.storage_filter
+    }
 
     const data = await orchestratorFetch('/reports', {
       method: 'POST',

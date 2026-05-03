@@ -3,18 +3,22 @@ import { NextResponse } from 'next/server'
 
 import { orchestratorFetch } from '@/lib/orchestrator'
 import { checkPermission, PERMISSIONS } from '@/lib/rbac'
+import { filterReportTypesForTenant } from '@/lib/reports/tenantScope'
 
 export const runtime = 'nodejs'
 
 // GET /api/v1/orchestrator/reports/types - Get available report types
+// vDC tenants only receive the curated subset (Alerts, Utilization, Inventory).
 export async function GET() {
   try {
     const denied = await checkPermission(PERMISSIONS.REPORTS_VIEW)
     if (denied) return denied
 
     const data = await orchestratorFetch('/reports/types')
+    const list = Array.isArray(data) ? (data as Array<{ type: string }>) : []
+    const filtered = await filterReportTypesForTenant(list)
 
-    return NextResponse.json(data)
+    return NextResponse.json(filtered)
   } catch (error: any) {
     if ((error as any)?.code !== 'ORCHESTRATOR_UNAVAILABLE') {
       console.error('Failed to get report types:', error)

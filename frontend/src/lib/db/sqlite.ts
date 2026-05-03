@@ -1008,13 +1008,19 @@ export function getDb() {
         is_system: 1,
         color: '#ea580c',
         permissions: [
+          // Note: NO automation.* — orchestration pages (DRS, Site Recovery,
+          // network security, flows, resources) are provider-only. The
+          // orchestration menu section uses hasAnyPermission(['automation.view'])
+          // so granting automation.view here would expose all five pages.
           'vm.view', 'vm.console', 'vm.start', 'vm.stop', 'vm.restart', 'vm.suspend',
           'vm.snapshot', 'vm.backup', 'vm.clone', 'vm.migrate', 'vm.config', 'vm.delete', 'vm.create',
           'node.view', 'connection.view',
+          'storage.view',
           'backup.view', 'backup.restore', 'backup.delete',
           'backup.job.view', 'backup.job.create', 'backup.job.edit', 'backup.job.delete', 'backup.job.run',
           'admin.users', 'admin.rbac', 'admin.settings', 'admin.audit',
           'alerts.view', 'alerts.manage',
+          'reports.view',
           'sdn.vnet.view', 'sdn.vnet.create', 'sdn.vnet.edit', 'sdn.vnet.delete', 'sdn.vnet.firewall',
         ]
       },
@@ -1141,13 +1147,17 @@ export function getDb() {
         'vm.view', 'vm.console', 'vm.start', 'vm.stop', 'vm.restart'
       ],
       role_tenant_admin: [
+        // Keep this list aligned with the seed above; in particular do NOT
+        // add automation.* — would expose provider-only orchestration pages.
         'vm.view', 'vm.console', 'vm.start', 'vm.stop', 'vm.restart', 'vm.suspend',
         'vm.snapshot', 'vm.backup', 'vm.clone', 'vm.migrate', 'vm.config', 'vm.delete', 'vm.create',
         'node.view', 'connection.view',
+        'storage.view',
         'backup.view', 'backup.restore', 'backup.delete',
         'backup.job.view', 'backup.job.create', 'backup.job.edit', 'backup.job.delete', 'backup.job.run',
         'admin.users', 'admin.rbac', 'admin.settings', 'admin.audit',
         'alerts.view', 'alerts.manage',
+        'reports.view',
         'sdn.vnet.view', 'sdn.vnet.create', 'sdn.vnet.edit', 'sdn.vnet.delete', 'sdn.vnet.firewall',
       ],
       role_tenant_operator: [
