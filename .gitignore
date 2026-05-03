@@ -42,3 +42,15 @@ data/
 backend/
 .gitnexus
 .worktrees/
+
+# Internal planning + design docs — must NEVER land on the public repo.
+# Convention going forward: anything strategic (phased plans, migration
+# audits, comp analysis, internal architecture decisions) lives outside
+# this repo or in a private one. The Superpowers skill writes its plans
+# and specs under docs/superpowers/; that path is now ignored entirely.
+**/docs/superpowers/
+**/docs/internal/
+**/docs/audits/
+**/docs/plans/
+**/docs/specs/
+docs/postgres-migration-inventory.md
