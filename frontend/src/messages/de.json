@@ -6536,7 +6536,9 @@
     "pbsCreate": "Erstellen",
     "pbsClose": "Schließen",
     "storage": "Speicher",
-    "backups": "Backups"
+    "backups": "Backups",
+    "tenantHasVdcs": "Dieser Tenant hat bereits {count, plural, =1 {ein vDC: {names}} other {# vDCs: {names}}}. Bearbeiten Sie das bestehende vDC, um Änderungen vorzunehmen — nur ein vDC pro Tenant ist erlaubt.",
+    "tenantUsers": "Tenant-Benutzer"
   },
   "sdn": {
     "subtab": {

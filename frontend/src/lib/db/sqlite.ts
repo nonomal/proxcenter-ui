@@ -238,6 +238,17 @@ export function getDb() {
     CREATE INDEX IF NOT EXISTS idx_alert_instances_rule_id ON alert_instances(rule_id);
     CREATE INDEX IF NOT EXISTS idx_alert_instances_triggered_at ON alert_instances(triggered_at);
     CREATE INDEX IF NOT EXISTS idx_alert_instances_entity ON alert_instances(entity_type, entity_id);
+
+    -- Maps an orchestrator alert rule to the tenant that authored it.
+    -- The orchestrator (Go) doesn't track tenant ownership on its rules,
+    -- so we record it here at POST time and use it at GET time to scope
+    -- both the rule list and the resulting alerts.
+    CREATE TABLE IF NOT EXISTS alert_rule_owners (
+      rule_id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_alert_rule_owners_tenant ON alert_rule_owners(tenant_id);
   `)
 
   // Migration pour créer la table favorites si elle n'existe pas
@@ -1002,7 +1013,8 @@ export function getDb() {
           'node.view', 'connection.view',
           'backup.view', 'backup.restore', 'backup.delete',
           'backup.job.view', 'backup.job.create', 'backup.job.edit', 'backup.job.delete', 'backup.job.run',
-          'admin.users', 'admin.rbac', 'admin.settings',
+          'admin.users', 'admin.rbac', 'admin.settings', 'admin.audit',
+          'alerts.view', 'alerts.manage',
           'sdn.vnet.view', 'sdn.vnet.create', 'sdn.vnet.edit', 'sdn.vnet.delete', 'sdn.vnet.firewall',
         ]
       },
@@ -1134,7 +1146,8 @@ export function getDb() {
         'node.view', 'connection.view',
         'backup.view', 'backup.restore', 'backup.delete',
         'backup.job.view', 'backup.job.create', 'backup.job.edit', 'backup.job.delete', 'backup.job.run',
-        'admin.users', 'admin.rbac', 'admin.settings',
+        'admin.users', 'admin.rbac', 'admin.settings', 'admin.audit',
+        'alerts.view', 'alerts.manage',
         'sdn.vnet.view', 'sdn.vnet.create', 'sdn.vnet.edit', 'sdn.vnet.delete', 'sdn.vnet.firewall',
       ],
       role_tenant_operator: [

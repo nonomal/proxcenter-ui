@@ -2,8 +2,11 @@ import { NextResponse } from 'next/server'
 
 import { alertsApi } from '@/lib/orchestrator/client'
 import { demoResponse } from '@/lib/demo/demo-api'
-import { getTenantConnectionIds } from '@/lib/tenant'
+import { getCurrentTenantId, getTenantConnectionIds } from '@/lib/tenant'
+import { getVdcScope } from '@/lib/vdc/scope'
 import { checkPermission, PERMISSIONS } from '@/lib/rbac'
+import { isAlertVisibleToTenant } from '@/lib/alerts/visibility'
+import { getVdcVmidsByConnection } from '@/lib/alerts/vdcVmids'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -25,13 +28,14 @@ export async function POST(
 
     const { id } = await params
 
-    // Verify alert belongs to tenant
+    // Full tenant scope check (connection + node + pool).
     const alertRes = await alertsApi.getAlert(id)
-    if (alertRes.data?.connection_id) {
-      const tenantConnectionIds = await getTenantConnectionIds()
-      if (!tenantConnectionIds.has(alertRes.data.connection_id)) {
-        return NextResponse.json({ error: 'Alert not found' }, { status: 404 })
-      }
+    const tenantId = await getCurrentTenantId()
+    const tenantConnectionIds = await getTenantConnectionIds()
+    const vdcScope = getVdcScope(tenantId)
+    const vdcVmids = vdcScope ? await getVdcVmidsByConnection(tenantId) : undefined
+    if (!isAlertVisibleToTenant(alertRes.data as any, { tenantId, tenantConnectionIds, vdcScope, vdcVmids })) {
+      return NextResponse.json({ error: 'Alert not found' }, { status: 404 })
     }
 
     const response = await alertsApi.resolve(id)

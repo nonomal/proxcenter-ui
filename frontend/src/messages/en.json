@@ -6524,7 +6524,9 @@
     "pbsNamespaceRequired": "Namespace is required in manual mode",
     "pbsCancel": "Cancel",
     "pbsCreate": "Create",
-    "pbsClose": "Close"
+    "pbsClose": "Close",
+    "tenantHasVdcs": "This tenant already has {count, plural, =1 {a vDC: {names}} other {# vDCs: {names}}}. Edit the existing vDC to make changes — only one vDC per tenant is allowed.",
+    "tenantUsers": "Tenant Users"
   },
   "myVdc": {
     "title": "My Datacenter",

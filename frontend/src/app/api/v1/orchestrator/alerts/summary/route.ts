@@ -3,21 +3,26 @@ import { NextResponse } from 'next/server'
 
 import { alertsApi } from '@/lib/orchestrator/client'
 import { demoResponse } from '@/lib/demo/demo-api'
-import { getSessionPrisma, getTenantConnectionIds } from '@/lib/tenant'
+import { getCurrentTenantId, getSessionPrisma, getTenantConnectionIds } from '@/lib/tenant'
+import { getVdcScope } from '@/lib/vdc/scope'
 import { checkPermission, PERMISSIONS } from '@/lib/rbac'
+import { isAlertVisibleToTenant } from '@/lib/alerts/visibility'
+import { getVdcVmidsByConnection } from '@/lib/alerts/vdcVmids'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
+// rule_id MUST be in the fingerprint — see route.ts for the why.
 function buildOrchestratorFingerprint(alert: {
   connection_id?: string
   type?: string
   severity?: string
   resource?: string
   resource_type?: string
+  rule_id?: string
 }): string {
   const source = alert.connection_id ? `${alert.connection_id}:${alert.type || ''}` : (alert.type || '')
-  const data = `${source}|${alert.severity || ''}|${alert.resource_type || ''}|${alert.resource || ''}|${alert.type || ''}`
+  const data = `${source}|${alert.severity || ''}|${alert.resource_type || ''}|${alert.resource || ''}|${alert.type || ''}|${alert.rule_id || ''}`
   return crypto.createHash('sha256').update(data).digest('hex').slice(0, 32)
 }
 
@@ -30,16 +35,22 @@ export async function GET(req: Request) {
   if (demo) return demo
 
   try {
-    const denied = await checkPermission(PERMISSIONS.ALERTS_VIEW)
+    // Same baseline as the alerts list endpoint — vDC tenants need the
+    // summary cards even without alerts.view in their default role.
+    const denied = await checkPermission(PERMISSIONS.CONNECTION_VIEW)
     if (denied) return denied
 
     const tenantConnectionIds = await getTenantConnectionIds()
+    const tenantId = await getCurrentTenantId()
+    const vdcScope = getVdcScope(tenantId)
 
     // Fetch all alerts to recompute summary from tenant-filtered data
     const response = await alertsApi.getAlerts({ limit: 1000, offset: 0 })
     const allAlerts = response.data?.data || response.data || []
+    const vdcVmids = vdcScope ? await getVdcVmidsByConnection(tenantId) : undefined
+    const visibilityCtx = { tenantId, tenantConnectionIds, vdcScope, vdcVmids }
     const filtered = Array.isArray(allAlerts)
-      ? allAlerts.filter((a: any) => !a.connection_id || tenantConnectionIds.has(a.connection_id))
+      ? allAlerts.filter((a: any) => isAlertVisibleToTenant(a, visibilityCtx))
       : []
 
     // Exclude silenced alerts from counts

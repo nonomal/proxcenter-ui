@@ -209,8 +209,12 @@ const NavbarContent = ({ targetLayout } = {}) => {
   const [notifAnchor, setNotifAnchor] = useState(null)
   const [userAnchor, setUserAnchor] = useState(null)
 
-  // RBAC-based notification visibility
-  const canViewAlerts = hasPermission('alerts.view')
+  // RBAC-based notification visibility. canViewAlerts intentionally uses
+  // connection.view rather than alerts.view: vDC tenants don't carry
+  // alerts.view in their default role but the alerts API now gates on
+  // connection.view and applies tenant + vDC scoping server-side, so they
+  // are entitled to see their own scoped alerts in the bell.
+  const canViewAlerts = hasPermission('connection.view')
   const canViewAdmin = hasPermission('admin.settings')
   const canViewDrs = hasPermission('automation.view')
 

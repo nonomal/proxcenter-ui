@@ -59,3 +59,34 @@ export function resolveVmMeta(resourceId: string, tenantId = 'default'): VmMeta 
   }
   return existing.index.get(resourceId) ?? null
 }
+
+/**
+ * Find a VM's metadata by `(connectionId, vmid)` regardless of node or
+ * type. Used when the caller has only a vmid (e.g. orchestrator alerts
+ * whose payload doesn't carry a `node`).
+ *
+ * Returns null on cache miss or no match.
+ */
+export function findVmMetaByVmid(
+  connectionId: string,
+  vmid: number | string,
+  tenantId = 'default',
+): VmMeta | null {
+  const existing = tenantIndexes.get(tenantId)
+  if (!existing || Date.now() - existing.lastBuild > 30_000) {
+    if (!rebuildIndex(tenantId)) return null
+  }
+  const idx = tenantIndexes.get(tenantId)?.index
+  if (!idx) return null
+
+  const target = String(vmid)
+  const prefix = `${connectionId}:`
+  for (const [rid, meta] of idx) {
+    if (!rid.startsWith(prefix)) continue
+    // rid format: connId:node:type:vmid → split on ':' from the end
+    const lastColon = rid.lastIndexOf(':')
+    if (lastColon < 0) continue
+    if (rid.slice(lastColon + 1) === target) return meta
+  }
+  return null
+}

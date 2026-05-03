@@ -6525,7 +6525,9 @@
     "pbsNamespaceRequired": "Le namespace est obligatoire en mode manuel",
     "pbsCancel": "Annuler",
     "pbsCreate": "Créer",
-    "pbsClose": "Fermer"
+    "pbsClose": "Fermer",
+    "tenantHasVdcs": "Ce tenant possède déjà {count, plural, =1 {un vDC : {names}} other {# vDCs : {names}}}. Modifiez le vDC existant pour effectuer des changements — un seul vDC par tenant est autorisé.",
+    "tenantUsers": "Utilisateurs du tenant"
   },
   "myVdc": {
     "title": "Mon datacenter",

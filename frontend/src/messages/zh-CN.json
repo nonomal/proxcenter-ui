@@ -6533,7 +6533,9 @@
     "pbsCreate": "创建",
     "pbsClose": "关闭",
     "storage": "存储",
-    "backups": "备份"
+    "backups": "备份",
+    "tenantHasVdcs": "该租户已有 {count, plural, =1 {1 个 vDC：{names}} other {# 个 vDC：{names}}}。请编辑现有 vDC 进行修改 — 每个租户仅允许一个 vDC。",
+    "tenantUsers": "租户用户"
   },
   "sdn": {
     "subtab": {

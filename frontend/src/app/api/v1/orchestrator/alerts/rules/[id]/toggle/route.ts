@@ -2,8 +2,9 @@ import { NextResponse } from 'next/server'
 
 import { orchestratorFetch } from '@/lib/orchestrator/client'
 import { demoResponse } from '@/lib/demo/demo-api'
-import { getTenantConnectionIds } from '@/lib/tenant'
+import { getCurrentTenantId } from '@/lib/tenant'
 import { checkPermission, PERMISSIONS } from '@/lib/rbac'
+import { ruleVisibleToTenant } from '@/lib/alerts/ruleOwners'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -20,18 +21,17 @@ export async function POST(
   if (demo) return demo
 
   try {
-    const denied = await checkPermission(PERMISSIONS.ALERTS_MANAGE)
+    // Relaxed from ALERTS_MANAGE; ownership is verified per-rule below.
+    const denied = await checkPermission(PERMISSIONS.CONNECTION_VIEW)
     if (denied) return denied
 
     const { id } = await params
 
-    // Verify rule belongs to tenant
-    const rule = await orchestratorFetch(`/alerts/rules/${id}`) as any
-    if (rule?.connection_id) {
-      const tenantConnectionIds = await getTenantConnectionIds()
-      if (!tenantConnectionIds.has(rule.connection_id)) {
-        return NextResponse.json({ error: 'Rule not found' }, { status: 404 })
-      }
+    // Visibility derives from alert_rule_owners — same scoping as the
+    // [id] GET/PUT/DELETE route. 404 on mismatch to avoid existence leak.
+    const tenantId = await getCurrentTenantId()
+    if (!ruleVisibleToTenant(id, tenantId)) {
+      return NextResponse.json({ error: 'Rule not found' }, { status: 404 })
     }
 
     const result = await orchestratorFetch(`/alerts/rules/${id}/toggle`, {

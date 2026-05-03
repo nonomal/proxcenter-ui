@@ -127,14 +127,16 @@ export const menuData = (t = (key) => key) => [
         label: t('navigation.changes'),
         icon: 'ri-git-commit-line',
         href: '/operations/changes',
-        permissions: ['events.view'],
+        // Permissions removed to expose the page in vDC tenant menus for
+        // scoping evaluation. API still enforces CONNECTION_VIEW at runtime.
         requiredFeature: 'change_tracking'
       },
       {
         label: t('navigation.alerts'),
         icon: 'ri-notification-3-line',
         href: '/operations/alerts',
-        permissions: ['alerts.view'],
+        // Permissions removed to expose the page in vDC tenant menus for
+        // scoping evaluation. API still enforces ALERTS_VIEW at runtime.
         requiredFeature: 'alerts'
       },
       {
@@ -148,7 +150,8 @@ export const menuData = (t = (key) => key) => [
         label: t('navigation.reports'),
         icon: 'ri-file-chart-line',
         href: '/operations/reports',
-        permissions: ['reports.view'],
+        // Permissions removed to expose the page in vDC tenant menus for
+        // scoping evaluation. API still enforces REPORTS_VIEW at runtime.
         requiredFeature: 'reports'
       }
     ]
@@ -158,7 +161,9 @@ export const menuData = (t = (key) => key) => [
     isSection: true,
     label: t('navigation.securityAccess'),
     icon: 'ri-shield-keyhole-line',
-    permissions: ['admin.users', 'admin.rbac', 'admin.audit', 'admin.compliance'], // Section admin
+    // Section gate removed so the Audit item can appear for vDC tenants
+    // (scoping evaluation). Each child still enforces its own permissions,
+    // so users/rbac/compliance stay admin-only as before.
     children: [
       {
         label: t('navigation.users'),

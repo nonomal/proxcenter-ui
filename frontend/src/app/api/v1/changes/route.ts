@@ -2,7 +2,8 @@ import { NextResponse } from 'next/server'
 
 import { orchestratorFetch } from '@/lib/orchestrator/client'
 import { checkPermission, PERMISSIONS } from '@/lib/rbac'
-import { getTenantConnectionIds } from '@/lib/tenant'
+import { getCurrentTenantId, getTenantConnectionIds } from '@/lib/tenant'
+import { getVdcScope } from '@/lib/vdc/scope'
 
 export const runtime = 'nodejs'
 
@@ -21,12 +22,30 @@ export async function GET(req: Request) {
     }
 
     const tenantConnectionIds = await getTenantConnectionIds()
+    // For multi-tenant clusters, connection-level filter is not enough: a
+    // vDC tenant on a cluster shared with the provider (or another tenant)
+    // would otherwise see every change on that cluster regardless of node
+    // or pool. Pull the vDC scope and tighten on (node, pool) when present.
+    const vdcScope = getVdcScope(await getCurrentTenantId())
+
     const query = params.toString()
     const data = await orchestratorFetch<any>(`/changes${query ? `?${query}` : ''}`)
 
-    // Filter changes by tenant connections
     if (data?.data && Array.isArray(data.data)) {
-      data.data = data.data.filter((c: any) => !c.connectionId || tenantConnectionIds.has(c.connectionId))
+      data.data = data.data.filter((c: any) => {
+        // Strict: drop records without a connection. App-wide events are
+        // cluster-less and can leak provider-internal state to tenants.
+        if (!c.connectionId) return vdcScope === null
+        if (!tenantConnectionIds.has(c.connectionId)) return false
+        // Provider tenants (no scope) keep the connection-level filter only.
+        if (!vdcScope) return true
+        // vDC tenants: enforce node + pool whitelists from the scope.
+        const allowedNodes = vdcScope.nodesByConnection.get(c.connectionId)
+        if (allowedNodes && c.node && !allowedNodes.has(c.node)) return false
+        const allowedPools = vdcScope.poolsByConnection.get(c.connectionId)
+        if (allowedPools && c.pool && !allowedPools.has(c.pool)) return false
+        return true
+      })
     }
 
     return NextResponse.json(data)

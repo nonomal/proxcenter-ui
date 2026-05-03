@@ -158,6 +158,10 @@ export default function VdcTab() {
   // distinct connection. Used to render the status pastille in the Nodes cell.
   const [nodeStatuses, setNodeStatuses] = useState<Record<string, string>>({})
 
+  // Tenant → users map. Populated once vDCs are loaded by fetching the
+  // member list for each distinct tenant. Used by the Users column.
+  const [tenantUsers, setTenantUsers] = useState<Record<string, Array<{ id: string; name: string | null; email: string }>>>({})
+
   // Auto-clear success after 5s
   useEffect(() => {
     if (!success) return
@@ -236,6 +240,34 @@ export default function VdcTab() {
         }
       }
       setNodeStatuses(statuses)
+    })()
+
+    return () => { cancelled = true }
+  }, [vdcs])
+
+  // After vDCs are loaded, batch-fetch the user list for each distinct tenant
+  // so the Users column can render a compact AvatarGroup without N+1 fetches.
+  useEffect(() => {
+    if (vdcs.length === 0) return
+    const tenantIds = Array.from(new Set(vdcs.map((v: any) => v.tenantId).filter(Boolean)))
+    if (tenantIds.length === 0) return
+    let cancelled = false
+
+    void (async () => {
+      const results = await Promise.all(tenantIds.map(async (tid) => {
+        try {
+          const r = await fetch(`/api/v1/tenants/${encodeURIComponent(tid)}/users`)
+          if (!r.ok) return { tid, users: [] }
+          const j = await r.json()
+          return { tid, users: Array.isArray(j?.data) ? j.data : [] }
+        } catch {
+          return { tid, users: [] }
+        }
+      }))
+      if (cancelled) return
+      const map: Record<string, any[]> = {}
+      for (const r of results) map[r.tid] = r.users
+      setTenantUsers(map)
     })()
 
     return () => { cancelled = true }
@@ -661,31 +693,38 @@ export default function VdcTab() {
 
         return (
           <Tooltip title={tooltipTitle} arrow disableInteractive>
-            <Box sx={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', overflow: 'hidden', width: '100%' }}>
-              <Stack direction="row" alignItems="center" spacing={0.5}>
-                <Typography variant="body2" noWrap sx={{ fontWeight: 500 }}>
-                  {params.value}
-                </Typography>
-                {!enabled && (
-                  <Tooltip title={t('common.disabled')} arrow>
-                    <Box
-                      component="i"
-                      className="ri-pause-circle-fill"
-                      sx={{ fontSize: 14, color: 'warning.main', flexShrink: 0 }}
-                    />
-                  </Tooltip>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, overflow: 'hidden', width: '100%' }}>
+              <Box
+                component="i"
+                className="ri-cloud-line"
+                sx={{ fontSize: 22, color: 'primary.main', flexShrink: 0 }}
+              />
+              <Box sx={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', overflow: 'hidden', minWidth: 0 }}>
+                <Stack direction="row" alignItems="center" spacing={0.5}>
+                  <Typography variant="body2" noWrap sx={{ fontWeight: 500 }}>
+                    {params.value}
+                  </Typography>
+                  {!enabled && (
+                    <Tooltip title={t('common.disabled')} arrow>
+                      <Box
+                        component="i"
+                        className="ri-pause-circle-fill"
+                        sx={{ fontSize: 14, color: 'warning.main', flexShrink: 0 }}
+                      />
+                    </Tooltip>
+                  )}
+                </Stack>
+                {subtitle && (
+                  <Typography
+                    variant="caption"
+                    color="text.secondary"
+                    noWrap
+                    sx={{ fontSize: '0.7rem', lineHeight: 1.2, opacity: 0.7 }}
+                  >
+                    {subtitle}
+                  </Typography>
                 )}
-              </Stack>
-              {subtitle && (
-                <Typography
-                  variant="caption"
-                  color="text.secondary"
-                  noWrap
-                  sx={{ fontSize: '0.7rem', lineHeight: 1.2, opacity: 0.7 }}
-                >
-                  {subtitle}
-                </Typography>
-              )}
+              </Box>
             </Box>
           </Tooltip>
         )
@@ -705,6 +744,58 @@ export default function VdcTab() {
           <Typography variant="body2" noWrap>{params.value}</Typography>
         </Box>
       ),
+    },
+    {
+      field: 'tenantUsers',
+      headerName: t('vdc.tenantUsers'),
+      width: 240,
+      sortable: false,
+      valueGetter: (_v, row) => (tenantUsers[row.tenantId] || []).length,
+      renderCell: (params) => {
+        const users = tenantUsers[params.row.tenantId] || []
+        if (users.length === 0) {
+          return <Typography variant="caption" color="text.secondary">—</Typography>
+        }
+        const MAX_VISIBLE = 2
+        const visible = users.slice(0, MAX_VISIBLE)
+        const hidden = users.slice(MAX_VISIBLE)
+        return (
+          <Box sx={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', overflow: 'hidden', width: '100%' }}>
+            {visible.map((u) => (
+              <Tooltip key={u.id} arrow title={u.name ? u.email : ''} disableInteractive>
+                <Stack direction="row" alignItems="center" spacing={0.5} sx={{ overflow: 'hidden' }}>
+                  <Box
+                    component="i"
+                    className="ri-user-line"
+                    sx={{ fontSize: 13, color: 'text.secondary', flexShrink: 0 }}
+                  />
+                  <Typography variant="caption" noWrap sx={{ lineHeight: 1.3 }}>
+                    {u.name || u.email}
+                  </Typography>
+                </Stack>
+              </Tooltip>
+            ))}
+            {hidden.length > 0 && (
+              <Tooltip
+                arrow
+                title={
+                  <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.25 }}>
+                    {hidden.map((u) => (
+                      <Typography key={u.id} variant="caption">
+                        {u.name ? `${u.name} (${u.email})` : u.email}
+                      </Typography>
+                    ))}
+                  </Box>
+                }
+              >
+                <Typography variant="caption" color="primary.main" sx={{ cursor: 'default', lineHeight: 1.3, mt: 0.25 }}>
+                  +{hidden.length}
+                </Typography>
+              </Tooltip>
+            )}
+          </Box>
+        )
+      },
     },
     {
       field: 'connectionId',
@@ -1037,6 +1128,14 @@ export default function VdcTab() {
     (!form.unlimitedRam && exceeds(form.maxRamGb, clusterRamGbTotal)) ||
     (!form.unlimitedStorage && exceeds(form.maxStorageGb, clusterStorageGbTotal))
 
+  // 1 tenant = 1 vDC business rule (UI-side). When the picked tenant
+  // already owns a vDC, lock the Cluster picker and surface a warning so
+  // the admin edits the existing vDC instead of creating another one.
+  const existingTenantVdcs = !editingVdc && form.tenantId
+    ? vdcs.filter((v: any) => v.tenantId === form.tenantId)
+    : []
+  const tenantHasExistingVdc = existingTenantVdcs.length > 0
+
   return (
     <Box>
       {error && (
@@ -1107,7 +1206,7 @@ export default function VdcTab() {
               the connection too). The slug field is no longer exposed —
               it's a derived identifier the user shouldn't tune. */}
           <Autocomplete
-            options={tenants}
+            options={tenants.filter((t) => editingVdc ? true : t.id !== 'default')}
             getOptionLabel={(o) => o.name || o.slug || o.id}
             value={tenants.find((t) => t.id === form.tenantId) || null}
             onChange={(_, v) => {
@@ -1140,6 +1239,18 @@ export default function VdcTab() {
               />
             )}
           />
+
+          {/* Existing-vDC blocker for the picked tenant. Business rule:
+              1 tenant = 1 vDC. The Cluster picker below is disabled while
+              this is shown. */}
+          {tenantHasExistingVdc && (
+            <Alert severity="warning">
+              {t('vdc.tenantHasVdcs', {
+                count: existingTenantVdcs.length,
+                names: existingTenantVdcs.map((v: any) => v.name).join(', '),
+              })}
+            </Alert>
+          )}
 
           {/* Description */}
           <TextField
@@ -1176,7 +1287,7 @@ export default function VdcTab() {
               })
               setAvailableResources(null)
             }}
-            disabled={!!editingVdc}
+            disabled={!!editingVdc || tenantHasExistingVdc}
             renderInput={(params) => (
               <TextField
                 {...params}
@@ -1522,7 +1633,10 @@ export default function VdcTab() {
               // skipped after the vDC is created.
               (!editingVdc && pbsDraft.enabled && (
                 !pbsDraft.pbsConnectionId || !pbsDraft.datastore || !pbsDraft.namespace
-              ))
+              )) ||
+              // 1 tenant = 1 vDC: the Cluster picker is also disabled in
+              // this case, so this is mainly defense-in-depth.
+              tenantHasExistingVdc
             }
           >
             {saving ? t('vdc.saving') : editingVdc ? t('common.update') : t('common.create')}

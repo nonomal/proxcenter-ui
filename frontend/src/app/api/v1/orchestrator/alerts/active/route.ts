@@ -2,8 +2,11 @@ import { NextResponse } from 'next/server'
 
 import { alertsApi } from '@/lib/orchestrator/client'
 import { demoResponse } from '@/lib/demo/demo-api'
-import { getTenantConnectionIds } from '@/lib/tenant'
+import { getCurrentTenantId, getTenantConnectionIds } from '@/lib/tenant'
+import { getVdcScope } from '@/lib/vdc/scope'
 import { checkPermission, PERMISSIONS } from '@/lib/rbac'
+import { isAlertVisibleToTenant } from '@/lib/alerts/visibility'
+import { getVdcVmidsByConnection } from '@/lib/alerts/vdcVmids'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -24,12 +27,16 @@ export async function GET(req: Request) {
     const connectionId = searchParams.get('connection_id') || undefined
 
     const tenantConnectionIds = await getTenantConnectionIds()
+    const tenantId = await getCurrentTenantId()
+    const vdcScope = getVdcScope(tenantId)
+    const vdcVmids = vdcScope ? await getVdcVmidsByConnection(tenantId) : undefined
     const response = await alertsApi.getActiveAlerts(connectionId)
 
     const resData = response.data as any
     const alerts = Array.isArray(resData) ? resData : (resData?.data || [])
+    const visibilityCtx = { tenantId, tenantConnectionIds, vdcScope, vdcVmids }
     const filtered = Array.isArray(alerts)
-      ? alerts.filter((a: any) => !a.connection_id || tenantConnectionIds.has(a.connection_id))
+      ? alerts.filter((a: any) => isAlertVisibleToTenant(a, visibilityCtx))
       : alerts
 
     return NextResponse.json(filtered)

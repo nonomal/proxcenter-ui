@@ -2,7 +2,8 @@ import { NextResponse } from 'next/server'
 
 import { orchestratorFetch } from '@/lib/orchestrator/client'
 import { checkPermission, PERMISSIONS } from '@/lib/rbac'
-import { getTenantConnectionIds } from '@/lib/tenant'
+import { getCurrentTenantId, getTenantConnectionIds } from '@/lib/tenant'
+import { getVdcScope } from '@/lib/vdc/scope'
 
 export const runtime = 'nodejs'
 
@@ -21,13 +22,24 @@ export async function GET(req: Request) {
     // tenants (who own no connections directly, only vDC bindings) get
     // their changes feed populated.
     const tenantConnectionIds = await getTenantConnectionIds()
+    // Same multi-tenant tightening as /api/v1/changes — connection-level
+    // filter alone leaks neighbour activity on shared clusters.
+    const vdcScope = getVdcScope(await getCurrentTenantId())
 
     const data = await orchestratorFetch<any>(`/changes/recent?limit=100`)
 
-    // Filter by tenant connections
     if (data?.data && Array.isArray(data.data)) {
       data.data = data.data
-        .filter((c: any) => !c.connectionId || tenantConnectionIds.has(c.connectionId))
+        .filter((c: any) => {
+          if (!c.connectionId) return vdcScope === null
+          if (!tenantConnectionIds.has(c.connectionId)) return false
+          if (!vdcScope) return true
+          const allowedNodes = vdcScope.nodesByConnection.get(c.connectionId)
+          if (allowedNodes && c.node && !allowedNodes.has(c.node)) return false
+          const allowedPools = vdcScope.poolsByConnection.get(c.connectionId)
+          if (allowedPools && c.pool && !allowedPools.has(c.pool)) return false
+          return true
+        })
         .slice(0, limit)
     }
 

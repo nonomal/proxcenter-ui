@@ -2,8 +2,11 @@ import { NextResponse } from 'next/server'
 
 import { alertsApi } from '@/lib/orchestrator/client'
 import { demoResponse } from '@/lib/demo/demo-api'
-import { getTenantConnectionIds } from '@/lib/tenant'
+import { getCurrentTenantId, getTenantConnectionIds } from '@/lib/tenant'
+import { getVdcScope } from '@/lib/vdc/scope'
 import { checkPermission, PERMISSIONS } from '@/lib/rbac'
+import { isAlertVisibleToTenant } from '@/lib/alerts/visibility'
+import { getVdcVmidsByConnection } from '@/lib/alerts/vdcVmids'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -27,12 +30,15 @@ export async function GET(
     const response = await alertsApi.getAlert(id)
     const alert = response.data
 
-    // Verify alert belongs to tenant
-    if (alert?.connection_id) {
-      const tenantConnectionIds = await getTenantConnectionIds()
-      if (!tenantConnectionIds.has(alert.connection_id)) {
-        return NextResponse.json({ error: 'Alert not found' }, { status: 404 })
-      }
+    // Full tenant scope check (connection + node + pool). Same gate as
+    // the list endpoint so an opportunistic ID lookup can't bypass vDC
+    // isolation on shared clusters.
+    const tenantId = await getCurrentTenantId()
+    const tenantConnectionIds = await getTenantConnectionIds()
+    const vdcScope = getVdcScope(tenantId)
+    const vdcVmids = vdcScope ? await getVdcVmidsByConnection(tenantId) : undefined
+    if (!isAlertVisibleToTenant(alert as any, { tenantId, tenantConnectionIds, vdcScope, vdcVmids })) {
+      return NextResponse.json({ error: 'Alert not found' }, { status: 404 })
     }
 
     return NextResponse.json(alert)
@@ -65,13 +71,14 @@ export async function DELETE(
 
     const { id } = await params
 
-    // Verify alert belongs to tenant
+    // Full tenant scope check before deletion.
     const alertRes = await alertsApi.getAlert(id)
-    if (alertRes.data?.connection_id) {
-      const tenantConnectionIds = await getTenantConnectionIds()
-      if (!tenantConnectionIds.has(alertRes.data.connection_id)) {
-        return NextResponse.json({ error: 'Alert not found' }, { status: 404 })
-      }
+    const tenantId = await getCurrentTenantId()
+    const tenantConnectionIds = await getTenantConnectionIds()
+    const vdcScope = getVdcScope(tenantId)
+    const vdcVmids = vdcScope ? await getVdcVmidsByConnection(tenantId) : undefined
+    if (!isAlertVisibleToTenant(alertRes.data as any, { tenantId, tenantConnectionIds, vdcScope, vdcVmids })) {
+      return NextResponse.json({ error: 'Alert not found' }, { status: 404 })
     }
 
     const response = await alertsApi.deleteAlert(id)

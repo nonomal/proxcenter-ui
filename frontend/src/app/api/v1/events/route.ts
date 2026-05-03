@@ -5,6 +5,8 @@ import { getConnectionById } from '@/lib/connections/getConnection'
 import { getSessionPrisma } from "@/lib/tenant"
 import { prisma as globalPrisma } from "@/lib/db/prisma"
 import { checkPermission, PERMISSIONS } from '@/lib/rbac'
+import { getVdcVmidsByConnection } from "@/lib/alerts/vdcVmids"
+import { extractTaskVmid } from "@/lib/tasks/scope"
 
 export const runtime = 'nodejs'
 
@@ -66,7 +68,12 @@ export async function GET(req: Request) {
 
     const { getCurrentTenantId } = await import('@/lib/tenant')
     const { getVdcScope } = await import('@/lib/vdc/scope')
-    const vdcScope = getVdcScope(await getCurrentTenantId())
+    const tenantId = await getCurrentTenantId()
+    const vdcScope = getVdcScope(tenantId)
+    // Pool-level scope (shared-node MSP clusters need this on top of the
+    // node filter, which collapses to a no-op when every vDC owns every
+    // node).
+    const vdcVmids = vdcScope ? await getVdcVmidsByConnection(tenantId) : null
 
     const { searchParams } = new URL(req.url)
     const limit = Math.min(Number.parseInt(searchParams.get('limit') || '100'), 500)
@@ -151,6 +158,18 @@ export async function GET(req: Request) {
             if (allowedNodes) {
               tasks = tasks.filter(t => !t.node || allowedNodes.has(t.node))
             }
+            // Pool-membership filter: on a shared-node cluster the node
+            // filter above is a no-op, so apply vmid → vDC pool isolation.
+            // VM tasks must target a tenant vmid; non-VM tasks (cluster /
+            // node level, e.g. ceph, package updates) are provider-only.
+            const allowedVmids = vdcVmids?.get(conn.id)
+            if (allowedVmids) {
+              tasks = tasks.filter(t => {
+                const vmid = extractTaskVmid(t.id)
+                if (!vmid) return false
+                return allowedVmids.has(vmid)
+              })
+            }
 
             // Traiter les tâches - trier par date décroissante d'abord
             tasks.sort((a, b) => (b.starttime || 0) - (a.starttime || 0))
@@ -186,8 +205,10 @@ export async function GET(req: Request) {
             }
           }
 
-          // Récupérer les logs
-          if (source === 'all' || source === 'logs') {
+          // Récupérer les logs (provider-only — they are cluster syslog
+          // entries with no vmid scope, leaking them into vDC tenants
+          // would surface neighbour activity).
+          if ((source === 'all' || source === 'logs') && !vdcScope) {
             let logs: ProxmoxClusterLog[] = []
             
             // Essayer d'abord /cluster/log (pour les clusters)

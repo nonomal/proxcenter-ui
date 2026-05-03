@@ -5,6 +5,8 @@ import { getConnectionById } from '@/lib/connections/getConnection'
 import { getTenantConnectionIds } from "@/lib/tenant"
 import { prisma } from "@/lib/db/prisma"
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
+import { getVdcVmidsByConnection } from "@/lib/alerts/vdcVmids"
+import { extractTaskVmid } from "@/lib/tasks/scope"
 
 export const runtime = 'nodejs'
 
@@ -96,7 +98,12 @@ export async function GET() {
 
     const { getCurrentTenantId } = await import('@/lib/tenant')
     const { getVdcScope } = await import('@/lib/vdc/scope')
-    const vdcScope = getVdcScope(await getCurrentTenantId())
+    const tenantId = await getCurrentTenantId()
+    const vdcScope = getVdcScope(tenantId)
+    // For vDC tenants on shared-node clusters the node filter is a no-op
+    // (every vDC has every node in scope). Pool-membership is the real
+    // boundary — pull the live vmid set per connection.
+    const vdcVmids = vdcScope ? await getVdcVmidsByConnection(tenantId) : null
 
     // Reachable connection IDs = directly owned ∪ vDC-bound. The previous
     // tenant-scoped prisma query returned an empty set in MSP mode (tenants
@@ -163,11 +170,20 @@ export async function GET() {
           // Filtrer uniquement les tâches en cours
           // Une tâche est "en cours" si elle n'a pas de endtime ET pas de status (ou status vide)
           const allowedNodes = vdcScope?.nodesByConnection.get(conn.id)
+          const allowedVmids = vdcVmids?.get(conn.id)
           const running = tasks.filter(t => {
             if (t.endtime) return false
             if (t.status && t.status !== '') return false
             // Tenant scope: drop tasks whose node is outside the vDC's nodes.
             if (allowedNodes && t.node && !allowedNodes.has(t.node)) return false
+            // vDC tenants on shared-node clusters need pool isolation:
+            // VM tasks must target a vmid in the tenant's vDC pools;
+            // non-VM tasks (cluster-wide, node-level) are provider-only.
+            if (allowedVmids) {
+              const vmid = extractTaskVmid(t.id)
+              if (!vmid) return false
+              if (!allowedVmids.has(vmid)) return false
+            }
 
 return true
           })

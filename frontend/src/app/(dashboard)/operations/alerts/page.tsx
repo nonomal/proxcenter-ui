@@ -40,6 +40,7 @@ import { PieChart, Pie, Cell } from 'recharts'
 import ChartContainer from '@/components/ChartContainer'
 
 import { usePageTitle } from '@/contexts/PageTitleContext'
+import { useTenant } from '@/contexts/TenantContext'
 import EnterpriseGuard from '@/components/guards/EnterpriseGuard'
 import { Features, useLicense } from '@/contexts/LicenseContext'
 import { useToast } from '@/contexts/ToastContext'
@@ -270,6 +271,14 @@ export default function AlertsPage() {
   const { setPageInfo } = usePageTitle()
   const { data: session } = useSession()
   const { isEnterprise } = useLicense()
+  // Tenant-aware narrowing: vDC tenants only manage VM-scope rules, so the
+  // Task Type catalogue hides Container/Backup/System/Ceph entries.
+  const { currentTenant } = useTenant()
+  const isVdcTenant = !!currentTenant && currentTenant.id !== 'default'
+  const visibleTaskTypes = useMemo(
+    () => isVdcTenant ? TASK_TYPES.filter(tt => tt.group === 'VM') : TASK_TYPES,
+    [isVdcTenant],
+  )
   const [mounted, setMounted] = useState(false)
   const [tab, setTab] = useState(0)
 
@@ -880,13 +889,13 @@ return <Chip size="small" label={labels[p.value] || p.value} color={colors[p.val
             </Box>
             <Autocomplete
               multiple
-              options={TASK_TYPES}
+              options={visibleTaskTypes}
               groupBy={(option) => option.group}
-              getOptionLabel={(option) => typeof option === 'string' ? option : `${option.id} — ${option.label}`}
-              value={TASK_TYPES.filter(tt => (ruleForm.task_types || '').split(',').filter(Boolean).includes(tt.id))}
+              getOptionLabel={(option) => typeof option === 'string' ? option : `${option.id} - ${option.label}`}
+              value={visibleTaskTypes.filter(tt => (ruleForm.task_types || '').split(',').filter(Boolean).includes(tt.id))}
               onChange={(_, values) => setRuleForm({ ...ruleForm, task_types: values.map(v => v.id).join(',') })}
               renderTags={(value, getTagProps) => value.map((option, index) => (
-                <Chip {...getTagProps({ index })} key={option.id} label={option.id} size="small" sx={{ fontFamily: 'monospace', fontSize: '0.8rem' }} />
+                <Chip {...getTagProps({ index })} key={option.id} label={option.id} size="small" sx={{ fontSize: '0.8rem' }} />
               ))}
               renderInput={(params) => (
                 <TextField {...params} label={t('alerts.taskTypes')} placeholder={ruleForm.task_types ? '' : t('alerts.leaveEmptyForAll')} helperText={t('alerts.leaveEmptyForAll')} />
@@ -894,7 +903,7 @@ return <Chip size="small" label={labels[p.value] || p.value} color={colors[p.val
               renderOption={(props, option) => (
                 <li {...props} key={option.id}>
                   <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, width: '100%' }}>
-                    <Typography variant="body2" sx={{ fontFamily: 'monospace', fontWeight: 600, minWidth: 120 }}>{option.id}</Typography>
+                    <Typography variant="body2" sx={{ fontWeight: 600, minWidth: 120 }}>{option.id}</Typography>
                     <Typography variant="caption" sx={{ opacity: 0.6 }}>{option.label}</Typography>
                   </Box>
                 </li>
