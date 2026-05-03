@@ -12,8 +12,11 @@
 // by querying PVE /cluster/resources and filtering by the tenant's pools.
 
 import { NextResponse } from 'next/server'
+import { getServerSession } from 'next-auth'
 
+import { authOptions } from '@/lib/auth/config'
 import { DEFAULT_TENANT_ID, getCurrentTenantId } from '@/lib/tenant'
+import { isUserSuperAdmin } from '@/lib/rbac'
 import { getVdcScope, type VdcScope } from '@/lib/vdc/scope'
 import { getConnectionById } from '@/lib/connections/getConnection'
 import { pveFetch } from '@/lib/proxmox/client'
@@ -23,20 +26,50 @@ export const VDC_ALLOWED_REPORT_TYPES: ReadonlySet<string> = new Set([
   'inventory',
 ])
 
+/**
+ * Report types that only super_admin may see and generate. Currently this is
+ * the cross-tenant 'vdc' report which lists every tenant's vDC + quotas.
+ * provider_admin (wildcard role) is intentionally excluded because the report
+ * exposes tenant ownership across the whole platform.
+ */
+export const SUPER_ADMIN_ONLY_REPORT_TYPES: ReadonlySet<string> = new Set([
+  'vdc',
+])
+
 /** True when the current session belongs to a non-provider (vDC) tenant. */
 export async function isVdcTenant(): Promise<boolean> {
   const tenantId = await getCurrentTenantId()
   return tenantId !== DEFAULT_TENANT_ID
 }
 
+/** True when the current session belongs to a user holding role_super_admin. */
+export async function isCurrentUserSuperAdmin(): Promise<boolean> {
+  const session = await getServerSession(authOptions)
+  const userId = (session as any)?.user?.id
+  if (!userId) return false
+  return isUserSuperAdmin(userId)
+}
+
 /**
- * Validate a report type against the current tenant's allow-list.
- * Returns a 403 NextResponse when the tenant is a vDC tenant and the type
- * is outside VDC_ALLOWED_REPORT_TYPES, or null when the request is allowed.
+ * Validate a report type against the current caller's allow-list.
+ *
+ * Two gates layered on top of each other:
+ *   1. SUPER_ADMIN_ONLY_REPORT_TYPES (e.g. 'vdc') reject any non-super-admin
+ *   2. VDC_ALLOWED_REPORT_TYPES gate vDC tenants down to the curated subset
+ *
+ * Returns a 403 NextResponse when denied, or null when the request is allowed.
  * A missing/empty type is treated as allowed (the orchestrator will reject it).
  */
 export async function assertReportTypeAllowed(type: string | undefined | null): Promise<NextResponse | null> {
   if (!type) return null
+
+  if (SUPER_ADMIN_ONLY_REPORT_TYPES.has(type) && !(await isCurrentUserSuperAdmin())) {
+    return NextResponse.json(
+      { error: `Report type '${type}' is restricted to super administrators` },
+      { status: 403 }
+    )
+  }
+
   if (!(await isVdcTenant())) return null
   if (VDC_ALLOWED_REPORT_TYPES.has(type)) return null
   return NextResponse.json(
@@ -45,10 +78,20 @@ export async function assertReportTypeAllowed(type: string | undefined | null): 
   )
 }
 
-/** Filter a list of {type} records down to the vDC allow-list (when applicable). */
+/**
+ * Filter a list of {type} records down to what the current caller may see.
+ * Strips super-admin-only types for non-super-admins, and reduces vDC tenants
+ * to VDC_ALLOWED_REPORT_TYPES.
+ */
 export async function filterReportTypesForTenant<T extends { type: string }>(types: T[]): Promise<T[]> {
-  if (!(await isVdcTenant())) return types
-  return types.filter(t => VDC_ALLOWED_REPORT_TYPES.has(t.type))
+  let result = types
+  if (!(await isCurrentUserSuperAdmin())) {
+    result = result.filter(t => !SUPER_ADMIN_ONLY_REPORT_TYPES.has(t.type))
+  }
+  if (await isVdcTenant()) {
+    result = result.filter(t => VDC_ALLOWED_REPORT_TYPES.has(t.type))
+  }
+  return result
 }
 
 export interface ScopePayload {
