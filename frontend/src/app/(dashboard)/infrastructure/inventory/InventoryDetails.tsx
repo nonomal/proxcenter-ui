@@ -271,6 +271,12 @@ export default function InventoryDetails({
   const [migTargetNode, setMigTargetNode] = useState('')
   const [migTargetStorage, setMigTargetStorage] = useState('')
   const [migNetworkBridge, setMigNetworkBridge] = useState('')
+  // Optional user-picked target VMID. Empty string = let PVE pick the next
+  // free id (default behavior). The dialog runs a debounced availability
+  // check and surfaces the result inline; the migration POST forwards the
+  // value as `targetVmid` when set.
+  const [migTargetVmid, setMigTargetVmid] = useState('')
+  const [migTargetVmidStatus, setMigTargetVmidStatus] = useState<'idle' | 'checking' | 'available' | 'taken' | 'invalid'>('idle')
   const [migBridges, setMigBridges] = useState<any[]>([])
   const [migStartAfter, setMigStartAfter] = useState(false)
   const [migDiskPaths, setMigDiskPaths] = useState('')
@@ -611,6 +617,7 @@ export default function InventoryDetails({
   useEffect(() => {
     if (!esxiMigrateVm && !bulkMigOpen) return
     setMigTargetConn(''); setMigTargetNode(''); setMigTargetStorage('')
+    setMigTargetVmid(''); setMigTargetVmidStatus('idle')
     setMigNodes([]); setMigStorages([]); setMigNodeOptions([])
     if (esxiMigrateVm) { setMigJobId(null); setMigJob(null) }
     fetch('/api/v1/connections').then(r => r.json()).then(async (d) => {
@@ -4240,6 +4247,10 @@ return vm?.isCluster ?? false
         setMigTargetNode={setMigTargetNode}
         migTargetStorage={migTargetStorage}
         setMigTargetStorage={setMigTargetStorage}
+        migTargetVmid={migTargetVmid}
+        setMigTargetVmid={setMigTargetVmid}
+        migTargetVmidStatus={migTargetVmidStatus}
+        setMigTargetVmidStatus={setMigTargetVmidStatus}
         migNetworkBridge={migNetworkBridge}
         setMigNetworkBridge={setMigNetworkBridge}
         migBridges={migBridges}

@@ -231,6 +231,10 @@ export interface InventoryDialogsProps {
   setMigTargetNode: (v: string) => void
   migTargetStorage: string
   setMigTargetStorage: (v: string) => void
+  migTargetVmid: string
+  setMigTargetVmid: (v: string) => void
+  migTargetVmidStatus: 'idle' | 'checking' | 'available' | 'taken' | 'invalid'
+  setMigTargetVmidStatus: (v: 'idle' | 'checking' | 'available' | 'taken' | 'invalid') => void
   migNetworkBridge: string
   setMigNetworkBridge: (v: string) => void
   migBridges: any[]
@@ -382,7 +386,9 @@ export default function InventoryDialogs(props: InventoryDialogsProps) {
     unlockErrorDialog, setUnlockErrorDialog,
     bulkActionDialog, setBulkActionDialog, executeBulkAction,
     esxiMigrateVm, setEsxiMigrateVm, migTargetConn, setMigTargetConn, migTargetNode, setMigTargetNode,
-    migTargetStorage, setMigTargetStorage, migNetworkBridge, setMigNetworkBridge, migBridges,
+    migTargetStorage, setMigTargetStorage,
+    migTargetVmid, setMigTargetVmid, migTargetVmidStatus, setMigTargetVmidStatus,
+    migNetworkBridge, setMigNetworkBridge, migBridges,
     migStartAfter, setMigStartAfter, migDiskPaths, setMigDiskPaths, migTempStorage, setMigTempStorage,
     migType, setMigType, migTransferMode, setMigTransferMode, migPveConnections, migNodes, migStorages,
     migSshfsAvailable, vcenterPreflight, setVcenterPreflight, migStarting, setMigStarting,
@@ -407,6 +413,51 @@ export default function InventoryDialogs(props: InventoryDialogsProps) {
   React.useEffect(() => {
     return () => { if (virtioWinPollRef.current) clearInterval(virtioWinPollRef.current) }
   }, [])
+
+  // Debounced availability check for the user-picked target VMID. Hits
+  // /cluster/nextid?vmid=<n> on the target PVE; PVE 200s when the id is
+  // free and 400s when taken. We surface that as inline status next to
+  // the input so the user knows before clicking Migrate.
+  React.useEffect(() => {
+    if (!migTargetVmid) {
+      setMigTargetVmidStatus('idle')
+      return
+    }
+    const trimmed = migTargetVmid.trim()
+    const n = Number(trimmed)
+    if (!/^\d+$/.test(trimmed) || !Number.isInteger(n) || n < 100 || n > 999999999) {
+      setMigTargetVmidStatus('invalid')
+      return
+    }
+    if (!migTargetConn) {
+      // Connection not picked yet — can't check, leave idle.
+      setMigTargetVmidStatus('idle')
+      return
+    }
+    setMigTargetVmidStatus('checking')
+    const controller = new AbortController()
+    const timer = setTimeout(async () => {
+      try {
+        const res = await fetch(
+          `/api/v1/connections/${encodeURIComponent(migTargetConn)}/cluster/nextid?vmid=${encodeURIComponent(trimmed)}`,
+          { signal: controller.signal }
+        )
+        if (!res.ok) {
+          setMigTargetVmidStatus('invalid')
+          return
+        }
+        const json = await res.json()
+        setMigTargetVmidStatus(json?.available ? 'available' : 'taken')
+      } catch (err: any) {
+        if (err?.name === 'AbortError') return
+        setMigTargetVmidStatus('invalid')
+      }
+    }, 400)
+    return () => {
+      clearTimeout(timer)
+      controller.abort()
+    }
+  }, [migTargetVmid, migTargetConn, setMigTargetVmidStatus])
 
   // Shared error Alert rendered above the missing-tools list when the apt
   // install just failed. Identical between the single-VM v2v dialog and the
@@ -2063,6 +2114,35 @@ return
                       ))}
                     </Select>
                   </FormControl>
+                  <TextField
+                    fullWidth
+                    size="small"
+                    type="number"
+                    label={t('inventoryPage.esxiMigration.targetVmidOptional')}
+                    placeholder={t('inventoryPage.esxiMigration.targetVmidAuto')}
+                    value={migTargetVmid}
+                    onChange={e => setMigTargetVmid(e.target.value)}
+                    disabled={!migTargetConn}
+                    inputProps={{ min: 100, max: 999999999 }}
+                    helperText={
+                      migTargetVmidStatus === 'available' ? t('inventoryPage.esxiMigration.targetVmidAvailable') :
+                      migTargetVmidStatus === 'taken' ? t('inventoryPage.esxiMigration.targetVmidTaken') :
+                      migTargetVmidStatus === 'invalid' ? t('inventoryPage.esxiMigration.targetVmidInvalid') :
+                      migTargetVmidStatus === 'checking' ? t('inventoryPage.esxiMigration.targetVmidChecking') :
+                      t('inventoryPage.esxiMigration.targetVmidHelp')
+                    }
+                    error={migTargetVmidStatus === 'taken' || migTargetVmidStatus === 'invalid'}
+                    color={migTargetVmidStatus === 'available' ? 'success' : undefined}
+                    InputProps={{
+                      endAdornment: migTargetVmidStatus === 'checking' ? (
+                        <CircularProgress size={14} />
+                      ) : migTargetVmidStatus === 'available' ? (
+                        <i className="ri-checkbox-circle-fill" style={{ fontSize: 16, color: 'var(--mui-palette-success-main)' }} />
+                      ) : migTargetVmidStatus === 'taken' || migTargetVmidStatus === 'invalid' ? (
+                        <i className="ri-error-warning-fill" style={{ fontSize: 16, color: 'var(--mui-palette-error-main)' }} />
+                      ) : undefined,
+                    }}
+                  />
                   {/* Migration type selector — hidden for Hyper-V / Nutanix (cold only).
                       vCenter and direct ESXi both support cold + live. */}
                   {esxiMigrateVm?.hostType !== 'hyperv' && esxiMigrateVm?.hostType !== 'nutanix' && (
@@ -2621,6 +2701,13 @@ return
                 disabled={(() => {
                   // Base requirements (always apply)
                   if (!migTargetConn || !migTargetNode || !migTargetStorage || migStarting) return true
+                  // Block migration when the user picked a VMID that conflicts
+                  // or is malformed. `idle`, `available` and `checking` all
+                  // pass — `checking` only locks the button while debounced
+                  // verification runs, but our 400ms debounce is short enough
+                  // that the user clicking Migrate then will simply pre-empt
+                  // the check, and the backend re-validates the range anyway.
+                  if (migTargetVmid && (migTargetVmidStatus === 'taken' || migTargetVmidStatus === 'invalid')) return true
                   const isV2vVcenter = esxiMigrateVm?.hostType === 'vcenter' || esxiMigrateVm?.hostType === 'hyperv' || esxiMigrateVm?.hostType === 'nutanix'
                   const isWindowsGuest = !!esxiMigrateVm?.guestOS?.toLowerCase().includes('win')
                   // Direct-ESXi Windows Cold is auto-routed through virt-v2v by the API
@@ -2684,6 +2771,9 @@ return
                         targetConnectionId: migTargetConn,
                         targetNode: migTargetNode,
                         targetStorage: migTargetStorage,
+                        ...(migTargetVmid && /^\d+$/.test(migTargetVmid.trim()) && {
+                          targetVmid: Number(migTargetVmid.trim()),
+                        }),
                         networkBridge: migNetworkBridge,
                         // vCenter supports cold + live via the v2v pipeline
                         // (NFC-on-snapshot). Hyper-V / Nutanix are still cold only.

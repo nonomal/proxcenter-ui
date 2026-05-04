@@ -48,6 +48,9 @@ interface MigrationConfig {
   // qemu-img conversion. When set, overrides the default heuristic that picks
   // the target storage's images dir (file-based) or /var/lib/vz/tmp (block).
   tempStorage?: string
+  // User-supplied target VMID. When set, used directly instead of
+  // `/cluster/nextid`; PVE rejects the create call if it's already taken.
+  targetVmid?: number
 }
 
 interface LogEntry {
@@ -309,11 +312,15 @@ export async function runXcpngMigrationPipeline(jobId: string, config: Migration
 
     // ── STEP 2: Allocate VMID & Create VM shell on Proxmox ──
     await updateJob(jobId, "creating_vm")
-    await appendLog(jobId, "Allocating VMID on Proxmox cluster...")
-
-    targetVmid = Number(await pveFetch<number | string>(pveConn, "/cluster/nextid"))
+    if (config.targetVmid !== undefined) {
+      targetVmid = config.targetVmid
+      await appendLog(jobId, `Using user-specified VMID ${targetVmid}`)
+    } else {
+      await appendLog(jobId, "Allocating VMID on Proxmox cluster...")
+      targetVmid = Number(await pveFetch<number | string>(pveConn, "/cluster/nextid"))
+      await appendLog(jobId, `Allocated VMID ${targetVmid}`)
+    }
     await updateJob(jobId, "creating_vm", { targetVmid })
-    await appendLog(jobId, `Allocated VMID ${targetVmid}`)
 
     const pveParams = mapXoToPveConfig(vmConfig, targetVmid, config.targetStorage, config.networkBridge)
     await appendLog(jobId, `Creating VM: ${pveParams.name} (${pveParams.ostype}, ${pveParams.bios}, ${pveParams.scsihw})...`)

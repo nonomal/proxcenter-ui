@@ -36,10 +36,25 @@ export async function POST(req: Request) {
       startAfterMigration = false,
       migrationType = "cold",
       transferMode = "auto",
+      targetVmid: targetVmidRaw,
     } = body
 
     if (!sourceConnectionId || !sourceVmId || !targetConnectionId || !targetNode || !targetStorage) {
       return NextResponse.json({ error: "Missing required fields" }, { status: 400 })
+    }
+
+    // Optional caller-supplied target VMID. When omitted, the pipeline falls
+    // back to `/cluster/nextid`. When set, validate the range here so we
+    // reject bad input early; final availability is also re-checked by PVE
+    // at create time, so we don't pre-check here (the value may have been
+    // taken between this request and the actual allocation step).
+    let targetVmid: number | undefined
+    if (targetVmidRaw !== undefined && targetVmidRaw !== null && targetVmidRaw !== '') {
+      const n = Number(targetVmidRaw)
+      if (!Number.isInteger(n) || n < 100 || n > 999999999) {
+        return NextResponse.json({ error: "targetVmid must be an integer between 100 and 999999999" }, { status: 400 })
+      }
+      targetVmid = n
     }
 
     // Verify connections exist
@@ -72,7 +87,10 @@ export async function POST(req: Request) {
         targetConnectionId,
         targetNode,
         targetStorage,
-        config: JSON.stringify({ sourceConnectionId, sourceVmId, sourceVmName: body.sourceVmName, targetConnectionId, targetNode, targetStorage, networkBridge, startAfterMigration, migrationType, transferMode, sourceType: effectiveSourceType }),
+        // targetVmid stored in config so the pipeline can read it back; the
+        // top-level `targetVmid` Prisma column gets set by the pipeline once
+        // the actual VM is created (next-free fallback path).
+        config: JSON.stringify({ sourceConnectionId, sourceVmId, sourceVmName: body.sourceVmName, targetConnectionId, targetNode, targetStorage, networkBridge, startAfterMigration, migrationType, transferMode, sourceType: effectiveSourceType, ...(targetVmid !== undefined && { targetVmid }) }),
         status: "pending",
         currentStep: "pending",
         startedAt: new Date(),
@@ -94,6 +112,7 @@ export async function POST(req: Request) {
       // keeps SSHFS mounts + VMDK dumps + clone targets off /tmp when the user has picked
       // a proper filesystem in the dialog.
       ...(body.tempStorage && { tempStorage: body.tempStorage as string }),
+      ...(targetVmid !== undefined && { targetVmid }),
     }
 
     // Run appropriate pipeline in background after response (pass tenantId for scoped DB access)
@@ -112,6 +131,7 @@ export async function POST(req: Request) {
           targetConnectionId, targetNode, targetStorage, networkBridge, startAfterMigration,
           vcenterDatacenter, vcenterCluster, vcenterHost, diskPaths, tempStorage,
           migrationType: v2vMigrationType,
+          ...(targetVmid !== undefined && { targetVmid }),
         }, tenantId)
       } else if (effectiveSourceType === "xcpng") {
         await runXcpngMigrationPipeline(job.id, { ...migrationConfig, migrationType: (migrationType === "sshfs_boot" ? "cold" : migrationType) as "cold" | "live" }, tenantId)
@@ -180,6 +200,7 @@ export async function POST(req: Request) {
               migrationType: "cold",
               vmxPath: posixVmxPath,
               esxiHost: esxiHostname,
+              ...(targetVmid !== undefined && { targetVmid }),
             }, tenantId)
             return
           }

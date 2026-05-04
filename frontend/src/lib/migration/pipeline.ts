@@ -43,6 +43,10 @@ interface MigrationConfig {
   // when unset, but /tmp is typically a tiny tmpfs on PVE so the user should
   // pick a real filesystem with enough free space.
   tempStorage?: string
+  // User-supplied target VMID. When set, used directly instead of
+  // `/cluster/nextid`; PVE rejects the create call if it's already taken,
+  // and we surface that error instead of silently falling back.
+  targetVmid?: number
 }
 
 interface LogEntry {
@@ -365,11 +369,15 @@ export async function runMigrationPipeline(jobId: string, config: MigrationConfi
 
     // ── STEP 2: Allocate VMID & Create VM shell on Proxmox ──
     await updateJob(jobId, "creating_vm")
-    await appendLog(jobId, "Allocating VMID on Proxmox cluster...")
-
-    targetVmid = Number(await pveFetch<number | string>(pveConn, "/cluster/nextid"))
+    if (config.targetVmid !== undefined) {
+      targetVmid = config.targetVmid
+      await appendLog(jobId, `Using user-specified VMID ${targetVmid}`)
+    } else {
+      await appendLog(jobId, "Allocating VMID on Proxmox cluster...")
+      targetVmid = Number(await pveFetch<number | string>(pveConn, "/cluster/nextid"))
+      await appendLog(jobId, `Allocated VMID ${targetVmid}`)
+    }
     await updateJob(jobId, "creating_vm", { targetVmid })
-    await appendLog(jobId, `Allocated VMID ${targetVmid}`)
 
     const pveParams = mapEsxiToPveConfig(vmConfig, targetVmid, config.targetStorage, config.networkBridge)
     await appendLog(jobId, `Creating VM: ${pveParams.name} (${pveParams.ostype}, ${pveParams.bios}, ${pveParams.scsihw})...`)
