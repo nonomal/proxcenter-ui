@@ -12,6 +12,7 @@ import { useRBACScopeProfile } from '@/hooks/useRBACScopeProfile'
 import { useRunningTasks } from '@/hooks/useRunningTasks'
 import { usePVEConnections } from '@/hooks/useConnections'
 import { useSWRFetch } from '@/hooks/useSWRFetch'
+import { extractTaskVmid } from '@/lib/tasks/scope'
 
 import InventoryTree, { InventorySelection, ViewMode, AllVmItem, HostItem, PoolItem, TagItem, TreePbsServer, TreeClusterStorage } from './InventoryTree'
 import InventoryDetails from './InventoryDetails'
@@ -195,12 +196,15 @@ export default function InventoryPage() {
   useEffect(() => {
     const tasks = runningTasksData?.data || []
 
-    // Filter migration tasks (qmigrate, vzmigrate, hamigrate)
+    // Filter migration tasks (qmigrate, vzmigrate, hamigrate). hamigrate
+    // carries the HA service id (`vm:100`, optionally `vm:100@target`)
+    // instead of a bare vmid, so route the entity through extractTaskVmid
+    // to normalize to a vmid string.
     const migrations: MigratingVm[] = tasks
       .filter((t: any) => t.type === 'qmigrate' || t.type === 'vzmigrate' || t.type === 'hamigrate')
       .map((t: any) => ({
         connId: t.connectionId,
-        vmid: t.entity || '',
+        vmid: extractTaskVmid(t.entity) || '',
         sourceNode: t.node,
         targetNode: undefined
       }))

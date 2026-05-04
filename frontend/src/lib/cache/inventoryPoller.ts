@@ -63,13 +63,15 @@ let ipRefreshCounter = IP_REFRESH_INTERVAL - 1 // trigger on first cycle
 // ---------- Diff logic ----------
 
 function hasChanged(prev: ResourceSnapshot, curr: ResourceSnapshot): boolean {
+  // Note: node change is handled separately as a relocation (remove+add)
+  // because the frontend vm:update handler updates VMs in place and never
+  // moves them between nodes — a node change must restructure the tree.
   return (
     prev.status !== curr.status ||
     prev.cpu !== curr.cpu ||
     prev.mem !== curr.mem ||
     prev.maxmem !== curr.maxmem ||
-    prev.name !== curr.name ||
-    prev.node !== curr.node
+    prev.name !== curr.name
   )
 }
 
@@ -142,6 +144,33 @@ async function pollConnection(connId: string, connConfig: any): Promise<Inventor
               pool: r.pool,
             })
           }
+        } else if (prev.node !== curr.node) {
+          // VM relocated between nodes (HA failover, manual migration via
+          // another window, ha-manager service recovery). The frontend
+          // vm:update handler doesn't move VMs across nodes — emit a
+          // remove+add pair so the tree restructures correctly.
+          events.push({
+            event: 'vm:removed',
+            connId,
+            vmid: r.vmid,
+            node: prev.node!,
+            type: r.type,
+            pool: prev.pool,
+          })
+          events.push({
+            event: 'vm:added',
+            connId,
+            vmid: r.vmid,
+            node: r.node,
+            type: r.type,
+            status: r.status || 'unknown',
+            name: r.name,
+            cpu: r.cpu,
+            mem: r.mem,
+            maxmem: r.maxmem,
+            template: r.template,
+            pool: r.pool,
+          })
         } else if (hasChanged(prev, curr)) {
           events.push({
             event: 'vm:update',
@@ -293,9 +322,22 @@ async function pollAll() {
 // ---------- Auto-HA Handler ----------
 
 async function handleAutoHaEvents(events: InventoryEvent[]) {
+  // Relocations emit a remove+add pair in the same batch (see pollConnection).
+  // Skip Auto-HA for those: the VM is already an HA resource, just moved.
+  // Without this guard the POST /cluster/ha/resources fails with "already
+  // defined" on every failover/migration cycle.
+  const relocatedKeys = new Set<string>()
+  for (const ev of events) {
+    if (ev.event === 'vm:removed') {
+      relocatedKeys.add(`${ev.connId}:${ev.type}/${ev.vmid}`)
+    }
+  }
+
   const addedVms = events.filter(
     (e): e is Extract<InventoryEvent, { event: 'vm:added' }> =>
-      e.event === 'vm:added' && (e as any).template !== 1
+      e.event === 'vm:added' &&
+      (e as any).template !== 1 &&
+      !relocatedKeys.has(`${e.connId}:${e.type}/${e.vmid}`)
   )
 
   if (addedVms.length === 0) return

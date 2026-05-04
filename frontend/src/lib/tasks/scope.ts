@@ -16,6 +16,9 @@
  *   - VM-scoped tasks (qmstart, qmstop, vzstop, vncproxy, ...) carry
  *     the bare vmid as a numeric string: `"103"`.
  *   - Some endpoints/legacy paths return `"qemu/103"` or `"lxc/200"`.
+ *   - HA-managed tasks (hamigrate, ha-manager) carry the HA service id
+ *     `"vm:103"` or `"ct:200"`, optionally suffixed with the target node
+ *     (`"vm:103@pve-1-1"`).
  *   - Cluster-wide jobs (package updates, ceph ops, service reloads)
  *     have non-numeric ids (`"networking"`) or are empty.
  *
@@ -29,6 +32,9 @@ export function extractTaskVmid(taskId: string | undefined): string | null {
   // Bare numeric: PVE's standard cluster/tasks shape.
   if (/^\d+$/.test(taskId)) return taskId
   // Legacy / nested form.
-  const m = /^(?:qemu|lxc)\/(\d+)$/.exec(taskId)
-  return m ? m[1] : null
+  const m1 = /^(?:qemu|lxc)\/(\d+)$/.exec(taskId)
+  if (m1) return m1[1]
+  // HA service id form (hamigrate / ha-manager); optional `@target` suffix.
+  const m2 = /^(?:vm|ct):(\d+)(?:@\S+)?$/.exec(taskId)
+  return m2 ? m2[1] : null
 }
