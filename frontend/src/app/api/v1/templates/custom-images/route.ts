@@ -6,7 +6,7 @@ import { getSessionPrisma, getCurrentTenantId, DEFAULT_TENANT_ID } from "@/lib/t
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
 import { authOptions } from "@/lib/auth/config"
 import { createCustomImageSchema } from "@/lib/schemas"
-import { getDb } from "@/lib/db/sqlite"
+import { prisma as basePrisma } from "@/lib/db/prisma"
 
 export const runtime = "nodejs"
 
@@ -67,7 +67,7 @@ export async function POST(req: Request) {
     // PVE volume name from this slug). Shared catalogue entries skip the
     // tenant prefix to keep them clean (e.g. `custom-ubuntu-cloud`).
     const tenantRow = !isShared
-      ? getDb().prepare('SELECT slug FROM tenants WHERE id = ?').get(tenantId) as { slug?: string } | undefined
+      ? await basePrisma.tenant.findUnique({ where: { id: tenantId }, select: { slug: true } })
       : null
     const tenantSlug = tenantRow?.slug || tenantId.replace(/[^a-z0-9-]/gi, '').toLowerCase()
 

@@ -5,7 +5,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { getServerSession } from "next-auth"
 
 import { authOptions } from "@/lib/auth/config"
-import { getDb } from "@/lib/db/sqlite"
+import { prisma } from "@/lib/db/prisma"
 import { audit } from "@/lib/audit"
 import { hasPermission, isUserSuperAdmin, isUserProtected, PROTECTED_ROLE_IDS } from "@/lib/rbac"
 import { getCurrentTenantId } from "@/lib/tenant"
@@ -21,15 +21,15 @@ interface RouteContext {
  * tenant admins from touching provider-level operators via the assignments
  * API.
  */
-function denyIfAssignmentTouchesProtected(
-  assignment: { role_id: string; user_id: string } | null,
+async function denyIfAssignmentTouchesProtected(
+  assignment: { roleId: string; userId: string } | null,
   callerUserId: string
-): NextResponse | null {
+): Promise<NextResponse | null> {
   if (!assignment) return null
-  if (isUserSuperAdmin(callerUserId)) return null
+  if (await isUserSuperAdmin(callerUserId)) return null
   if (
-    (PROTECTED_ROLE_IDS as readonly string[]).includes(assignment.role_id) ||
-    isUserProtected(assignment.user_id)
+    (PROTECTED_ROLE_IDS as readonly string[]).includes(assignment.roleId) ||
+    (await isUserProtected(assignment.userId))
   ) {
     return NextResponse.json({ error: "Assignation non trouvée" }, { status: 404 })
   }
@@ -49,38 +49,49 @@ export async function GET(req: NextRequest, context: RouteContext) {
     }
 
     const { id } = await context.params
-    const db = getDb()
     const tenantId = await getCurrentTenantId()
 
-    const assignment = db.prepare(`
-      SELECT
-        ur.*,
-        u.email as user_email,
-        u.name as user_name,
-        r.name as role_name,
-        r.color as role_color,
-        g.email as granted_by_email
-      FROM rbac_user_roles ur
-      JOIN users u ON u.id = ur.user_id
-      JOIN rbac_roles r ON r.id = ur.role_id
-      LEFT JOIN users g ON g.id = ur.granted_by
-      WHERE ur.id = ? AND ur.tenant_id = ?
-    `).get(id, tenantId) as any
+    const assignment = await prisma.rbacUserRole.findFirst({
+      where: { id, tenantId },
+      include: {
+        user: { select: { id: true, email: true, name: true } },
+        role: { select: { id: true, name: true, color: true } },
+        grantedBy: { select: { email: true } },
+      },
+    })
 
     if (!assignment) {
       return NextResponse.json({ error: "Assignation non trouvée" }, { status: 404 })
     }
 
-    const superAdminBlock = denyIfAssignmentTouchesProtected(assignment, session.user.id)
+    const superAdminBlock = await denyIfAssignmentTouchesProtected(
+      { roleId: assignment.roleId, userId: assignment.userId },
+      session.user.id,
+    )
     if (superAdminBlock) return superAdminBlock
 
     return NextResponse.json({
-      data: assignment
+      data: {
+        id: assignment.id,
+        user_id: assignment.userId,
+        role_id: assignment.roleId,
+        scope_type: assignment.scopeType,
+        scope_target: assignment.scopeTarget,
+        tenant_id: assignment.tenantId,
+        granted_by: assignment.grantedById,
+        granted_at: assignment.grantedAt.toISOString(),
+        expires_at: assignment.expiresAt?.toISOString() ?? null,
+        user_email: assignment.user.email,
+        user_name: assignment.user.name,
+        role_name: assignment.role.name,
+        role_color: assignment.role.color,
+        granted_by_email: assignment.grantedBy?.email ?? null,
+      }
     })
 
   } catch (error: any) {
     console.error("GET /api/v1/rbac/assignments/[id] error:", error)
-    
+
 return NextResponse.json(
       { error: error.message || "Erreur serveur" },
       { status: 500 }
@@ -102,31 +113,33 @@ export async function DELETE(req: NextRequest, context: RouteContext) {
 
     const tenantId = await getCurrentTenantId()
 
-    if (!hasPermission({ userId: session.user.id, permission: 'admin.rbac', tenantId })) {
+    if (!(await hasPermission({ userId: session.user.id, permission: "admin.rbac", tenantId }))) {
       return NextResponse.json({ error: "Droits administrateur requis" }, { status: 403 })
     }
 
     const { id } = await context.params
-    const db = getDb()
 
     // Récupérer l'assignation pour l'audit (scoped by tenant)
-    const assignment = db.prepare(`
-      SELECT ur.*, u.email as user_email, r.name as role_name
-      FROM rbac_user_roles ur
-      JOIN users u ON u.id = ur.user_id
-      JOIN rbac_roles r ON r.id = ur.role_id
-      WHERE ur.id = ? AND ur.tenant_id = ?
-    `).get(id, tenantId) as any
+    const assignment = await prisma.rbacUserRole.findFirst({
+      where: { id, tenantId },
+      include: {
+        user: { select: { email: true } },
+        role: { select: { name: true } },
+      },
+    })
 
     if (!assignment) {
       return NextResponse.json({ error: "Assignation non trouvée" }, { status: 404 })
     }
 
-    const superAdminBlock = denyIfAssignmentTouchesProtected(assignment, session.user.id)
+    const superAdminBlock = await denyIfAssignmentTouchesProtected(
+      { roleId: assignment.roleId, userId: assignment.userId },
+      session.user.id,
+    )
     if (superAdminBlock) return superAdminBlock
 
     // Prevent self-lockout: nobody may revoke their own role.
-    if (assignment.user_id === session.user.id) {
+    if (assignment.userId === session.user.id) {
       return NextResponse.json(
         { error: "Vous ne pouvez pas révoquer vos propres rôles" },
         { status: 400 }
@@ -134,7 +147,7 @@ export async function DELETE(req: NextRequest, context: RouteContext) {
     }
 
     // Supprimer l'assignation
-    db.prepare("DELETE FROM rbac_user_roles WHERE id = ? AND tenant_id = ?").run(id, tenantId)
+    await prisma.rbacUserRole.deleteMany({ where: { id, tenantId } })
 
     // Audit
     await audit({
@@ -143,13 +156,13 @@ export async function DELETE(req: NextRequest, context: RouteContext) {
       userId: session.user.id,
       userEmail: session.user.email,
       resourceType: "user",
-      resourceId: assignment.user_id,
-      resourceName: assignment.user_email,
-      details: { 
-        role_name: assignment.role_name,
-        role_id: assignment.role_id,
-        scope_type: assignment.scope_type, 
-        scope_target: assignment.scope_target 
+      resourceId: assignment.userId,
+      resourceName: assignment.user.email,
+      details: {
+        role_name: assignment.role.name,
+        role_id: assignment.roleId,
+        scope_type: assignment.scopeType,
+        scope_target: assignment.scopeTarget,
       },
       status: "success"
     })
@@ -158,7 +171,7 @@ export async function DELETE(req: NextRequest, context: RouteContext) {
 
   } catch (error: any) {
     console.error("DELETE /api/v1/rbac/assignments/[id] error:", error)
-    
+
 return NextResponse.json(
       { error: error.message || "Erreur serveur" },
       { status: 500 }
@@ -180,7 +193,7 @@ export async function PATCH(req: NextRequest, context: RouteContext) {
 
     const tenantId = await getCurrentTenantId()
 
-    if (!hasPermission({ userId: session.user.id, permission: 'admin.rbac', tenantId })) {
+    if (!(await hasPermission({ userId: session.user.id, permission: "admin.rbac", tenantId }))) {
       return NextResponse.json({ error: "Droits administrateur requis" }, { status: 403 })
     }
 
@@ -188,26 +201,27 @@ export async function PATCH(req: NextRequest, context: RouteContext) {
     const body = await req.json()
     const { role_id, scope_type, scope_target, expires_at } = body
 
-    const db = getDb()
-
     // Récupérer l'assignation existante (scoped by tenant)
-    const assignment = db.prepare(`
-      SELECT ur.*, u.email as user_email, r.name as role_name
-      FROM rbac_user_roles ur
-      JOIN users u ON u.id = ur.user_id
-      JOIN rbac_roles r ON r.id = ur.role_id
-      WHERE ur.id = ? AND ur.tenant_id = ?
-    `).get(id, tenantId) as any
+    const assignment = await prisma.rbacUserRole.findFirst({
+      where: { id, tenantId },
+      include: {
+        user: { select: { email: true } },
+        role: { select: { name: true } },
+      },
+    })
 
     if (!assignment) {
       return NextResponse.json({ error: "Assignation non trouvée" }, { status: 404 })
     }
 
-    const superAdminBlock = denyIfAssignmentTouchesProtected(assignment, session.user.id)
+    const superAdminBlock = await denyIfAssignmentTouchesProtected(
+      { roleId: assignment.roleId, userId: assignment.userId },
+      session.user.id,
+    )
     if (superAdminBlock) return superAdminBlock
 
     // Prevent self-escalation: nobody may change their own role assignment.
-    if (assignment.user_id === session.user.id) {
+    if (assignment.userId === session.user.id) {
       return NextResponse.json(
         { error: "Vous ne pouvez pas modifier vos propres rôles" },
         { status: 400 }
@@ -216,28 +230,25 @@ export async function PATCH(req: NextRequest, context: RouteContext) {
 
     // Refuse PATCHes that would promote a regular user to any protected
     // wildcard role (super_admin or provider_admin).
+    const callerIsSuperAdmin = await isUserSuperAdmin(session.user.id)
     if (
-      !isUserSuperAdmin(session.user.id) &&
+      !callerIsSuperAdmin &&
       role_id &&
       (PROTECTED_ROLE_IDS as readonly string[]).includes(role_id)
     ) {
       return NextResponse.json({ error: "Rôle non trouvé" }, { status: 404 })
     }
 
-    // Construire les champs à mettre à jour
-    const updates: string[] = []
-    const params: any[] = []
+    // Construire le payload Prisma en ne touchant que les champs fournis
+    const data: Record<string, unknown> = {}
 
     if (role_id !== undefined) {
       // Vérifier que le rôle existe
-      const role = db.prepare("SELECT id, name FROM rbac_roles WHERE id = ?").get(role_id) as any
-
+      const role = await prisma.rbacRole.findUnique({ where: { id: role_id }, select: { id: true } })
       if (!role) {
         return NextResponse.json({ error: "Rôle non trouvé" }, { status: 404 })
       }
-
-      updates.push("role_id = ?")
-      params.push(role_id)
+      data.roleId = role_id
     }
 
     if (scope_type !== undefined) {
@@ -247,37 +258,35 @@ export async function PATCH(req: NextRequest, context: RouteContext) {
         return NextResponse.json({ error: "scope_type invalide" }, { status: 400 })
       }
 
-      updates.push("scope_type = ?")
-      params.push(scope_type)
+      data.scopeType = scope_type
     }
 
     if (scope_target !== undefined) {
-      updates.push("scope_target = ?")
-      params.push(scope_target || null)
+      data.scopeTarget = scope_target || null
     }
 
     if (expires_at !== undefined) {
-      updates.push("expires_at = ?")
-      params.push(expires_at || null)
+      data.expiresAt = expires_at ? new Date(expires_at) : null
     }
 
-    if (updates.length === 0) {
+    if (Object.keys(data).length === 0) {
       return NextResponse.json({ error: "Aucun champ à mettre à jour" }, { status: 400 })
     }
 
-    // Ajouter l'ID à la fin pour le WHERE
-    params.push(id)
-
-    db.prepare(`UPDATE rbac_user_roles SET ${updates.join(", ")} WHERE id = ? AND tenant_id = ?`).run(...params, tenantId)
+    await prisma.rbacUserRole.updateMany({ where: { id, tenantId }, data })
 
     // Récupérer l'assignation mise à jour
-    const updated = db.prepare(`
-      SELECT ur.*, u.email as user_email, r.name as role_name, r.color as role_color
-      FROM rbac_user_roles ur
-      JOIN users u ON u.id = ur.user_id
-      JOIN rbac_roles r ON r.id = ur.role_id
-      WHERE ur.id = ? AND ur.tenant_id = ?
-    `).get(id, tenantId) as any
+    const updated = await prisma.rbacUserRole.findFirst({
+      where: { id, tenantId },
+      include: {
+        user: { select: { id: true, email: true } },
+        role: { select: { id: true, name: true, color: true } },
+      },
+    })
+
+    if (!updated) {
+      return NextResponse.json({ error: "Assignation non trouvée" }, { status: 404 })
+    }
 
     // Audit
     await audit({
@@ -286,15 +295,15 @@ export async function PATCH(req: NextRequest, context: RouteContext) {
       userId: session.user.id,
       userEmail: session.user.email,
       resourceType: "user",
-      resourceId: assignment.user_id,
-      resourceName: assignment.user_email,
-      details: { 
-        old_role: assignment.role_name,
-        new_role: updated.role_name,
-        old_scope_type: assignment.scope_type,
-        new_scope_type: updated.scope_type,
-        old_scope_target: assignment.scope_target,
-        new_scope_target: updated.scope_target
+      resourceId: assignment.userId,
+      resourceName: assignment.user.email,
+      details: {
+        old_role: assignment.role.name,
+        new_role: updated.role.name,
+        old_scope_type: assignment.scopeType,
+        new_scope_type: updated.scopeType,
+        old_scope_target: assignment.scopeTarget,
+        new_scope_target: updated.scopeTarget,
       },
       status: "success"
     })
@@ -303,23 +312,23 @@ export async function PATCH(req: NextRequest, context: RouteContext) {
       data: {
         id: updated.id,
         user: {
-          id: updated.user_id,
-          email: updated.user_email
+          id: updated.user.id,
+          email: updated.user.email,
         },
         role: {
-          id: updated.role_id,
-          name: updated.role_name,
-          color: updated.role_color
+          id: updated.role.id,
+          name: updated.role.name,
+          color: updated.role.color,
         },
-        scope_type: updated.scope_type,
-        scope_target: updated.scope_target,
-        expires_at: updated.expires_at
-      }
+        scope_type: updated.scopeType,
+        scope_target: updated.scopeTarget,
+        expires_at: updated.expiresAt?.toISOString() ?? null,
+      },
     })
 
   } catch (error: any) {
     console.error("PATCH /api/v1/rbac/assignments/[id] error:", error)
-    
+
 return NextResponse.json(
       { error: error.message || "Erreur serveur" },
       { status: 500 }

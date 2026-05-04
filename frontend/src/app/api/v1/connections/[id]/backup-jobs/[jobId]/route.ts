@@ -15,7 +15,7 @@ import { getAllowedJobPools, isJobOwnedByTenantPools, validateTenantJobBody } fr
  */
 async function loadJobForTenant(conn: any, connectionId: string, jobId: string) {
   const tenantId = await getCurrentTenantId()
-  const allowedPools = getAllowedJobPools(tenantId, connectionId)
+  const allowedPools = await getAllowedJobPools(tenantId, connectionId)
   let job: any
   try {
     job = await pveFetch<any>(conn, `/cluster/backup/${encodeURIComponent(jobId)}`)

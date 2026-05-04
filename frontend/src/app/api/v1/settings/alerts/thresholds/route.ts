@@ -1,7 +1,7 @@
 export const dynamic = 'force-dynamic'
 import { NextResponse } from 'next/server'
 
-import { getDb } from '@/lib/db/sqlite'
+import { getSetting, setSetting } from '@/lib/db/settings'
 import { checkPermission, PERMISSIONS } from '@/lib/rbac'
 import { getCurrentTenantId } from '@/lib/tenant'
 import { alertsApi } from '@/lib/orchestrator/client'
@@ -43,13 +43,8 @@ export async function GET(req: Request) {
     const denied = await checkPermission(PERMISSIONS.ADMIN_SETTINGS)
     if (denied) return denied
 
-    const db = getDb()
     const tenantId = await getCurrentTenantId()
-    const row = db
-      .prepare('SELECT value FROM settings WHERE key = ? AND tenant_id = ?')
-      .get('alert_thresholds', tenantId) as { value: string } | undefined
-
-    const stored = row?.value ? (() => { try { return JSON.parse(row.value) } catch { return null } })() : null
+    const stored = await getSetting<any>('alert_thresholds', tenantId)
     return NextResponse.json(coerceThresholds(stored))
   } catch (error: any) {
     console.error('[settings/alerts/thresholds] GET error:', error)
@@ -77,15 +72,8 @@ export async function PUT(req: Request) {
     const body = await req.json()
     const thresholds = coerceThresholds(body)
 
-    const db = getDb()
     const tenantId = await getCurrentTenantId()
-    const now = new Date().toISOString()
-
-    db.prepare(`
-      INSERT INTO settings (key, tenant_id, value, updated_at)
-      VALUES (?, ?, ?, ?)
-      ON CONFLICT(key, tenant_id) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
-    `).run('alert_thresholds', tenantId, JSON.stringify(thresholds), now)
+    await setSetting('alert_thresholds', tenantId, thresholds)
 
     if (process.env.ORCHESTRATOR_URL) {
       try {

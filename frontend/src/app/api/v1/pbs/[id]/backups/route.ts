@@ -11,7 +11,6 @@ import { formatBytes } from "@/utils/format"
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
 import { assertVdcPbsAccess, getVdcScope } from "@/lib/vdc/scope"
 import { getDateLocale } from "@/lib/i18n/date"
-import { getDb } from "@/lib/db/sqlite"
 import { getCurrentTenantId } from "@/lib/tenant"
 import {
   type CachedBackup,
@@ -255,7 +254,7 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> |
     if (blankNames) {
       try {
         const tenantId = await getCurrentTenantId()
-        const vdcScope = getVdcScope(tenantId)
+        const vdcScope = await getVdcScope(tenantId)
         const sessionPrisma = await getSessionPrisma()
         const connPrisma = vdcScope ? globalPrisma : sessionPrisma
         const pveWhere: any = { type: 'pve' }
@@ -309,32 +308,39 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> |
     // Resolve the (datastore, namespace) → vDC mapping so the UI can group
     // namespaces by vDC. For tenant callers we restrict to their own vDCs;
     // super-admins see bindings across every tenant on this PBS connection.
-    const db = getDb()
     let bindings: Array<{ datastore: string; namespace: string; vdcId: string; vdcName: string; tenantName?: string }> = []
     if (access.kind === 'tenant') {
       const tenantId = await getCurrentTenantId()
-      bindings = (db.prepare(
-        `SELECT b.datastore, b.namespace, v.id AS vdc_id, v.name AS vdc_name
-         FROM vdc_pbs_namespaces b
-         JOIN vdcs v ON v.id = b.vdc_id
-         WHERE b.pbs_connection_id = ? AND v.tenant_id = ?`
-      ).all(id, tenantId) as Array<{ datastore: string; namespace: string; vdc_id: string; vdc_name: string }>)
-        .map(r => ({ datastore: r.datastore, namespace: r.namespace, vdcId: r.vdc_id, vdcName: r.vdc_name }))
+      const rows = await globalPrisma.vdcPbsNamespace.findMany({
+        where: { pbsConnectionId: id, vdc: { tenantId } },
+        select: {
+          datastore: true,
+          namespace: true,
+          vdc: { select: { id: true, name: true } },
+        },
+      })
+      bindings = rows.map(r => ({
+        datastore: r.datastore,
+        namespace: r.namespace,
+        vdcId: r.vdc.id,
+        vdcName: r.vdc.name,
+      }))
     } else {
-      bindings = (db.prepare(
-        `SELECT b.datastore, b.namespace, v.id AS vdc_id, v.name AS vdc_name, t.name AS tenant_name
-         FROM vdc_pbs_namespaces b
-         JOIN vdcs v ON v.id = b.vdc_id
-         LEFT JOIN tenants t ON t.id = v.tenant_id
-         WHERE b.pbs_connection_id = ?`
-      ).all(id) as Array<{ datastore: string; namespace: string; vdc_id: string; vdc_name: string; tenant_name: string | null }>)
-        .map(r => ({
-          datastore: r.datastore,
-          namespace: r.namespace,
-          vdcId: r.vdc_id,
-          vdcName: r.vdc_name,
-          tenantName: r.tenant_name ?? undefined,
-        }))
+      const rows = await globalPrisma.vdcPbsNamespace.findMany({
+        where: { pbsConnectionId: id },
+        select: {
+          datastore: true,
+          namespace: true,
+          vdc: { select: { id: true, name: true, tenant: { select: { name: true } } } },
+        },
+      })
+      bindings = rows.map(r => ({
+        datastore: r.datastore,
+        namespace: r.namespace,
+        vdcId: r.vdc.id,
+        vdcName: r.vdc.name,
+        tenantName: r.vdc.tenant?.name ?? undefined,
+      }))
     }
 
     // Apply filters on cached data (fast, in-memory)

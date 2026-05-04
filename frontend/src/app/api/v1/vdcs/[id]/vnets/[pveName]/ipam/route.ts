@@ -2,7 +2,6 @@ import { NextResponse } from "next/server"
 
 import { getCurrentTenantId } from "@/lib/tenant"
 import { checkPermission } from "@/lib/rbac"
-import { getDb } from "@/lib/db/sqlite"
 import { prisma } from "@/lib/db/prisma"
 import { listAllocationsForSubnet } from "@/lib/vdc/ipam"
 import { parseCidr } from "@/lib/vdc/network"
@@ -32,26 +31,26 @@ export async function GET(_req: Request, ctx: RouteContext) {
     if (denied) return denied
 
     const tenantId = await getCurrentTenantId()
-    const db = getDb()
 
     // Resolve the VNet → subnet, scoped to the caller's tenant. We pull
     // both rows in one query so we can fail-fast on a missing/foreign vDC.
-    const row = db
-      .prepare(
-        `SELECT s.id AS subnet_id, s.cidr, s.gateway,
-                d.connection_id
-         FROM vdc_vnets v
-         JOIN vdcs       d ON d.id = v.vdc_id
-         JOIN vdc_subnets s ON s.vnet_id = v.id
-         WHERE v.vdc_id = ? AND v.display_name = ? AND d.tenant_id = ?
-         LIMIT 1`,
-      )
-      .get(vdcId, displayName, tenantId) as
-        | { subnet_id: string; cidr: string; gateway: string; connection_id: string }
-        | undefined
-    if (!row) return NextResponse.json({ error: "VNet not found" }, { status: 404 })
+    const vnetRow = await prisma.vdcVnet.findFirst({
+      where: { vdcId, displayName, vdc: { tenantId } },
+      select: {
+        subnet: { select: { id: true, cidr: true, gateway: true } },
+        vdc: { select: { connectionId: true } },
+      },
+    })
+    if (!vnetRow || !vnetRow.subnet) return NextResponse.json({ error: "VNet not found" }, { status: 404 })
 
-    const allocations = listAllocationsForSubnet(row.subnet_id)
+    const row = {
+      subnet_id: vnetRow.subnet.id,
+      cidr: vnetRow.subnet.cidr,
+      gateway: vnetRow.subnet.gateway,
+      connection_id: vnetRow.vdc.connectionId,
+    }
+
+    const allocations = await listAllocationsForSubnet(row.subnet_id)
 
     // Enrich each allocation with the live PVE state (name, node, status,
     // type). This lets the frontend show an icon + status pastille without

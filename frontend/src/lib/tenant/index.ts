@@ -1,9 +1,15 @@
 // src/lib/tenant/index.ts
 // Multi-tenancy helpers
+//
+// All reads/writes for `tenants`, `users`, `user_tenants` and the RBAC tables
+// touched here go through Prisma (Postgres). `isSuperAdminLocal` is inlined
+// (instead of importing from lib/rbac) to avoid a circular import — lib/rbac
+// re-imports DEFAULT_TENANT_ID from this file.
 
 import { getServerSession } from "next-auth"
+import type { Prisma } from "@prisma/client"
+
 import { authOptions } from "@/lib/auth/config"
-import { getDb } from "@/lib/db/sqlite"
 import { prisma } from "@/lib/db/prisma"
 
 export const DEFAULT_TENANT_ID = "default"
@@ -20,6 +26,33 @@ export interface Tenant {
   updatedAt: string
 }
 
+function rowToTenant(row: {
+  id: string
+  slug: string
+  name: string
+  description: string | null
+  enabled: boolean
+  settings: Prisma.JsonValue | null
+  createdBy: string | null
+  createdAt: Date
+  updatedAt: Date
+}): Tenant {
+  return {
+    id: row.id,
+    slug: row.slug,
+    name: row.name,
+    description: row.description,
+    enabled: row.enabled,
+    settings:
+      row.settings && typeof row.settings === "object" && !Array.isArray(row.settings)
+        ? (row.settings as Record<string, any>)
+        : null,
+    createdBy: row.createdBy,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+  }
+}
+
 /**
  * Get current tenant ID from the session JWT.
  * Falls back to 'default' if not set (backwards-compatible).
@@ -29,18 +62,19 @@ export async function getCurrentTenantId(): Promise<string> {
   const tenantId = (session as any)?.user?.tenantId || DEFAULT_TENANT_ID
 
   // Verify tenant exists and is enabled
-  const db = getDb()
-  const tenant = db.prepare(
-    "SELECT id, enabled FROM tenants WHERE id = ?"
-  ).get(tenantId) as any
+  const tenant = await prisma.tenant.findUnique({
+    where: { id: tenantId },
+    select: { id: true, enabled: true },
+  })
 
   if (!tenant) return DEFAULT_TENANT_ID
   if (!tenant.enabled) return DEFAULT_TENANT_ID
 
   // Verify the user actually belongs to this tenant (guards against stale JWTs)
   const userId = (session as any)?.user?.id
-  if (userId && tenantId !== DEFAULT_TENANT_ID && !userHasAccessToTenant(userId, tenantId)) {
-    return DEFAULT_TENANT_ID
+  if (userId && tenantId !== DEFAULT_TENANT_ID) {
+    const allowed = await userHasAccessToTenant(userId, tenantId)
+    if (!allowed) return DEFAULT_TENANT_ID
   }
 
   return tenantId
@@ -50,54 +84,65 @@ export async function getCurrentTenantId(): Promise<string> {
  * Get tenants accessible by a user.
  * Super admins see all enabled tenants; regular users see only those they are members of.
  */
-export function getUserTenants(userId: string): Tenant[] {
-  const db = getDb()
-  if (isSuperAdminLocal(userId)) {
-    return db.prepare(`
-      SELECT t.id, t.slug, t.name, t.description, t.enabled, t.settings,
-             t.created_by as createdBy, t.created_at as createdAt, t.updated_at as updatedAt
-      FROM tenants t
-      WHERE t.enabled = 1
-      ORDER BY (t.id = 'default') DESC, t.name ASC
-    `).all() as Tenant[]
+export async function getUserTenants(userId: string): Promise<Tenant[]> {
+  if (await isSuperAdminLocal(userId)) {
+    const all = await prisma.tenant.findMany({
+      where: { enabled: true },
+      orderBy: [{ id: "asc" }, { name: "asc" }],
+    })
+    // Prisma can't express "default first" in orderBy; do it client-side.
+    return all
+      .map(rowToTenant)
+      .sort((a, b) => {
+        if (a.id === DEFAULT_TENANT_ID && b.id !== DEFAULT_TENANT_ID) return -1
+        if (b.id === DEFAULT_TENANT_ID && a.id !== DEFAULT_TENANT_ID) return 1
+        return a.name.localeCompare(b.name)
+      })
   }
-  return db.prepare(`
-    SELECT t.id, t.slug, t.name, t.description, t.enabled, t.settings,
-           t.created_by as createdBy, t.created_at as createdAt, t.updated_at as updatedAt
-    FROM tenants t
-    JOIN user_tenants ut ON ut.tenant_id = t.id
-    WHERE ut.user_id = ? AND t.enabled = 1
-    ORDER BY ut.is_default DESC, t.name ASC
-  `).all(userId) as Tenant[]
+
+  const memberships = await prisma.userTenant.findMany({
+    where: { userId, tenant: { enabled: true } },
+    include: { tenant: true },
+    orderBy: [{ isDefault: "desc" }],
+  })
+  return memberships
+    .map(m => rowToTenant(m.tenant))
+    // Stable secondary sort by name; the Prisma orderBy only guarantees the
+    // is_default ordering primary, names are post-sorted client-side.
+    .sort((a, b) => {
+      const aDefault = memberships.find(m => m.tenantId === a.id)?.isDefault ?? false
+      const bDefault = memberships.find(m => m.tenantId === b.id)?.isDefault ?? false
+      if (aDefault !== bDefault) return aDefault ? -1 : 1
+      return a.name.localeCompare(b.name)
+    })
 }
 
 /**
  * Get user's default tenant ID.
  */
-export function getUserDefaultTenantId(userId: string): string {
-  const db = getDb()
-  const row = db.prepare(`
-    SELECT tenant_id FROM user_tenants
-    WHERE user_id = ? AND is_default = 1
-    LIMIT 1
-  `).get(userId) as any
-
-  return row?.tenant_id || DEFAULT_TENANT_ID
+export async function getUserDefaultTenantId(userId: string): Promise<string> {
+  const row = await prisma.userTenant.findFirst({
+    where: { userId, isDefault: true },
+    select: { tenantId: true },
+  })
+  return row?.tenantId || DEFAULT_TENANT_ID
 }
 
 /**
- * Check if a user holds role_super_admin on any tenant.
- * Super admins have cross-tenant access by design.
- * Inlined here (instead of importing from lib/rbac) to avoid a circular import.
+ * Check if a user holds role_super_admin on any tenant. Super admins have
+ * cross-tenant access by design. Inlined here (instead of importing from
+ * lib/rbac) to avoid a circular import — lib/rbac depends on
+ * DEFAULT_TENANT_ID from this file.
  */
-function isSuperAdminLocal(userId: string): boolean {
-  const db = getDb()
-  const row = db.prepare(`
-    SELECT 1 FROM rbac_user_roles
-    WHERE user_id = ? AND role_id = 'role_super_admin'
-      AND (expires_at IS NULL OR expires_at > datetime('now'))
-    LIMIT 1
-  `).get(userId)
+async function isSuperAdminLocal(userId: string): Promise<boolean> {
+  const row = await prisma.rbacUserRole.findFirst({
+    where: {
+      userId,
+      roleId: "role_super_admin",
+      OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+    },
+    select: { id: true },
+  })
   return !!row
 }
 
@@ -105,12 +150,12 @@ function isSuperAdminLocal(userId: string): boolean {
  * Check if a user has access to a specific tenant.
  * Super admins always have access to every tenant.
  */
-export function userHasAccessToTenant(userId: string, tenantId: string): boolean {
-  if (isSuperAdminLocal(userId)) return true
-  const db = getDb()
-  const row = db.prepare(
-    "SELECT 1 FROM user_tenants WHERE user_id = ? AND tenant_id = ?"
-  ).get(userId, tenantId)
+export async function userHasAccessToTenant(userId: string, tenantId: string): Promise<boolean> {
+  if (await isSuperAdminLocal(userId)) return true
+  const row = await prisma.userTenant.findUnique({
+    where: { userId_tenantId: { userId, tenantId } },
+    select: { userId: true },
+  })
   return !!row
 }
 
@@ -265,7 +310,7 @@ export async function getTenantConnectionIds(): Promise<Set<string>> {
   // for DEFAULT_TENANT_ID, so a top-level import would cycle).
   const { getVdcScope } = await import('@/lib/vdc/scope')
   const tenantId = await getCurrentTenantId()
-  const scope = getVdcScope(tenantId)
+  const scope = await getVdcScope(tenantId)
   if (scope) {
     for (const cid of scope.connectionIds) ids.add(cid)
     for (const cid of scope.pbsConnectionIds) ids.add(cid)
@@ -286,7 +331,7 @@ export async function verifyConnectionOwnership(connectionId: string): Promise<R
   // Fall back to vDC scope so vDC tenants can reach provider-owned PVE/PBS
   // referenced by their bindings (mirror of the bypass used by getConnectionById).
   const { getVdcScope } = await import('@/lib/vdc/scope')
-  const scope = getVdcScope(await getCurrentTenantId())
+  const scope = await getVdcScope(await getCurrentTenantId())
   if (scope && (scope.connectionIds.has(connectionId) || scope.pbsConnectionIds.has(connectionId))) {
     return null
   }
@@ -314,59 +359,67 @@ export async function requireProviderTenant(): Promise<Response | null> {
 /**
  * List all tenants (admin only).
  */
-export function listTenants(): Tenant[] {
-  const db = getDb()
-  return db.prepare(
-    "SELECT id, slug, name, description, enabled, settings, created_by as createdBy, created_at as createdAt, updated_at as updatedAt FROM tenants ORDER BY name"
-  ).all() as Tenant[]
+export async function listTenants(): Promise<Tenant[]> {
+  const rows = await prisma.tenant.findMany({ orderBy: { name: "asc" } })
+  return rows.map(rowToTenant)
 }
 
 /**
  * Create a new tenant.
  */
-export function createTenant(data: { slug: string; name: string; description?: string; createdBy?: string }): Tenant {
-  const db = getDb()
-  const now = new Date().toISOString()
+export async function createTenant(data: {
+  slug: string
+  name: string
+  description?: string
+  createdBy?: string
+}): Promise<Tenant> {
   const id = crypto.randomUUID()
-
-  db.prepare(
-    "INSERT INTO tenants (id, slug, name, description, enabled, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?, ?)"
-  ).run(id, data.slug, data.name, data.description || null, data.createdBy || null, now, now)
-
-  return db.prepare("SELECT id, slug, name, description, enabled, settings, created_by as createdBy, created_at as createdAt, updated_at as updatedAt FROM tenants WHERE id = ?").get(id) as Tenant
+  const now = new Date()
+  const row = await prisma.tenant.create({
+    data: {
+      id,
+      slug: data.slug,
+      name: data.name,
+      description: data.description || null,
+      enabled: true,
+      createdBy: data.createdBy || null,
+      createdAt: now,
+      updatedAt: now,
+    },
+  })
+  return rowToTenant(row)
 }
 
 /**
  * Update a tenant.
  */
-export function updateTenant(id: string, data: { name?: string; slug?: string; description?: string; enabled?: boolean }): Tenant | null {
-  const db = getDb()
-  const now = new Date().toISOString()
-  const tenant = db.prepare("SELECT * FROM tenants WHERE id = ?").get(id) as any
-  if (!tenant) return null
+export async function updateTenant(
+  id: string,
+  data: { name?: string; slug?: string; description?: string; enabled?: boolean },
+): Promise<Tenant | null> {
+  const existing = await prisma.tenant.findUnique({ where: { id } })
+  if (!existing) return null
 
-  db.prepare(
-    "UPDATE tenants SET name = ?, slug = ?, description = ?, enabled = ?, updated_at = ? WHERE id = ?"
-  ).run(
-    data.name ?? tenant.name,
-    data.slug ?? tenant.slug,
-    data.description ?? tenant.description,
-    data.enabled !== undefined ? (data.enabled ? 1 : 0) : tenant.enabled,
-    now,
-    id
-  )
-
-  return db.prepare("SELECT id, slug, name, description, enabled, settings, created_by as createdBy, created_at as createdAt, updated_at as updatedAt FROM tenants WHERE id = ?").get(id) as Tenant
+  const row = await prisma.tenant.update({
+    where: { id },
+    data: {
+      name: data.name ?? existing.name,
+      slug: data.slug ?? existing.slug,
+      description: data.description ?? existing.description,
+      enabled: data.enabled !== undefined ? data.enabled : existing.enabled,
+      updatedAt: new Date(),
+    },
+  })
+  return rowToTenant(row)
 }
 
 /**
  * Delete a tenant (cannot delete 'default').
  */
-export function deleteTenant(id: string): boolean {
+export async function deleteTenant(id: string): Promise<boolean> {
   if (id === DEFAULT_TENANT_ID) return false
-  const db = getDb()
-  const result = db.prepare("DELETE FROM tenants WHERE id = ? AND id != 'default'").run(id)
-  return result.changes > 0
+  const result = await prisma.tenant.deleteMany({ where: { id, NOT: { id: "default" } } })
+  return result.count > 0
 }
 
 /**
@@ -376,28 +429,49 @@ export function deleteTenant(id: string): boolean {
  * membership becomes the user's default automatically (so login lands here
  * instead of falling back to the provider tenant).
  */
-export function addUserToTenant(userId: string, tenantId: string, isDefault = false): void {
-  const db = getDb()
-  const now = new Date().toISOString()
+export async function addUserToTenant(userId: string, tenantId: string, isDefault = false): Promise<void> {
+  const now = new Date()
 
-  const tx = db.transaction(() => {
+  await prisma.$transaction(async tx => {
     let markDefault = isDefault
     if (!markDefault) {
-      const existingDefault = db.prepare(
-        "SELECT 1 FROM user_tenants WHERE user_id = ? AND is_default = 1 LIMIT 1"
-      ).get(userId)
+      const existingDefault = await tx.userTenant.findFirst({
+        where: { userId, isDefault: true },
+        select: { userId: true },
+      })
       if (!existingDefault) markDefault = true
     }
 
     if (markDefault) {
-      db.prepare("UPDATE user_tenants SET is_default = 0 WHERE user_id = ?").run(userId)
+      await tx.userTenant.updateMany({
+        where: { userId },
+        data: { isDefault: false },
+      })
     }
 
-    db.prepare(
-      "INSERT OR IGNORE INTO user_tenants (user_id, tenant_id, is_default, joined_at) VALUES (?, ?, ?, ?)"
-    ).run(userId, tenantId, markDefault ? 1 : 0, now)
+    // Mirrors the legacy `INSERT OR IGNORE`: keep the existing membership row
+    // intact (especially the joined_at + isDefault values already in DB) when
+    // it's already there.
+    const existing = await tx.userTenant.findUnique({
+      where: { userId_tenantId: { userId, tenantId } },
+    })
+    if (!existing) {
+      await tx.userTenant.create({
+        data: {
+          userId,
+          tenantId,
+          isDefault: markDefault,
+          joinedAt: now,
+        },
+      })
+    } else if (markDefault && !existing.isDefault) {
+      // Promote the already-existing membership to default.
+      await tx.userTenant.update({
+        where: { userId_tenantId: { userId, tenantId } },
+        data: { isDefault: true },
+      })
+    }
   })
-  tx()
 }
 
 export class TenantMembershipError extends Error {
@@ -414,46 +488,70 @@ export class TenantMembershipError extends Error {
  * If the removed membership was the user's default, transfers the default flag
  * to another of their memberships (oldest join first).
  */
-export function removeUserFromTenant(userId: string, tenantId: string): void {
-  const db = getDb()
+export async function removeUserFromTenant(userId: string, tenantId: string): Promise<void> {
+  const existing = await prisma.userTenant.findUnique({
+    where: { userId_tenantId: { userId, tenantId } },
+    select: { isDefault: true },
+  })
+  if (!existing) {
+    throw new TenantMembershipError("User is not a member of this tenant", "NOT_A_MEMBER")
+  }
 
-  const existing = db.prepare(
-    "SELECT is_default FROM user_tenants WHERE user_id = ? AND tenant_id = ?"
-  ).get(userId, tenantId) as { is_default: number } | undefined
-  if (!existing) throw new TenantMembershipError("User is not a member of this tenant", "NOT_A_MEMBER")
-
-  const replacement = db.prepare(
-    "SELECT tenant_id FROM user_tenants WHERE user_id = ? AND tenant_id != ? ORDER BY joined_at ASC LIMIT 1"
-  ).get(userId, tenantId) as { tenant_id: string } | undefined
+  const replacement = await prisma.userTenant.findFirst({
+    where: { userId, tenantId: { not: tenantId } },
+    orderBy: { joinedAt: "asc" },
+    select: { tenantId: true },
+  })
   if (!replacement) {
     throw new TenantMembershipError(
       "Cannot remove the user's last tenant membership",
-      "LAST_TENANT"
+      "LAST_TENANT",
     )
   }
 
-  const tx = db.transaction(() => {
-    db.prepare("DELETE FROM user_tenants WHERE user_id = ? AND tenant_id = ?").run(userId, tenantId)
-    db.prepare("DELETE FROM rbac_user_roles WHERE user_id = ? AND tenant_id = ?").run(userId, tenantId)
-    db.prepare("DELETE FROM rbac_user_permissions WHERE user_id = ? AND tenant_id = ?").run(userId, tenantId)
-    if (existing.is_default) {
-      db.prepare("UPDATE user_tenants SET is_default = 1 WHERE user_id = ? AND tenant_id = ?")
-        .run(userId, replacement.tenant_id)
+  await prisma.$transaction(async tx => {
+    await tx.userTenant.delete({
+      where: { userId_tenantId: { userId, tenantId } },
+    })
+    if (existing.isDefault) {
+      await tx.userTenant.update({
+        where: { userId_tenantId: { userId, tenantId: replacement.tenantId } },
+        data: { isDefault: true },
+      })
     }
+    // Drop role and direct-permission grants scoped to the removed tenant.
+    await tx.rbacUserRole.deleteMany({ where: { userId, tenantId } })
+    await tx.rbacUserPermission.deleteMany({ where: { userId, tenantId } })
   })
-  tx()
 }
 
 /**
- * Get users in a tenant.
+ * Get users in a tenant. Returns the legacy snake_case shape so existing
+ * frontend code consuming `is_default` / `joined_at` keeps working.
  */
-export function getTenantUsers(tenantId: string): any[] {
-  const db = getDb()
-  return db.prepare(`
-    SELECT u.id, u.email, u.name, u.role, u.enabled, ut.is_default, ut.joined_at
-    FROM users u
-    JOIN user_tenants ut ON ut.user_id = u.id
-    WHERE ut.tenant_id = ?
-    ORDER BY u.name
-  `).all(tenantId)
+export async function getTenantUsers(tenantId: string): Promise<
+  Array<{
+    id: string
+    email: string
+    name: string | null
+    role: string
+    enabled: boolean
+    is_default: boolean
+    joined_at: string
+  }>
+> {
+  const memberships = await prisma.userTenant.findMany({
+    where: { tenantId },
+    include: { user: true },
+    orderBy: { user: { name: "asc" } },
+  })
+  return memberships.map(m => ({
+    id: m.user.id,
+    email: m.user.email,
+    name: m.user.name,
+    role: m.user.role,
+    enabled: m.user.enabled,
+    is_default: m.isDefault,
+    joined_at: m.joinedAt.toISOString(),
+  }))
 }

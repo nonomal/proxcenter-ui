@@ -69,7 +69,7 @@ export async function POST(
     // vDC quota enforcement
     const tenantId = await getCurrentTenantId()
     try {
-      const vdcInfo = resolveVdcForTenant(tenantId, id, node)
+      const vdcInfo = await resolveVdcForTenant(tenantId, id, node)
 
       if (vdcInfo) {
         // Estimate resources from body
@@ -104,7 +104,7 @@ export async function POST(
     }
 
     // Phase 4b: Enforce bridge whitelist
-    const allowedBridges = getAllowedBridgesForTenant(tenantId, id)
+    const allowedBridges = await getAllowedBridgesForTenant(tenantId, id)
     if (allowedBridges !== null) {
       for (const key of Object.keys(body || {})) {
         if (!/^net\d+$/.test(key)) continue
@@ -143,7 +143,7 @@ export async function POST(
         const netStr = String(body[key] || '')
         const bridge = parseBridgeFromNet(netStr)
         if (!bridge) continue
-        const subnet = resolveSubnetForBridge(id, bridge)
+        const subnet = await resolveSubnetForBridge(id, bridge)
         if (!subnet) continue
 
         // Make sure netN carries an explicit MAC so our IPAM can key on
@@ -166,7 +166,7 @@ export async function POST(
 
         try {
           const vmidNum = body.vmid != null ? Number(body.vmid) : null
-          const allocated = allocateIp({
+          const allocated = await allocateIp({
             vdcId: subnet.vdcId,
             subnetId: subnet.subnetId,
             vnetId: subnet.vnetId,
@@ -194,7 +194,7 @@ export async function POST(
           // Roll back any previously allocated IPs from this same request
           // so we don't leave dangling reservations on a partial failure.
           for (const a of allocations) {
-            try { releaseIp({ subnetId: a.subnetId, ip: a.ip }) } catch { /* tolerate */ }
+            try { await releaseIp({ subnetId: a.subnetId, ip: a.ip }) } catch { /* tolerate */ }
           }
           const msg = e instanceof IpamExhaustedError
             ? `Subnet ${subnet.cidr} is full — no free IP available`
@@ -227,7 +227,7 @@ export async function POST(
       // Release IPAM allocations on PVE create failure — otherwise the IP
       // sits reserved without an actual VM behind it.
       for (const a of allocations) {
-        try { releaseIp({ subnetId: a.subnetId, ip: a.ip }) } catch { /* tolerate */ }
+        try { await releaseIp({ subnetId: a.subnetId, ip: a.ip }) } catch { /* tolerate */ }
       }
       throw err
     }

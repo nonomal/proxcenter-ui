@@ -4,7 +4,7 @@ import { cookies } from "next/headers"
 import { getSessionPrisma, getCurrentTenantId } from "@/lib/tenant"
 import { pveFetch } from "@/lib/proxmox/client"
 import { getConnectionById } from "@/lib/connections/getConnection"
-import { getDb } from "@/lib/db/sqlite"
+import { prisma } from "@/lib/db/prisma"
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
 import { getDateLocale } from "@/lib/i18n/date"
 
@@ -24,32 +24,30 @@ const CACHE_TTL_MS = 60_000 // 60 seconds
 //      energy/server-spec config lives on `datacenters` rows, so we always
 //      have something to return.
 async function loadGreenSettings(tenantId: string) {
-  const db = getDb()
-  const stmt = db.prepare('SELECT value FROM settings WHERE key = ? AND tenant_id = ?')
+  const { getSetting } = await import('@/lib/db/settings')
 
-  const tryLoad = (tid: string) => {
+  const tryLoad = async (tid: string) => {
     try {
-      const row = stmt.get('green', tid) as { value: string } | undefined
-      if (row?.value) return JSON.parse(row.value)
+      return await getSetting<any>('green', tid)
     } catch (e: any) {
       if (!e?.message?.includes('no such table')) {
         console.warn('Failed to load green settings:', e?.message)
       }
+      return null
     }
-    return null
   }
 
-  const own = tryLoad(tenantId)
+  const own = await tryLoad(tenantId)
   if (own) return own
 
   if (tenantId !== 'default') {
-    const provider = tryLoad('default')
+    const provider = await tryLoad('default')
     if (provider) return provider
   }
 
   try {
     const { ensureDefaultDatacenter } = await import('@/lib/db/datacenters')
-    const dc = ensureDefaultDatacenter()
+    const dc = await ensureDefaultDatacenter()
     return {
       pue: dc.pue,
       electricityPrice: dc.electricityPrice,
@@ -688,10 +686,9 @@ async function loadResourceThresholds(tenantId: string) {
   }
 
   try {
-    const db = getDb()
-    const stmt = db.prepare('SELECT value FROM settings WHERE key = ? AND tenant_id = ?')
-    const row = stmt.get('resource_thresholds', tenantId) as { value: string } | undefined
-    if (row?.value) return { ...DEFAULT_THRESHOLDS, ...JSON.parse(row.value) }
+    const { getSetting } = await import('@/lib/db/settings')
+    const stored = await getSetting<any>('resource_thresholds', tenantId)
+    if (stored) return { ...DEFAULT_THRESHOLDS, ...stored }
   } catch (e: any) {
     if (!e?.message?.includes('no such table')) {
       console.warn('Failed to load resource thresholds:', e?.message)
@@ -701,51 +698,59 @@ async function loadResourceThresholds(tenantId: string) {
   return DEFAULT_THRESHOLDS
 }
 
-// Save health score snapshot (F8) - one per day
-function saveHealthScoreSnapshot(score: number, cpuPct: number, ramPct: number, storagePct: number, connectionId: string | undefined, tenantId: string) {
+// Save health score snapshot (F8) - one per day. Best-effort: P2002 (unique
+// violation on `date`) means we already saved today's snapshot, swallow it.
+async function saveHealthScoreSnapshot(score: number, cpuPct: number, ramPct: number, storagePct: number, connectionId: string | undefined, tenantId: string) {
   try {
-    const db = getDb()
     const today = new Date().toISOString().split('T')[0]
     const id = `hs_${today}${connectionId ? `_${connectionId}` : ''}_${tenantId}`
     const dateKey = connectionId ? `${today}_${connectionId}` : today
 
-    const stmt = db.prepare(`
-      INSERT OR IGNORE INTO health_score_history (id, date, score, cpu_pct, ram_pct, storage_pct, connection_id, created_at, tenant_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `)
-    stmt.run(id, dateKey, Math.round(score), cpuPct, ramPct, storagePct, connectionId || null, new Date().toISOString(), tenantId)
+    await prisma.healthScoreHistory.upsert({
+      where: { date: dateKey },
+      update: {}, // INSERT OR IGNORE: keep first write of the day
+      create: {
+        id,
+        tenantId,
+        date: dateKey,
+        score: Math.round(score),
+        cpuPct,
+        ramPct,
+        storagePct,
+        connectionId: connectionId || null,
+        createdAt: new Date(),
+      },
+    })
   } catch (e: any) {
-    if (!e?.message?.includes('no such table')) {
-      console.warn('Failed to save health score:', e?.message)
-    }
+    console.warn('Failed to save health score:', e?.message)
   }
 }
 
 // Load health score history (F8)
-function loadHealthScoreHistory(connectionId: string | undefined, tenantId: string): Array<{ date: string; score: number; cpu: number; ram: number; storage: number }> {
+async function loadHealthScoreHistory(connectionId: string | undefined, tenantId: string): Promise<Array<{ date: string; score: number; cpu: number; ram: number; storage: number }>> {
   try {
-    const db = getDb()
     const cutoff = new Date()
     cutoff.setDate(cutoff.getDate() - 90)
     const cutoffStr = cutoff.toISOString().split('T')[0]
 
-    let rows: any[]
-    if (connectionId) {
-      const stmt = db.prepare('SELECT date, score, cpu_pct, ram_pct, storage_pct FROM health_score_history WHERE date >= ? AND connection_id = ? AND tenant_id = ? ORDER BY date ASC')
-      rows = stmt.all(`${cutoffStr}_${connectionId}`, connectionId, tenantId)
-    } else {
-      const stmt = db.prepare('SELECT date, score, cpu_pct, ram_pct, storage_pct FROM health_score_history WHERE date >= ? AND connection_id IS NULL AND tenant_id = ? ORDER BY date ASC')
-      rows = stmt.all(cutoffStr, tenantId)
-    }
+    const rows = await prisma.healthScoreHistory.findMany({
+      where: {
+        tenantId,
+        connectionId: connectionId || null,
+        date: { gte: connectionId ? `${cutoffStr}_${connectionId}` : cutoffStr },
+      },
+      select: { date: true, score: true, cpuPct: true, ramPct: true, storagePct: true },
+      orderBy: { date: 'asc' },
+    })
 
-    return rows.map((r: any) => ({
+    return rows.map(r => ({
       date: r.date.split('_')[0],
       score: r.score,
-      cpu: r.cpu_pct || 0,
-      ram: r.ram_pct || 0,
-      storage: r.storage_pct || 0,
+      cpu: r.cpuPct || 0,
+      ram: r.ramPct || 0,
+      storage: r.storagePct || 0,
     }))
-  } catch (e: any) {
+  } catch {
     return []
   }
 }
@@ -1348,10 +1353,10 @@ export async function GET(request: Request) {
     else if (healthStoragePct > 80) snapshotScore -= 10
     snapshotScore = Math.max(0, Math.min(100, snapshotScore))
 
-    saveHealthScoreSnapshot(snapshotScore, healthCpuPct, healthRamPct, healthStoragePct, filterConnectionId, tenantId)
+    await saveHealthScoreSnapshot(snapshotScore, healthCpuPct, healthRamPct, healthStoragePct, filterConnectionId, tenantId)
 
     // F8: Load history
-    const healthScoreHistory = loadHealthScoreHistory(filterConnectionId, tenantId)
+    const healthScoreHistory = await loadHealthScoreHistory(filterConnectionId, tenantId)
 
     const responseBody = {
       data: {

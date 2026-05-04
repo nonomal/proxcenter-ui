@@ -38,7 +38,7 @@ export async function GET(_req: Request, ctx: RouteContext) {
     // null means provider (full view), empty set means tenant with no
     // vDC on this connection (nothing visible).
     const tenantId = await getCurrentTenantId()
-    const allowedPools = getAllowedJobPools(tenantId, id)
+    const allowedPools = await getAllowedJobPools(tenantId, id)
 
     // Récupérer les backup jobs
     let jobs = await pveFetch<any[]>(conn, `/cluster/backup`)
@@ -253,7 +253,7 @@ export async function POST(req: Request, ctx: RouteContext) {
     // tenant's vDC pools on this connection. Provider can use any
     // selectionMode the original payload offers.
     const tenantId = await getCurrentTenantId()
-    const allowedPools = getAllowedJobPools(tenantId, id)
+    const allowedPools = await getAllowedJobPools(tenantId, id)
     if (allowedPools !== null) {
       const validationError = validateTenantJobBody(body, allowedPools)
       if (validationError) {

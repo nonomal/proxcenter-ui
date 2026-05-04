@@ -68,7 +68,7 @@ export async function GET(req: Request) {
     // For vDC tenants on multi-tenant clusters, drop non-VM alerts (node /
     // license / cluster-wide system alerts are provider concerns) and apply
     // node-level scoping so neighbour activity doesn't leak.
-    const vdcScope = getVdcScope(tenantId)
+    const vdcScope = await getVdcScope(tenantId)
 
     const response = await alertsApi.getAlerts({
       connection_id: connectionId,

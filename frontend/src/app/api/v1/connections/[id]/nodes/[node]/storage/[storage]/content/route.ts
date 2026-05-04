@@ -5,7 +5,7 @@ import { getConnectionById } from "@/lib/connections/getConnection"
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
 import { getCurrentTenantId } from "@/lib/tenant"
 import { getVdcScope } from "@/lib/vdc/scope"
-import { getDb } from "@/lib/db/sqlite"
+import { prisma } from "@/lib/db/prisma"
 
 export const runtime = "nodejs"
 
@@ -34,7 +34,7 @@ export async function GET(
     // (getVdcScope returns null for them). Stops cross-tenant enumeration on
     // shared storages the tenant never attached.
     const tenantId = await getCurrentTenantId()
-    const scope = getVdcScope(tenantId)
+    const scope = await getVdcScope(tenantId)
     if (scope) {
       const allowed = scope.storagesByConnection.get(id)
       if (!allowed || !allowed.has(storage)) {
@@ -47,7 +47,7 @@ export async function GET(
     // skip this lookup entirely — they get the unfiltered listing.
     let tenantSlug: string | null = null
     if (scope) {
-      const row = getDb().prepare('SELECT slug FROM tenants WHERE id = ?').get(tenantId) as { slug?: string } | undefined
+      const row = await prisma.tenant.findUnique({ where: { id: tenantId }, select: { slug: true } })
       tenantSlug = row?.slug || tenantId.replace(/[^a-z0-9-]/gi, '').toLowerCase()
     }
 

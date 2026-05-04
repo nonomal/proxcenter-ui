@@ -25,13 +25,13 @@ export async function GET(_req: Request, ctx: RouteContext) {
     // render "used / usable" without an extra round-trip per row. The
     // count is a single COUNT(*) per VNet — cheaper than the per-row
     // /ipam endpoint and runs in the same DB connection.
-    const vnets = listVnetsForTenant(vdcId).map((v) => {
+    const vnets = await Promise.all((await listVnetsForTenant(vdcId)).map(async (v) => {
       const sn = v.subnet
       const ipamUsage = sn
-        ? getSubnetUsage(sn.id, sn.cidr, sn.gateway)
+        ? await getSubnetUsage(sn.id, sn.cidr, sn.gateway)
         : { used: 0, usable: 0 }
       return { ...v, ipamUsage }
-    })
+    }))
     return NextResponse.json({ data: vnets })
   } catch (e: any) {
     return NextResponse.json({ error: e?.message || String(e) }, { status: 500 })

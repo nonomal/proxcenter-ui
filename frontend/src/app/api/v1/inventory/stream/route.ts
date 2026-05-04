@@ -13,7 +13,7 @@ import {
   getInventoryFromCache,
   setCachedInventory,
 } from "@/lib/cache/inventoryCache"
-import { getVdcScope, applyVdcFilter } from "@/lib/vdc/scope"
+import { getVdcScope, applyVdcFilter, type VdcScope } from "@/lib/vdc/scope"
 
 export const runtime = "nodejs"
 
@@ -125,7 +125,7 @@ type StorageData = {
  */
 function scopeStorageDataForTenant(
   data: StorageData,
-  scope: ReturnType<typeof getVdcScope>
+  scope: VdcScope | null
 ): StorageData | null {
   if (!scope) return data
   const allowedNodes = scope.nodesByConnection.get(data.connId)
@@ -149,7 +149,7 @@ function scopeStorageDataForTenant(
  */
 async function scopePbsDataForTenant(
   data: PbsServerData,
-  scope: ReturnType<typeof getVdcScope>,
+  scope: VdcScope | null,
 ): Promise<PbsServerData | null> {
   if (!scope) return data
   const allowed = scope.pbsNamespacesByConnection.get(data.id)
@@ -589,13 +589,12 @@ async function fetchOnePbs(conn: { id: string; name: string }): Promise<PbsServe
 /* RBAC filtering for a single cluster                                 */
 /* ------------------------------------------------------------------ */
 
-function applyRbacToCluster(cluster: ClusterData, rbacCtx: any): ClusterData {
+async function applyRbacToCluster(cluster: ClusterData, rbacCtx: any): Promise<ClusterData> {
   if (!rbacCtx || rbacCtx.isAdmin) return cluster
-  return {
-    ...cluster,
-    nodes: cluster.nodes.map(node => ({
+  const filteredNodes = await Promise.all(
+    cluster.nodes.map(async node => ({
       ...node,
-      guests: filterVmsByPermission(
+      guests: await filterVmsByPermission(
         rbacCtx.userId,
         node.guests.map(g => ({
           ...g,
@@ -607,6 +606,10 @@ function applyRbacToCluster(cluster: ClusterData, rbacCtx: any): ClusterData {
         rbacCtx.tenantId
       )
     }))
+  )
+  return {
+    ...cluster,
+    nodes: filteredNodes,
   }
 }
 
@@ -634,7 +637,7 @@ export async function GET(request: NextRequest) {
     // Serve cached data as a quick burst of events
     const cached = cacheResult.data
     const rbacCtx = await getRBACContext()
-    const vdcScope = getVdcScope(tenantId)
+    const vdcScope = await getVdcScope(tenantId)
 
     const stream = new ReadableStream({
       async start(controller) {
@@ -656,7 +659,7 @@ export async function GET(request: NextRequest) {
           })
 
           for (const cluster of visibleClusters) {
-            send('cluster', applyVdcFilter(applyRbacToCluster(cluster, rbacCtx), vdcScope))
+            send('cluster', applyVdcFilter(await applyRbacToCluster(cluster, rbacCtx), vdcScope))
           }
           for (const pbs of cached.pbsServers) {
             const scoped = await scopePbsDataForTenant(pbs, vdcScope)
@@ -693,7 +696,7 @@ export async function GET(request: NextRequest) {
 
   // Cache miss — stream progressively as each connection resolves
   const rbacCtx = await getRBACContext()
-  const vdcScope = getVdcScope(tenantId)
+  const vdcScope = await getVdcScope(tenantId)
 
   const stream = new ReadableStream({
     async start(controller) {
@@ -779,7 +782,7 @@ export async function GET(request: NextRequest) {
           // Only stream clusters visible to this tenant's vDC scope
           const isVisible = !visiblePveConnectionIds || visiblePveConnectionIds.has(conn.id)
           if (isVisible) {
-            send('cluster', applyVdcFilter(applyRbacToCluster(cluster, rbacCtx), vdcScope))
+            send('cluster', applyVdcFilter(await applyRbacToCluster(cluster, rbacCtx), vdcScope))
           }
 
           // Fetch storage data for this cluster and emit immediately (only if visible)

@@ -6,7 +6,7 @@
 // and only contributes power proportionally to their VMs' vCPU / RAM /
 // runtime utilisation).
 
-import { getDb } from '@/lib/db/sqlite'
+import { getSetting } from '@/lib/db/settings'
 import { getCurrentTenantId, DEFAULT_TENANT_ID } from '@/lib/tenant'
 
 export interface GreenConfig {
@@ -47,12 +47,10 @@ const DEFAULT_GREEN_CONFIG: GreenConfig = {
  * by the provider). For the tenant cockpit, pass `DEFAULT_TENANT_ID` so
  * the provider's configuration applies to every vDC.
  */
-export function loadGreenSettingsForTenant(tenantId: string): GreenConfig | null {
+export async function loadGreenSettingsForTenant(tenantId: string): Promise<GreenConfig | null> {
   try {
-    const db = getDb()
-    const row = db.prepare("SELECT value FROM settings WHERE key = 'green' AND tenant_id = ?").get(tenantId) as any
-    if (!row?.value) return null
-    const parsed = JSON.parse(row.value)
+    const parsed = await getSetting<any>('green', tenantId)
+    if (!parsed) return null
     return {
       tdpPerCore: parsed.serverSpecs?.tdpPerCore ?? DEFAULT_GREEN_CONFIG.tdpPerCore,
       wattsPerGbRam: parsed.serverSpecs?.wattsPerGbRam ?? DEFAULT_GREEN_CONFIG.wattsPerGbRam,
@@ -71,7 +69,7 @@ export async function loadGreenSettingsForCurrentTenant(): Promise<GreenConfig |
   return loadGreenSettingsForTenant(await getCurrentTenantId())
 }
 
-export function loadGreenSettingsForProvider(): GreenConfig | null {
+export async function loadGreenSettingsForProvider(): Promise<GreenConfig | null> {
   return loadGreenSettingsForTenant(DEFAULT_TENANT_ID)
 }
 

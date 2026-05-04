@@ -9,7 +9,7 @@ export const runtime = 'nodejs'
 
 export async function DELETE(_req: Request, ctx: { params: Promise<{ id: string; bindingId: string }> }) {
   const s = await getServerSession(authOptions)
-  if (!s?.user?.id || !isUserSuperAdmin(s.user.id)) {
+  if (!s?.user?.id || !(await isUserSuperAdmin(s.user.id))) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
   }
   const { bindingId } = await ctx.params

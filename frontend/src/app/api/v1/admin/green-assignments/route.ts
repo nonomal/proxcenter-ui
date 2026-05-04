@@ -2,7 +2,7 @@ import { NextResponse } from "next/server"
 
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
 import { requireProviderTenant } from "@/lib/tenant"
-import { getDb } from "@/lib/db/sqlite"
+import { prisma } from "@/lib/db/prisma"
 
 export const runtime = "nodejs"
 
@@ -30,29 +30,41 @@ export async function GET() {
     const denied = await checkPermission(PERMISSIONS.ADMIN_SETTINGS)
     if (denied) return denied
 
-    const db = getDb()
-    const clusterRows = db.prepare(
-      `SELECT c.connection_id AS connection_id, c.datacenter_id AS datacenter_id, dc.name AS dc_name
-       FROM connection_green_config c
-       LEFT JOIN datacenters dc ON dc.id = c.datacenter_id
-       WHERE c.datacenter_id IS NOT NULL`
-    ).all() as Array<{ connection_id: string; datacenter_id: string; dc_name: string }>
-
-    const nodeRows = db.prepare(
-      `SELECT n.connection_id AS connection_id, n.node_name AS node_name,
-              n.datacenter_id AS datacenter_id, dc.name AS dc_name
-       FROM node_green_config n
-       LEFT JOIN datacenters dc ON dc.id = n.datacenter_id
-       WHERE n.datacenter_id IS NOT NULL`
-    ).all() as Array<{ connection_id: string; node_name: string; datacenter_id: string; dc_name: string }>
+    const [clusterRows, nodeRows] = await Promise.all([
+      prisma.connectionGreenConfig.findMany({
+        where: { datacenterId: { not: null } },
+        select: {
+          connectionId: true,
+          datacenterId: true,
+          datacenter: { select: { name: true } },
+        },
+      }),
+      prisma.nodeGreenConfig.findMany({
+        where: { datacenterId: { not: null } },
+        select: {
+          connectionId: true,
+          nodeName: true,
+          datacenterId: true,
+          datacenter: { select: { name: true } },
+        },
+      }),
+    ])
 
     const clusters: Record<string, { datacenterId: string; datacenterName: string }> = {}
     for (const r of clusterRows) {
-      clusters[r.connection_id] = { datacenterId: r.datacenter_id, datacenterName: r.dc_name }
+      if (!r.datacenterId) continue
+      clusters[r.connectionId] = {
+        datacenterId: r.datacenterId,
+        datacenterName: r.datacenter?.name ?? '',
+      }
     }
     const nodes: Record<string, { datacenterId: string; datacenterName: string }> = {}
     for (const r of nodeRows) {
-      nodes[`${r.connection_id}|${r.node_name}`] = { datacenterId: r.datacenter_id, datacenterName: r.dc_name }
+      if (!r.datacenterId) continue
+      nodes[`${r.connectionId}|${r.nodeName}`] = {
+        datacenterId: r.datacenterId,
+        datacenterName: r.datacenter?.name ?? '',
+      }
     }
 
     return NextResponse.json({ data: { clusters, nodes } })

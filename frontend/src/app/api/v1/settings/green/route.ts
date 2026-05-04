@@ -1,7 +1,7 @@
 export const dynamic = "force-dynamic"
 import { NextResponse } from 'next/server'
 
-import { getDb } from '@/lib/db/sqlite'
+import { getSetting, setSetting } from '@/lib/db/settings'
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
 import { getCurrentTenantId } from "@/lib/tenant"
 
@@ -92,23 +92,12 @@ export async function GET() {
 
     if (denied) return denied
 
-    const db = getDb()
     const tenantId = await getCurrentTenantId()
+    const saved = await getSetting<Partial<typeof DEFAULT_GREEN_SETTINGS>>('green', tenantId)
 
-    const row = db.prepare('SELECT value FROM settings WHERE key = ? AND tenant_id = ?').get('green', tenantId) as { value: string } | undefined
-
-    if (row?.value) {
-      // Fusionner avec les valeurs par défaut pour gérer les nouvelles propriétés
-      const saved = JSON.parse(row.value)
-
-
-return NextResponse.json({
-        data: { ...DEFAULT_GREEN_SETTINGS, ...saved }
-      })
-    }
-
-    // Valeurs par défaut
-    return NextResponse.json({ data: DEFAULT_GREEN_SETTINGS })
+    return NextResponse.json({
+      data: { ...DEFAULT_GREEN_SETTINGS, ...(saved ?? {}) }
+    })
   } catch (e: any) {
     console.error('Failed to get green settings:', e)
 
@@ -125,19 +114,11 @@ export async function PUT(request: Request) {
     if (denied) return denied
 
     const body = await request.json()
-    const db = getDb()
     const tenantId = await getCurrentTenantId()
 
     // Fusionner avec les valeurs par défaut
     const settings = { ...DEFAULT_GREEN_SETTINGS, ...body }
-    const value = JSON.stringify(settings)
-    const now = new Date().toISOString()
-
-    db.prepare(`
-      INSERT INTO settings (key, tenant_id, value, updated_at)
-      VALUES (?, ?, ?, ?)
-      ON CONFLICT(key, tenant_id) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
-    `).run('green', tenantId, value, now)
+    await setSetting('green', tenantId, settings)
 
     return NextResponse.json({ success: true })
   } catch (e: any) {

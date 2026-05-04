@@ -47,7 +47,7 @@ export async function isCurrentUserSuperAdmin(): Promise<boolean> {
   const session = await getServerSession(authOptions)
   const userId = (session as any)?.user?.id
   if (!userId) return false
-  return isUserSuperAdmin(userId)
+  return await isUserSuperAdmin(userId)
 }
 
 /**
@@ -112,7 +112,7 @@ export interface ScopePayload {
  */
 export async function buildScopePayloadForCurrentTenant(): Promise<ScopePayload | null> {
   const tenantId = await getCurrentTenantId()
-  const scope = getVdcScope(tenantId)
+  const scope = await getVdcScope(tenantId)
   if (!scope) return null
   return buildScopePayloadFromVdc(scope, tenantId)
 }

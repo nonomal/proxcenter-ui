@@ -33,7 +33,7 @@ export async function GET(req: Request) {
     // source of truth for "who created this rule".
     const allRules = Array.isArray(rules) ? rules : ((rules as any)?.data || [])
     const filtered = Array.isArray(allRules)
-      ? allRules.filter((r: any) => ruleVisibleToTenant(r.id, tenantId))
+      ? (await Promise.all(allRules.map(async (r: any) => ({ r, visible: await ruleVisibleToTenant(r.id, tenantId) })))).filter(x => x.visible).map(x => x.r)
       : allRules
 
     return NextResponse.json(filtered)
@@ -78,7 +78,7 @@ export async function POST(req: Request) {
     // the merged tenantConnectionIds (which also includes PBS bindings
     // and would falsely flag a single-vDC tenant as multi-connection).
     if (isVdcTenant && !body.connection_id) {
-      const vdcScope = getVdcScope(tenantId)
+      const vdcScope = await getVdcScope(tenantId)
       const pveIds = vdcScope ? [...vdcScope.connectionIds] : []
       if (pveIds.length === 1) {
         body.connection_id = pveIds[0]
@@ -110,7 +110,7 @@ export async function POST(req: Request) {
     // vDC tenants: pin node_pattern to the vDC's nodes (see helper
     // docstring). Stops a tenant A rule from firing on tenant B's VMs
     // when they share a cluster.
-    injectVdcNodeScope(body, tenantId)
+    await injectVdcNodeScope(body, tenantId)
 
     const rule = await orchestratorFetch('/alerts/rules', {
       method: 'POST',
@@ -121,7 +121,7 @@ export async function POST(req: Request) {
     // creating tenant only. Without this the provider sees vDC alerts.
     if (rule?.id) {
       try {
-        setRuleOwner(rule.id, tenantId)
+        await setRuleOwner(rule.id, tenantId)
       } catch (err: any) {
         console.error(`[alerts/rules] failed to record owner for rule=${rule.id}: ${err?.message ?? err}`)
       }

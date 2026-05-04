@@ -8,7 +8,6 @@ import { releaseAllocationsForVm } from "@/lib/vdc/ipam"
 import { waitForTask } from "@/lib/proxmox/tasks"
 import { prisma } from "@/lib/db/prisma"
 import { getCurrentTenantId, DEFAULT_TENANT_ID } from "@/lib/tenant"
-import { getDb } from "@/lib/db/sqlite"
 
 export const runtime = "nodejs"
 
@@ -207,15 +206,16 @@ export async function POST(
     try {
       const tenantId = await getCurrentTenantId()
       if (tenantId !== DEFAULT_TENANT_ID) {
-        const db = getDb()
-        const row = db.prepare(`
-          SELECT v.pve_pool_name
-          FROM vdcs v
-          JOIN vdc_nodes vn ON vn.vdc_id = v.id
-          WHERE v.tenant_id = ? AND v.connection_id = ? AND vn.node_name = ? AND v.enabled = 1
-          LIMIT 1
-        `).get(tenantId, id, node) as { pve_pool_name: string } | undefined
-        targetPool = row?.pve_pool_name ?? null
+        const row = await prisma.vdc.findFirst({
+          where: {
+            tenantId,
+            connectionId: id,
+            enabled: true,
+            nodes: { some: { nodeName: node } },
+          },
+          select: { pvePoolName: true },
+        })
+        targetPool = row?.pvePoolName ?? null
       }
     } catch (err: any) {
       console.error(`[restore-pool] failed to resolve target pool: ${err?.message ?? err}`)
@@ -288,7 +288,7 @@ export async function POST(
             } catch (err: any) {
               console.error(`[restore-ipam-sync] PVE PUT config failed for vmid=${numericVmid}: ${err?.message ?? err}`)
               try { sync.rollback() } catch { /* tolerate */ }
-              try { releaseAllocationsForVm(id, numericVmid) } catch { /* tolerate */ }
+              try { await releaseAllocationsForVm(id, numericVmid) } catch { /* tolerate */ }
             }
           }
         } catch (err: any) {

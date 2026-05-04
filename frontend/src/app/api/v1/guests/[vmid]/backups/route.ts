@@ -48,7 +48,7 @@ export async function GET(
     // by their vDC bindings (vdc_pbs_namespaces) using the global client +
     // an id whitelist, mirroring `/api/v1/connections?type=pbs`.
     const tenantId = await getCurrentTenantId()
-    const vdcScope = getVdcScope(tenantId)
+    const vdcScope = await getVdcScope(tenantId)
     const sessionPrisma = await getSessionPrisma()
     const connPrisma = vdcScope ? globalPrisma : sessionPrisma
     const pbsWhere: any = { type: 'pbs' }

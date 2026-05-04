@@ -5,7 +5,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { getServerSession } from "next-auth"
 
 import { authOptions } from "@/lib/auth/config"
-import { getDb } from "@/lib/db/sqlite"
+import { prisma } from "@/lib/db/prisma"
 import { hasPermission, isUserSuperAdmin } from "@/lib/rbac"
 import { getCurrentTenantId } from "@/lib/tenant"
 import { demoResponse } from "@/lib/demo/demo-api"
@@ -24,149 +24,166 @@ export async function GET(req: NextRequest) {
     }
 
     const url = new URL(req.url)
-    let targetUserId = url.searchParams.get("user_id") || session.user.id
+    const targetUserId = url.searchParams.get("user_id") || session.user.id
     const resourceType = url.searchParams.get("resource_type") // 'vm', 'node', 'connection'
     const resourceId = url.searchParams.get("resource_id")
 
     const tenantId = await getCurrentTenantId()
 
     // Seuls les admins peuvent voir les permissions d'autres utilisateurs
-    if (targetUserId !== session.user.id && !hasPermission({ userId: session.user.id, permission: 'admin.rbac', tenantId })) {
-      return NextResponse.json({ error: "Non autorisé à voir les permissions d'autres utilisateurs" }, { status: 403 })
+    if (
+      targetUserId !== session.user.id &&
+      !(await hasPermission({ userId: session.user.id, permission: "admin.rbac", tenantId }))
+    ) {
+      return NextResponse.json(
+        { error: "Non autorisé à voir les permissions d'autres utilisateurs" },
+        { status: 403 },
+      )
     }
 
-    const db = getDb()
-
     // Vérifier que l'utilisateur existe
-    const user = db.prepare("SELECT id, email, role FROM users WHERE id = ?").get(targetUserId) as any
+    const user = await prisma.user.findUnique({
+      where: { id: targetUserId },
+      select: { id: true, email: true, role: true },
+    })
 
     if (!user) {
       return NextResponse.json({ error: "Utilisateur non trouvé" }, { status: 404 })
     }
 
+    const now = new Date()
+    const activeFilter = { OR: [{ expiresAt: null }, { expiresAt: { gt: now } }] }
+
     // Super admin shortcut: cross-tenant access, returns every defined permission
-    if (isUserSuperAdmin(targetUserId)) {
-      const allPerms = db.prepare('SELECT id, name, category FROM rbac_permissions').all() as any[]
-      const superAdminRoleRow = db.prepare(`
-        SELECT r.id as role_id, r.name as role_name, r.color
-        FROM rbac_user_roles ur
-        JOIN rbac_roles r ON r.id = ur.role_id
-        WHERE ur.user_id = ? AND ur.role_id = 'role_super_admin'
-        LIMIT 1
-      `).get(targetUserId) as any
+    if (await isUserSuperAdmin(targetUserId)) {
+      const allPerms = await prisma.rbacPermission.findMany({
+        select: { id: true, name: true, category: true },
+      })
+      const superAdminAssignment = await prisma.rbacUserRole.findFirst({
+        where: { userId: targetUserId, roleId: "role_super_admin" },
+        select: { role: { select: { id: true, name: true, color: true } } },
+      })
       return NextResponse.json({
         data: {
           user_id: targetUserId,
           is_super_admin: true,
-          roles: superAdminRoleRow
-            ? [{ id: superAdminRoleRow.role_id, name: superAdminRoleRow.role_name, color: superAdminRoleRow.color, scope_type: 'global', scope_target: null }]
+          roles: superAdminAssignment
+            ? [{
+                id: superAdminAssignment.role.id,
+                name: superAdminAssignment.role.name,
+                color: superAdminAssignment.role.color,
+                scope_type: "global",
+                scope_target: null,
+              }]
             : [],
           permissions: allPerms.map(p => p.name),
-          permission_details: allPerms.map(p => ({ ...p, source: 'role', source_name: 'Super Admin', scope_type: 'global', scope_target: null })),
-        }
+          permission_details: allPerms.map(p => ({
+            id: p.id,
+            name: p.name,
+            category: p.category,
+            source: "role",
+            source_name: "Super Admin",
+            scope_type: "global",
+            scope_target: null,
+          })),
+        },
       })
     }
 
-    // Récupérer les rôles de l'utilisateur (scoped by tenant)
-    const userRoles = db.prepare(`
-      SELECT
-        ur.id as assignment_id,
-        ur.scope_type,
-        ur.scope_target,
-        ur.expires_at,
-        r.id as role_id,
-        r.name as role_name,
-        r.color
-      FROM rbac_user_roles ur
-      JOIN rbac_roles r ON r.id = ur.role_id
-      WHERE ur.user_id = ? AND ur.tenant_id = ?
-        AND (ur.expires_at IS NULL OR ur.expires_at > datetime('now'))
-    `).all(targetUserId, tenantId) as any[]
+    // Récupérer les rôles de l'utilisateur (scoped by tenant) avec leurs permissions
+    const userRoles = await prisma.rbacUserRole.findMany({
+      where: { userId: targetUserId, tenantId, ...activeFilter },
+      select: {
+        id: true,
+        scopeType: true,
+        scopeTarget: true,
+        expiresAt: true,
+        role: {
+          select: {
+            id: true,
+            name: true,
+            color: true,
+            permissions: {
+              select: { permission: { select: { id: true, name: true, category: true } } },
+            },
+          },
+        },
+      },
+    })
 
     // Récupérer les permissions directes de l'utilisateur (scoped by tenant)
-    const directPermissions = db.prepare(`
-      SELECT
-        up.scope_type,
-        up.scope_target,
-        p.id as permission_id,
-        p.name as permission_name,
-        p.category
-      FROM rbac_user_permissions up
-      JOIN rbac_permissions p ON p.id = up.permission_id
-      WHERE up.user_id = ? AND up.tenant_id = ?
-        AND (up.expires_at IS NULL OR up.expires_at > datetime('now'))
-    `).all(targetUserId, tenantId) as any[]
+    const directPermissions = await prisma.rbacUserPermission.findMany({
+      where: { userId: targetUserId, tenantId, ...activeFilter },
+      select: {
+        scopeType: true,
+        scopeTarget: true,
+        permission: { select: { id: true, name: true, category: true } },
+      },
+    })
 
     // Calculer les permissions effectives
     const effectivePermissions = new Set<string>()
     const permissionDetails: any[] = []
 
     // Ajouter les permissions via les rôles
-    for (const role of userRoles) {
-      // Vérifier si le scope correspond à la ressource demandée
-      const scopeMatches = checkScopeMatch(role.scope_type, role.scope_target, resourceType, resourceId)
-      
-      if (scopeMatches) {
-        const rolePermissions = db.prepare(`
-          SELECT p.id, p.name, p.category
-          FROM rbac_role_permissions rp
-          JOIN rbac_permissions p ON p.id = rp.permission_id
-          WHERE rp.role_id = ?
-        `).all(role.role_id) as any[]
+    for (const ur of userRoles) {
+      const matches = checkScopeMatch(ur.scopeType, ur.scopeTarget, resourceType, resourceId)
+      if (!matches) continue
 
-        for (const perm of rolePermissions) {
-          if (!effectivePermissions.has(perm.name)) {
-            effectivePermissions.add(perm.name)
-            permissionDetails.push({
-              ...perm,
-              source: "role",
-              source_name: role.role_name,
-              scope_type: role.scope_type,
-              scope_target: role.scope_target
-            })
-          }
+      for (const rp of ur.role.permissions) {
+        const perm = rp.permission
+        if (!effectivePermissions.has(perm.name)) {
+          effectivePermissions.add(perm.name)
+          permissionDetails.push({
+            id: perm.id,
+            name: perm.name,
+            category: perm.category,
+            source: "role",
+            source_name: ur.role.name,
+            scope_type: ur.scopeType,
+            scope_target: ur.scopeTarget,
+          })
         }
       }
     }
 
     // Ajouter les permissions directes
-    for (const perm of directPermissions) {
-      const scopeMatches = checkScopeMatch(perm.scope_type, perm.scope_target, resourceType, resourceId)
-      
-      if (scopeMatches && !effectivePermissions.has(perm.permission_name)) {
-        effectivePermissions.add(perm.permission_name)
+    for (const dp of directPermissions) {
+      const matches = checkScopeMatch(dp.scopeType, dp.scopeTarget, resourceType, resourceId)
+      if (matches && !effectivePermissions.has(dp.permission.name)) {
+        effectivePermissions.add(dp.permission.name)
         permissionDetails.push({
-          id: perm.permission_id,
-          name: perm.permission_name,
-          category: perm.category,
+          id: dp.permission.id,
+          name: dp.permission.name,
+          category: dp.permission.category,
           source: "direct",
-          scope_type: perm.scope_type,
-          scope_target: perm.scope_target
+          scope_type: dp.scopeType,
+          scope_target: dp.scopeTarget,
         })
       }
     }
 
-    const isSuperAdmin = userRoles.some(r => r.role_id === 'role_super_admin')
+    const isSuperAdmin = userRoles.some(ur => ur.role.id === "role_super_admin")
 
     return NextResponse.json({
       data: {
         user_id: targetUserId,
         is_super_admin: isSuperAdmin,
-        roles: userRoles.map(r => ({
-          id: r.role_id,
-          name: r.role_name,
-          color: r.color,
-          scope_type: r.scope_type,
-          scope_target: r.scope_target
+        roles: userRoles.map(ur => ({
+          id: ur.role.id,
+          name: ur.role.name,
+          color: ur.role.color,
+          scope_type: ur.scopeType,
+          scope_target: ur.scopeTarget,
         })),
         permissions: Array.from(effectivePermissions),
-        permission_details: permissionDetails
-      }
+        permission_details: permissionDetails,
+      },
     })
 
   } catch (error: any) {
     console.error("GET /api/v1/rbac/effective error:", error)
-    
+
 return NextResponse.json(
       { error: error.message || "Erreur serveur" },
       { status: 500 }
@@ -196,20 +213,20 @@ function checkScopeMatch(
     case "connection":
       // Le scope connection correspond si resourceId commence par le connection_id
       return resourceId.startsWith(scopeTarget || "")
-    
+
     case "node":
       // Le scope node correspond si la ressource est sur ce nœud
       // Format attendu pour resourceId: "connection_id:node:..."
       if (scopeTarget) {
         const parts = resourceId.split(":")
 
-        
+
 return parts[1] === scopeTarget
       }
 
-      
+
 return false
-    
+
     case "vm":
       // Le scope VM correspond exactement
       return resourceId === scopeTarget

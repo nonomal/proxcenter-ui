@@ -2,7 +2,6 @@ import { NextResponse } from "next/server"
 
 import { getCurrentTenantId } from "@/lib/tenant"
 import { checkPermission, PERMISSIONS, buildNodeResourceId } from "@/lib/rbac"
-import { getDb } from "@/lib/db/sqlite"
 import { getVdcScope } from "@/lib/vdc/scope"
 import { pveFetch } from "@/lib/proxmox/client"
 import { getConnectionById } from "@/lib/connections/getConnection"
@@ -32,8 +31,7 @@ export async function GET(req: Request, ctx: RouteContext) {
     if (denied) return denied
 
     const tenantId = await getCurrentTenantId()
-    const scope = getVdcScope(tenantId)
-    const db = getDb()
+    const scope = await getVdcScope(tenantId)
 
     const connMeta = await prisma.connection.findUnique({ where: { id: connId }, select: { tenantId: true } })
     if (!connMeta) return NextResponse.json({ error: "Connection not found" }, { status: 404 })
@@ -46,19 +44,25 @@ export async function GET(req: Request, ctx: RouteContext) {
     type SubnetInfo = { cidr: string; gateway: string; dnsServers: string[]; subnetId: string }
     const subnetByPveName = new Map<string, SubnetInfo>()
     {
-      const subnetRows = db.prepare(`
-        SELECT v.pve_name, s.id AS subnet_id, s.cidr, s.gateway, s.dns_servers
-        FROM vdc_vnets v
-        JOIN vdcs       d ON d.id = v.vdc_id
-        JOIN vdc_subnets s ON s.vnet_id = v.id
-        WHERE d.connection_id = ? AND d.enabled = 1 AND s.ipam_enabled = 1
-      `).all(connId) as Array<{ pve_name: string; subnet_id: string; cidr: string; gateway: string; dns_servers: string | null }>
+      const subnetRows = await prisma.vdcVnet.findMany({
+        where: {
+          vdc: { connectionId: connId, enabled: true },
+          subnet: { ipamEnabled: true },
+        },
+        select: {
+          pveName: true,
+          subnet: { select: { id: true, cidr: true, gateway: true, dnsServers: true } },
+        },
+      })
       for (const r of subnetRows) {
-        subnetByPveName.set(r.pve_name, {
-          subnetId: r.subnet_id,
-          cidr: r.cidr,
-          gateway: r.gateway,
-          dnsServers: r.dns_servers ? r.dns_servers.split(',').map(s => s.trim()).filter(Boolean) : [],
+        if (!r.subnet) continue
+        subnetByPveName.set(r.pveName, {
+          subnetId: r.subnet.id,
+          cidr: r.subnet.cidr,
+          gateway: r.subnet.gateway,
+          dnsServers: r.subnet.dnsServers
+            ? r.subnet.dnsServers.split(',').map(s => s.trim()).filter(Boolean)
+            : [],
         })
       }
     }
@@ -105,38 +109,38 @@ export async function GET(req: Request, ctx: RouteContext) {
       // VNets with vdc slug + zone. `name` stays the pve_name (= what PVE
       // expects in the NIC bridge field) but we expose displayName separately
       // so the picker can render the user-friendly label.
-      const vnetRows = db.prepare(`
-        SELECT v.pve_name, v.display_name, d.id AS vdc_id, d.slug AS vdc_slug, d.sdn_zone_name
-        FROM vdc_vnets v
-        JOIN vdcs d ON d.id = v.vdc_id
-        WHERE d.tenant_id = ? AND d.connection_id = ?
-      `).all(tenantId, connId) as any[]
+      const vnetRows = await prisma.vdcVnet.findMany({
+        where: { vdc: { tenantId, connectionId: connId } },
+        select: {
+          pveName: true,
+          displayName: true,
+          vdc: { select: { id: true, slug: true, sdnZoneName: true } },
+        },
+      })
       for (const v of vnetRows) {
-        if (allowedVnets.has(v.pve_name)) {
+        if (allowedVnets.has(v.pveName)) {
           choices.push({
             kind: "vnet",
-            name: v.pve_name,
-            displayName: v.display_name ?? v.pve_name,
-            vdc: v.vdc_slug,
+            name: v.pveName,
+            displayName: v.displayName ?? v.pveName,
+            vdc: v.vdc.slug,
             // Routes that hit /api/v1/vdcs/{id}/... need the UUID, not
             // the slug. Surface it explicitly so the deploy wizard
             // (and any future caller) doesn't have to do a second
             // lookup to translate slug → id.
-            vdcId: v.vdc_id,
-            zone: v.sdn_zone_name,
-            subnet: subnetByPveName.get(v.pve_name) ?? null,
+            vdcId: v.vdc.id,
+            zone: v.vdc.sdnZoneName ?? '',
+            subnet: subnetByPveName.get(v.pveName) ?? null,
           })
         }
       }
 
       // Shared bridges with labels
       if (allowedShared.size > 0) {
-        const sharedRows = db.prepare(`
-          SELECT b.bridge, b.label
-          FROM vdc_shared_bridges b
-          JOIN vdcs d ON d.id = b.vdc_id
-          WHERE d.tenant_id = ? AND d.connection_id = ?
-        `).all(tenantId, connId) as any[]
+        const sharedRows = await prisma.vdcSharedBridge.findMany({
+          where: { vdc: { tenantId, connectionId: connId } },
+          select: { bridge: true, label: true },
+        })
         const labelMap = new Map<string, string | null>()
         for (const r of sharedRows) labelMap.set(r.bridge, r.label ?? null)
         for (const bridge of allowedShared) {

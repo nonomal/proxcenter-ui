@@ -99,7 +99,7 @@ export async function GET() {
     const { getCurrentTenantId } = await import('@/lib/tenant')
     const { getVdcScope } = await import('@/lib/vdc/scope')
     const tenantId = await getCurrentTenantId()
-    const vdcScope = getVdcScope(tenantId)
+    const vdcScope = await getVdcScope(tenantId)
     // For vDC tenants on shared-node clusters the node filter is a no-op
     // (every vDC has every node in scope). Pool-membership is the real
     // boundary — pull the live vmid set per connection.

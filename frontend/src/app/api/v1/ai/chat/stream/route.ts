@@ -1,7 +1,7 @@
 export const dynamic = "force-dynamic"
 import { NextResponse } from 'next/server'
 
-import { getDb } from '@/lib/db/sqlite'
+import { getSetting } from '@/lib/db/settings'
 import { getSessionPrisma, getCurrentTenantId } from "@/lib/tenant"
 import { pveFetch } from '@/lib/proxmox/client'
 import { decryptSecret } from '@/lib/crypto/secret'
@@ -10,18 +10,13 @@ import { checkPermission, PERMISSIONS } from "@/lib/rbac"
 // Récupérer les paramètres IA (tenant-scoped)
 async function getAISettings() {
   try {
-    const db = getDb()
     const tenantId = await getCurrentTenantId()
-    const stmt = db.prepare('SELECT value FROM settings WHERE key = ? AND tenant_id = ?')
-    const row = stmt.get('ai', tenantId) as { value: string } | undefined
-    
-    if (row?.value) {
-      return JSON.parse(row.value)
-    }
+    const stored = await getSetting<any>('ai', tenantId)
+    if (stored) return stored
   } catch (e) {
     console.error('Failed to get AI settings:', e)
   }
-  
+
   return {
     enabled: false,
     provider: 'ollama',

@@ -25,7 +25,7 @@ export async function GET(_req: Request, ctx: RouteContext) {
     const denied = await checkPermission(PERMISSIONS.ADMIN_SETTINGS)
     if (denied) return denied
 
-    const vdc = getVdcById(id)
+    const vdc = await getVdcById(id)
     if (!vdc) {
       return NextResponse.json({ error: "vDC not found" }, { status: 404 })
     }
@@ -107,14 +107,14 @@ export async function DELETE(_req: Request, ctx: RouteContext) {
     const session = await getServerSession(authOptions)
 
     // Get vDC name before deletion for audit log
-    const existing = getVdcById(id)
+    const existing = await getVdcById(id)
     if (!existing) {
       return NextResponse.json({ error: "vDC not found" }, { status: 404 })
     }
 
     // Cascade: unbind each PBS binding first (cleanup PVE pbs: storage + sub-token;
     // PBS namespace + its backups are preserved on purpose, see spec §5).
-    for (const b of listBindingsForVdc(id)) {
+    for (const b of await listBindingsForVdc(id)) {
       try { await unbindFromVdc(b.id) }
       catch (e) { console.error(`[vdc-delete] pbs unbind ${b.id} failed:`, e) }
     }

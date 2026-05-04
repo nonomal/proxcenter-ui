@@ -69,7 +69,7 @@ export async function GET(req: Request) {
     const { getCurrentTenantId } = await import('@/lib/tenant')
     const { getVdcScope } = await import('@/lib/vdc/scope')
     const tenantId = await getCurrentTenantId()
-    const vdcScope = getVdcScope(tenantId)
+    const vdcScope = await getVdcScope(tenantId)
     // Pool-level scope (shared-node MSP clusters need this on top of the
     // node filter, which collapses to a no-op when every vDC owns every
     // node).

@@ -13,7 +13,7 @@ export async function GET() {
   const denied = await checkPermission(PERMISSIONS.ADMIN_TENANTS)
   if (denied) return denied
 
-  const tenants = listTenants()
+  const tenants = await listTenants()
   return NextResponse.json({ data: tenants })
 }
 
@@ -37,7 +37,7 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const tenant = createTenant({
+    const tenant = await createTenant({
       slug: body.slug,
       name: body.name,
       description: body.description,

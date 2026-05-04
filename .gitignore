@@ -34,6 +34,8 @@ package-lock.json
 config/orchestrator.yaml
 !config/orchestrator.yaml.example
 config/prometheus.yml
+# Per-developer compose override (port mappings, volume binds, etc.)
+docker-compose.override.yml
 
 # Data directories
 data/

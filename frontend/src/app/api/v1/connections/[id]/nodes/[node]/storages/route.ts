@@ -65,7 +65,7 @@ return contents.includes(contentFilter)
     // tenant can't dump a backup onto a non-isolated provider storage —
     // PBS namespace isolation is the only supported tenant backup path.
     const tenantId = await getCurrentTenantId()
-    const scope = getVdcScope(tenantId)
+    const scope = await getVdcScope(tenantId)
     if (scope && storages) {
       const allowed = scope.storagesByConnection.get(id)
       storages = allowed

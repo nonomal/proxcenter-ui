@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server"
 
-import { getDb } from "@/lib/db/sqlite"
+import { prisma as basePrisma } from "@/lib/db/prisma"
 import { getSessionPrisma, getCurrentTenantId } from "@/lib/tenant"
 
 export const runtime = 'nodejs'
@@ -12,25 +12,23 @@ export const runtime = 'nodejs'
 export async function GET() {
   try {
     const prisma = await getSessionPrisma()
-    const db = getDb()
     const tenantId = await getCurrentTenantId()
 
-    // Vérifier le nombre d'utilisateurs
-    const userCount = db.prepare("SELECT COUNT(*) as count FROM users").get() as { count: number }
+    // Vérifier le nombre d'utilisateurs (cross-tenant: setup wizard fires
+    // when ANY user exists, regardless of which tenant they belong to).
+    const userCount = await basePrisma.user.count()
 
     // Vérifier le nombre de connexions Proxmox (direct or via vDC)
     const connectionCount = await prisma.connection.count()
 
-    // For tenants with vDCs: they have connections indirectly via vDC assignments
-    const vdcCount = db.prepare(
-      "SELECT COUNT(*) as count FROM vdcs WHERE tenant_id = ? AND enabled = 1"
-    ).get(tenantId) as { count: number }
+    // For tenants with vDCs: they have connections indirectly via vDC assignments.
+    const vdcCount = await basePrisma.vdc.count({ where: { tenantId, enabled: true } })
 
     return NextResponse.json({
-      setupRequired: userCount.count === 0,
-      connectionsConfigured: connectionCount > 0 || vdcCount.count > 0,
-      userCount: userCount.count,
-      connectionCount: connectionCount + vdcCount.count,
+      setupRequired: userCount === 0,
+      connectionsConfigured: connectionCount > 0 || vdcCount > 0,
+      userCount,
+      connectionCount: connectionCount + vdcCount,
     })
   } catch (error) {
     console.error("Error checking app status:", error)

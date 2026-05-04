@@ -201,9 +201,9 @@ export async function GET(
     const tenantId = await getCurrentTenantId()
 
     if (profileId) {
-      const profile = getProfile(profileId, tenantId)
+      const profile = await getProfile(profileId, tenantId)
       if (profile) {
-        const profileChecks = getProfileChecks(profileId, tenantId)
+        const profileChecks = await getProfileChecks(profileId, tenantId)
         checkConfig = profileChecks.map(pc => ({
           checkId: pc.check_id,
           enabled: pc.enabled === 1,
@@ -215,7 +215,7 @@ export async function GET(
       }
     } else {
       // Check for active profile
-      const active = getActiveProfile(connectionId, tenantId)
+      const active = await getActiveProfile(connectionId, tenantId)
       if (active) {
         checkConfig = active.checks.map(pc => ({
           checkId: pc.check_id,

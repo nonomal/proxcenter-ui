@@ -59,7 +59,7 @@ export async function GET(_req: Request, ctx: RouteContext) {
     const denied = await checkPermission(PERMISSIONS.VM_VIEW)
     if (denied) return denied
 
-    const vdc = getVdcById(vdcId)
+    const vdc = await getVdcById(vdcId)
     if (!vdc) return NextResponse.json({ error: "vDC not found" }, { status: 404 })
 
     const tenantId = await getCurrentTenantId()
@@ -75,7 +75,7 @@ export async function GET(_req: Request, ctx: RouteContext) {
     // Resolve every allowed node → its current DC.
     const dcByNode = new Map<string, string>()
     for (const nodeName of allowedNodes) {
-      const resolved = resolveGreenConfigForNode(vdc.connectionId, nodeName)
+      const resolved = await resolveGreenConfigForNode(vdc.connectionId, nodeName)
       if (resolved.datacenter.id) dcByNode.set(nodeName, resolved.datacenter.id)
     }
 
@@ -116,7 +116,7 @@ export async function GET(_req: Request, ctx: RouteContext) {
     for (const nodeName of allowedNodes) {
       const dcId = dcByNode.get(nodeName)
       if (!dcId) continue
-      const dc = getDatacenterById(dcId)
+      const dc = await getDatacenterById(dcId)
       if (!dc) continue
 
       const existing = acc.get(dcId) ?? {

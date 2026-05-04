@@ -15,7 +15,12 @@ services:
       - "3000:3000"  # Unified HTTP + WebSocket
     environment:
       - NODE_ENV=production
+      # The application still ships SQLite by default. The Postgres provider
+      # is bundled below and takes over once the migration sprint flips
+      # `provider = "postgresql"` in prisma/schema.prisma. Uncomment the
+      # Postgres URL (and comment the SQLite one) when you opt in.
       - DATABASE_URL=file:/app/data/proxcenter.db
+      # - DATABASE_URL=postgresql://${POSTGRES_USER:-proxcenter}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-proxcenter}?schema=public
       - APP_SECRET=${APP_SECRET}
       - NEXTAUTH_SECRET=${NEXTAUTH_SECRET}
       - NEXTAUTH_URL=${NEXTAUTH_URL:-http://localhost:3000}
@@ -33,12 +38,49 @@ services:
     #   - nextauth_secret
     networks:
       - proxcenter
+    depends_on:
+      postgres:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:3000/api/health"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 30s
+
+  # ========================================
+  # Postgres (application database)
+  # ========================================
+  # Single source of truth for ProxCenter data after the SQLite → Postgres
+  # migration sprint. Until the application code flips its DATABASE_URL,
+  # this service runs alongside SQLite and stays unused, which is harmless.
+  postgres:
+    image: postgres:16-alpine
+    container_name: proxcenter-postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-proxcenter}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required (see .env.example)}
+      - POSTGRES_DB=${POSTGRES_DB:-proxcenter}
+      # Performance + correctness: stop the server if a write fails on disk
+      # rather than silently corrupting the WAL. Defaults are fine but we
+      # pin them to avoid surprises across postgres image versions.
+      - POSTGRES_INITDB_ARGS=--encoding=UTF8 --locale=C
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    # No ports: published on purpose. Postgres is reached over the internal
+    # `proxcenter` network only. Uncomment to expose it to the host for
+    # debugging with psql / DBeaver / pgAdmin.
+    # ports:
+    #   - "127.0.0.1:5432:5432"
+    networks:
+      - proxcenter
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-proxcenter} -d ${POSTGRES_DB:-proxcenter}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
 # ========================================
 # Networks
@@ -63,4 +105,7 @@ networks:
 volumes:
   proxcenter_data:
     name: proxcenter_data
+    external: true
+  postgres_data:
+    name: postgres_data
     external: true

@@ -30,7 +30,7 @@ export async function POST(
     // Visibility derives from alert_rule_owners — same scoping as the
     // [id] GET/PUT/DELETE route. 404 on mismatch to avoid existence leak.
     const tenantId = await getCurrentTenantId()
-    if (!ruleVisibleToTenant(id, tenantId)) {
+    if (!(await ruleVisibleToTenant(id, tenantId))) {
       return NextResponse.json({ error: 'Rule not found' }, { status: 404 })
     }
 

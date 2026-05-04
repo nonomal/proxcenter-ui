@@ -1,10 +1,10 @@
 // src/lib/vdc/quota.ts
 // vDC Quota Check Library
 //
-// Provides quota enforcement for tenant vDC operations. resolveVdcForTenant is
-// synchronous (better-sqlite3), while checkVdcQuota is async (PVE API call).
+// Provides quota enforcement for tenant vDC operations. Both helpers are now
+// async after the Postgres cutover (Prisma queries replaced the synchronous
+// better-sqlite3 reads).
 
-import { getDb } from '@/lib/db/sqlite'
 import { DEFAULT_TENANT_ID } from '@/lib/tenant'
 import { pveFetch } from '@/lib/proxmox/client'
 import { getConnectionById } from '@/lib/connections/getConnection'
@@ -59,7 +59,7 @@ function formatMb(mb: number): string {
 }
 
 // ---------------------------------------------------------------------------
-// resolveVdcForTenant (SYNCHRONOUS)
+// resolveVdcForTenant (async)
 // ---------------------------------------------------------------------------
 
 /**
@@ -72,23 +72,25 @@ function formatMb(mb: number): string {
  * Throws `Error('NODE_NOT_AUTHORIZED')` if the node is not in the vDC's
  * allowed node list (caller should catch this specific message).
  */
-export function resolveVdcForTenant(
+export async function resolveVdcForTenant(
   tenantId: string,
   connectionId: string,
   node?: string
-): VdcResolveResult | null {
+): Promise<VdcResolveResult | null> {
   // 1. Default tenant = provider, no enforcement
   if (tenantId === DEFAULT_TENANT_ID) return null
 
-  const db = getDb()
-
-  // 2. Find enabled vDC(s) for this tenant on this connection
-  const vdcRows = db
-    .prepare(
-      `SELECT id, pve_pool_name FROM vdcs
-       WHERE tenant_id = ? AND connection_id = ? AND enabled = 1`
-    )
-    .all(tenantId, connectionId) as Array<{ id: string; pve_pool_name: string }>
+  // 2. Find enabled vDC(s) for this tenant on this connection (load quota +
+  // node names eagerly to keep this a single round-trip).
+  const vdcRows = await prisma.vdc.findMany({
+    where: { tenantId, connectionId, enabled: true },
+    select: {
+      id: true,
+      pvePoolName: true,
+      quota: true,
+      nodes: { select: { nodeName: true } },
+    },
+  })
 
   // 3. No vDC found - no enforcement
   if (vdcRows.length === 0) return null
@@ -97,38 +99,29 @@ export function resolveVdcForTenant(
   const vdc = vdcRows[0]
 
   // 5. If node provided, verify it's in the authorized node list
-  if (node) {
-    const nodeRows = db
-      .prepare('SELECT node_name FROM vdc_nodes WHERE vdc_id = ?')
-      .all(vdc.id) as Array<{ node_name: string }>
-
-    // Only enforce if the vDC actually has node restrictions configured
-    if (nodeRows.length > 0) {
-      const authorizedNodes = new Set(nodeRows.map((r) => r.node_name))
-      if (!authorizedNodes.has(node)) {
-        throw new Error('NODE_NOT_AUTHORIZED')
-      }
+  if (node && vdc.nodes.length > 0) {
+    const authorizedNodes = new Set(vdc.nodes.map(n => n.nodeName))
+    if (!authorizedNodes.has(node)) {
+      throw new Error('NODE_NOT_AUTHORIZED')
     }
   }
 
-  // 6. Load quota
-  const quotaRow = db.prepare('SELECT * FROM vdc_quotas WHERE vdc_id = ?').get(vdc.id) as any
-
-  const quota = quotaRow
+  // 6. Project quota row
+  const quota = vdc.quota
     ? {
-        maxVcpus: quotaRow.max_vcpus ?? null,
-        maxRamMb: quotaRow.max_ram_mb ?? null,
-        maxStorageMb: quotaRow.max_storage_mb ?? null,
-        maxVms: quotaRow.max_vms ?? null,
-        maxSnapshots: quotaRow.max_snapshots ?? null,
-        maxBackups: quotaRow.max_backups ?? null,
+        maxVcpus: vdc.quota.maxVcpus ?? null,
+        maxRamMb: vdc.quota.maxRamMb ?? null,
+        maxStorageMb: vdc.quota.maxStorageMb ?? null,
+        maxVms: vdc.quota.maxVms ?? null,
+        maxSnapshots: vdc.quota.maxSnapshots ?? null,
+        maxBackups: vdc.quota.maxBackups ?? null,
       }
     : null
 
   // 7. Return result
   return {
     vdcId: vdc.id,
-    poolName: vdc.pve_pool_name,
+    poolName: vdc.pvePoolName,
     quota,
   }
 }

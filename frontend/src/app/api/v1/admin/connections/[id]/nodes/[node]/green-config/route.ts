@@ -22,7 +22,7 @@ export async function PUT(req: NextRequest, ctx: RouteContext) {
     if (!id || !node) return NextResponse.json({ error: 'Missing connection/node id' }, { status: 400 })
 
     const body = await req.json().catch(() => ({})) as any
-    const row = upsertNodeGreenConfig(id, node, {
+    const row = await upsertNodeGreenConfig(id, node, {
       datacenterId: body.datacenterId ?? null,
       tdpPerCoreW: body.tdpPerCoreW ?? null,
       wattsPerGbRam: body.wattsPerGbRam ?? null,
@@ -47,7 +47,7 @@ export async function DELETE(_req: NextRequest, ctx: RouteContext) {
     const node = (params as any)?.node
     if (!id || !node) return NextResponse.json({ error: 'Missing connection/node id' }, { status: 400 })
 
-    deleteNodeGreenConfig(id, node)
+    await deleteNodeGreenConfig(id, node)
     invalidateGreenResolution(id, node)
     return new NextResponse(null, { status: 204 })
   } catch (e: any) {

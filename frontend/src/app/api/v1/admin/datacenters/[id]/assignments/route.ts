@@ -4,7 +4,7 @@ import { checkPermission, PERMISSIONS } from "@/lib/rbac"
 import { requireProviderTenant } from "@/lib/tenant"
 import { getDatacenterById } from "@/lib/db/datacenters"
 import { invalidateGreenResolution } from "@/lib/green/resolve"
-import { getDb } from "@/lib/db/sqlite"
+import { prisma } from "@/lib/db/prisma"
 
 export const runtime = "nodejs"
 
@@ -33,21 +33,24 @@ export async function GET(_req: NextRequest, ctx: RouteContext) {
 
     const params = await Promise.resolve(ctx.params)
     const id = (params as any)?.id
-    const dc = getDatacenterById(id)
+    const dc = await getDatacenterById(id)
     if (!dc) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
-    const db = getDb()
-    const clusters = db
-      .prepare(`SELECT connection_id FROM connection_green_config WHERE datacenter_id = ?`)
-      .all(id) as Array<{ connection_id: string }>
-    const nodes = db
-      .prepare(`SELECT connection_id, node_name FROM node_green_config WHERE datacenter_id = ?`)
-      .all(id) as Array<{ connection_id: string; node_name: string }>
+    const [clusters, nodes] = await Promise.all([
+      prisma.connectionGreenConfig.findMany({
+        where: { datacenterId: id },
+        select: { connectionId: true },
+      }),
+      prisma.nodeGreenConfig.findMany({
+        where: { datacenterId: id },
+        select: { connectionId: true, nodeName: true },
+      }),
+    ])
 
     return NextResponse.json({
       data: {
-        clusters: clusters.map(r => r.connection_id),
-        nodes: nodes.map(r => ({ connectionId: r.connection_id, nodeName: r.node_name })),
+        clusters: clusters.map(r => r.connectionId),
+        nodes: nodes.map(r => ({ connectionId: r.connectionId, nodeName: r.nodeName })),
       },
     })
   } catch (e: any) {
@@ -74,7 +77,7 @@ export async function PUT(req: NextRequest, ctx: RouteContext) {
 
     const params = await Promise.resolve(ctx.params)
     const id = (params as any)?.id
-    const dc = getDatacenterById(id)
+    const dc = await getDatacenterById(id)
     if (!dc) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
     const body = await req.json().catch(() => ({})) as AssignmentPayload
@@ -83,46 +86,52 @@ export async function PUT(req: NextRequest, ctx: RouteContext) {
       (body.nodes ?? []).filter(n => n?.connectionId && n?.nodeName).map(n => `${n.connectionId}|${n.nodeName}`),
     )
 
-    const db = getDb()
-    const now = new Date().toISOString()
+    const now = new Date()
 
-    const tx = db.transaction(() => {
+    await prisma.$transaction(async tx => {
       // Cluster-level: align connection_green_config rows.
-      const currentClusters = (db
-        .prepare(`SELECT connection_id FROM connection_green_config WHERE datacenter_id = ?`)
-        .all(id) as Array<{ connection_id: string }>).map(r => r.connection_id)
+      const currentClusters = (await tx.connectionGreenConfig.findMany({
+        where: { datacenterId: id },
+        select: { connectionId: true },
+      })).map(r => r.connectionId)
 
       // Detach clusters that left this DC.
       for (const cid of currentClusters) {
         if (!targetClusters.has(cid)) {
-          db.prepare(`UPDATE connection_green_config SET datacenter_id = NULL, updated_at = ? WHERE connection_id = ?`)
-            .run(now, cid)
+          await tx.connectionGreenConfig.update({
+            where: { connectionId: cid },
+            data: { datacenterId: null, updatedAt: now },
+          })
         }
       }
 
       // Attach (upsert) clusters that should be on this DC + clear per-node DC overrides
       // so the cluster pick is the single source of truth.
       for (const cid of targetClusters) {
-        db.prepare(
-          `INSERT INTO connection_green_config (connection_id, datacenter_id, updated_at)
-           VALUES (?, ?, ?)
-           ON CONFLICT(connection_id) DO UPDATE SET datacenter_id = excluded.datacenter_id, updated_at = excluded.updated_at`
-        ).run(cid, id, now)
-        db.prepare(`UPDATE node_green_config SET datacenter_id = NULL, updated_at = ? WHERE connection_id = ?`)
-          .run(now, cid)
+        await tx.connectionGreenConfig.upsert({
+          where: { connectionId: cid },
+          update: { datacenterId: id, updatedAt: now },
+          create: { connectionId: cid, datacenterId: id, updatedAt: now },
+        })
+        await tx.nodeGreenConfig.updateMany({
+          where: { connectionId: cid },
+          data: { datacenterId: null, updatedAt: now },
+        })
       }
 
       // Per-node: align node_green_config rows.
-      const currentNodes = (db
-        .prepare(`SELECT connection_id, node_name FROM node_green_config WHERE datacenter_id = ?`)
-        .all(id) as Array<{ connection_id: string; node_name: string }>)
-        .map(r => `${r.connection_id}|${r.node_name}`)
+      const currentNodes = (await tx.nodeGreenConfig.findMany({
+        where: { datacenterId: id },
+        select: { connectionId: true, nodeName: true },
+      })).map(r => `${r.connectionId}|${r.nodeName}`)
 
       for (const key of currentNodes) {
         if (!targetNodes.has(key)) {
           const [cid, nname] = key.split('|')
-          db.prepare(`UPDATE node_green_config SET datacenter_id = NULL, updated_at = ? WHERE connection_id = ? AND node_name = ?`)
-            .run(now, cid, nname)
+          await tx.nodeGreenConfig.update({
+            where: { connectionId_nodeName: { connectionId: cid, nodeName: nname } },
+            data: { datacenterId: null, updatedAt: now },
+          })
         }
       }
 
@@ -130,14 +139,13 @@ export async function PUT(req: NextRequest, ctx: RouteContext) {
         const [cid, nname] = key.split('|')
         // Skip nodes whose cluster is itself on this DC — covered by cluster-level row.
         if (targetClusters.has(cid)) continue
-        db.prepare(
-          `INSERT INTO node_green_config (connection_id, node_name, datacenter_id, updated_at)
-           VALUES (?, ?, ?, ?)
-           ON CONFLICT(connection_id, node_name) DO UPDATE SET datacenter_id = excluded.datacenter_id, updated_at = excluded.updated_at`
-        ).run(cid, nname, id, now)
+        await tx.nodeGreenConfig.upsert({
+          where: { connectionId_nodeName: { connectionId: cid, nodeName: nname } },
+          update: { datacenterId: id, updatedAt: now },
+          create: { connectionId: cid, nodeName: nname, datacenterId: id, updatedAt: now },
+        })
       }
     })
-    tx()
 
     invalidateGreenResolution()
     return NextResponse.json({ success: true })

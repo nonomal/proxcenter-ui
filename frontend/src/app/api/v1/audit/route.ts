@@ -39,7 +39,7 @@ export async function GET(req: Request) {
       }
     })
 
-    const result = getAuditLogs(options)
+    const result = await getAuditLogs(options)
 
     return NextResponse.json(result)
   } catch (error: any) {

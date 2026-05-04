@@ -1,6 +1,5 @@
 import { randomUUID } from 'crypto'
 
-import { getDb } from '@/lib/db/sqlite'
 import { prisma } from '@/lib/db/prisma'
 import { decryptSecret } from '@/lib/crypto/secret'
 import {
@@ -85,33 +84,37 @@ async function resolvePbsMeta(pbsConnectionId: string): Promise<{
   }
 }
 
-function readVdcAndTenant(vdcId: string) {
-  const db = getDb()
-  const vdc = db.prepare('SELECT * FROM vdcs WHERE id = ?').get(vdcId) as any
+async function readVdcAndTenant(vdcId: string) {
+  const vdc = await prisma.vdc.findUnique({ where: { id: vdcId } })
   if (!vdc) throw new Error(`vDC not found: ${vdcId}`)
-  const tenant = db.prepare('SELECT * FROM tenants WHERE id = ?').get(vdc.tenant_id) as any
-  if (!tenant) throw new Error(`tenant not found: ${vdc.tenant_id}`)
+  const tenant = await prisma.tenant.findUnique({ where: { id: vdc.tenantId } })
+  if (!tenant) throw new Error(`tenant not found: ${vdc.tenantId}`)
   return { vdc, tenant }
 }
 
-function readVdcNodeNames(vdcId: string): string[] {
-  return (getDb().prepare('SELECT node_name FROM vdc_nodes WHERE vdc_id = ?').all(vdcId) as any[])
-    .map(r => r.node_name)
+async function readVdcNodeNames(vdcId: string): Promise<string[]> {
+  const rows = await prisma.vdcNode.findMany({ where: { vdcId }, select: { nodeName: true } })
+  return rows.map(r => r.nodeName)
 }
 
-function appendVdcStorage(vdcId: string, storageId: string) {
-  getDb().prepare('INSERT OR IGNORE INTO vdc_storages (id, vdc_id, storage_id) VALUES (?, ?, ?)')
-    .run(randomUUID(), vdcId, storageId)
+async function appendVdcStorage(vdcId: string, storageId: string): Promise<void> {
+  // Mirror the SQLite `INSERT OR IGNORE` semantic: skip if the (vdcId,
+  // storageId) row already exists thanks to the @@unique constraint.
+  await prisma.vdcStorage.upsert({
+    where: { vdcId_storageId: { vdcId, storageId } },
+    update: {},
+    create: { id: randomUUID(), vdcId, storageId },
+  })
 }
 
-function removeVdcStorage(vdcId: string, storageId: string) {
-  getDb().prepare('DELETE FROM vdc_storages WHERE vdc_id = ? AND storage_id = ?').run(vdcId, storageId)
+async function removeVdcStorage(vdcId: string, storageId: string): Promise<void> {
+  await prisma.vdcStorage.deleteMany({ where: { vdcId, storageId } })
 }
 
 export async function bindPbsToVdc(args: BindAutoArgs): Promise<{ binding: PbsBindingRow; steps: StepStatus }> {
   const lockKey = `${args.vdcId}|${args.pbsConnectionId}|${args.datastore}|${args.namespace ?? ''}`
   return withLock(lockKey, async () => {
-    const { vdc, tenant } = readVdcAndTenant(args.vdcId)
+    const { vdc, tenant } = await readVdcAndTenant(args.vdcId)
     const namespace = args.namespace ?? `tenant-${tenant.slug}/vdc-${vdc.slug}`
     const pbs = await resolvePbsMeta(args.pbsConnectionId)
 
@@ -122,7 +125,7 @@ export async function bindPbsToVdc(args: BindAutoArgs): Promise<{ binding: PbsBi
     // Pre-check: if a binding on this tuple already exists, fail BEFORE touching
     // PBS. Otherwise ensureSubToken would rotate the PBS secret and leave the DB
     // with the stale one, breaking future auth.
-    const existing = findBindingByTuple(args.pbsConnectionId, args.datastore, namespace)
+    const existing = await findBindingByTuple(args.pbsConnectionId, args.datastore, namespace)
     if (existing) {
       throw new Error(`Binding already exists (${existing.datastore}/${existing.namespace}). Delete it first if you want to recreate.`)
     }
@@ -155,7 +158,7 @@ export async function bindPbsToVdc(args: BindAutoArgs): Promise<{ binding: PbsBi
     // here the POST /storage probe will be too. Empirically takes 3-5s.
     await waitForPbsTokenReady(pbs.conn, args.datastore, effectiveTokenId, effectiveSecret)
 
-    const binding = insertBinding({
+    const binding = await insertBinding({
       vdcId: args.vdcId,
       pbsConnectionId: args.pbsConnectionId,
       datastore: args.datastore,
@@ -165,10 +168,10 @@ export async function bindPbsToVdc(args: BindAutoArgs): Promise<{ binding: PbsBi
       pbsTokenSecret: effectiveSecret,
     })
 
-    const pveConnId = vdc.connection_id
+    const pveConnId = vdc.connectionId
     const pveConn = await getConnectionById(pveConnId, tenant.id)
     const storageName = sanitizeStorageName(tenant.slug, vdc.slug)
-    const nodes = readVdcNodeNames(args.vdcId)
+    const nodes = await readVdcNodeNames(args.vdcId)
     try {
       await createPbsStorage(pveConn, {
         storage: storageName,
@@ -180,8 +183,8 @@ export async function bindPbsToVdc(args: BindAutoArgs): Promise<{ binding: PbsBi
         fingerprint: pbs.fingerprint,
         nodes,
       })
-      insertPveStorage({ bindingId: binding.id, pveConnectionId: pveConnId, pveStorageName: storageName, managed: true })
-      appendVdcStorage(args.vdcId, storageName)
+      await insertPveStorage({ bindingId: binding.id, pveConnectionId: pveConnId, pveStorageName: storageName, managed: true })
+      await appendVdcStorage(args.vdcId, storageName)
       steps.pveStorages.push({ pveConnectionId: pveConnId, name: storageName, status: 'ok' })
     } catch (e: any) {
       steps.pveStorages.push({ pveConnectionId: pveConnId, name: storageName, status: 'failed', error: String(e?.message ?? e) })
@@ -196,7 +199,7 @@ export async function bindPbsToVdcManual(args: BindManualArgs): Promise<{ bindin
   if (!args.namespace) throw new Error('namespace is required in manual mode')
   const lockKey = `${args.vdcId}|${args.pbsConnectionId}|${args.datastore}|${args.namespace}`
   return withLock(lockKey, async () => {
-    const { vdc, tenant } = readVdcAndTenant(args.vdcId)
+    const { vdc, tenant } = await readVdcAndTenant(args.vdcId)
 
     const row = await prisma.connection.findUnique({
       where: { id: args.pbsConnectionId },
@@ -204,7 +207,7 @@ export async function bindPbsToVdcManual(args: BindManualArgs): Promise<{ bindin
     })
     if (!row || row.type !== 'pbs') throw new Error(`PBS connection not found: ${args.pbsConnectionId}`)
 
-    const binding = insertBinding({
+    const binding = await insertBinding({
       vdcId: args.vdcId,
       pbsConnectionId: args.pbsConnectionId,
       datastore: args.datastore,
@@ -216,14 +219,14 @@ export async function bindPbsToVdcManual(args: BindManualArgs): Promise<{ bindin
 
     const steps: ManualStepStatus = { mode: 'manual', pveStorage: 'skipped' }
     if (args.pveStorageName) {
-      const pveConnId = args.pveConnectionId ?? vdc.connection_id
-      insertPveStorage({
+      const pveConnId = args.pveConnectionId ?? vdc.connectionId
+      await insertPveStorage({
         bindingId: binding.id,
         pveConnectionId: pveConnId,
         pveStorageName: args.pveStorageName,
         managed: false,
       })
-      appendVdcStorage(args.vdcId, args.pveStorageName)
+      await appendVdcStorage(args.vdcId, args.pveStorageName)
       steps.pveStorage = 'ok'
     }
 
@@ -233,33 +236,33 @@ export async function bindPbsToVdcManual(args: BindManualArgs): Promise<{ bindin
 }
 
 export async function unbindFromVdc(bindingId: string): Promise<void> {
-  const row = getDb().prepare('SELECT * FROM vdc_pbs_namespaces WHERE id = ?').get(bindingId) as any
+  const row = await prisma.vdcPbsNamespace.findUnique({ where: { id: bindingId } })
   if (!row) return
 
-  const { tenant } = readVdcAndTenant(row.vdc_id)
-  const mode: 'auto' | 'manual' = row.mode ?? 'auto'
+  const { tenant } = await readVdcAndTenant(row.vdcId)
+  const mode: 'auto' | 'manual' = (row.mode as 'auto' | 'manual') ?? 'auto'
 
-  for (const s of listPveStoragesForBinding(bindingId)) {
+  for (const s of await listPveStoragesForBinding(bindingId)) {
     if (s.managed) {
       try {
         const pveConn = await getConnectionById(s.pveConnectionId, tenant.id)
         await deletePbsStorage(pveConn, s.pveStorageName)
       } catch { /* already gone */ }
     }
-    removeVdcStorage(row.vdc_id, s.pveStorageName)
-    deletePveStorage(s.id)
+    await removeVdcStorage(row.vdcId, s.pveStorageName)
+    await deletePveStorage(s.id)
   }
 
-  if (mode === 'auto' && row.pbs_token_id) {
+  if (mode === 'auto' && row.pbsTokenId) {
     try {
-      const pbs = await resolvePbsMeta(row.pbs_connection_id)
-      const tokenShortId = String(row.pbs_token_id).split('!')[1] ?? `vdc-${row.vdc_id.slice(0, 8)}`
+      const pbs = await resolvePbsMeta(row.pbsConnectionId)
+      const tokenShortId = String(row.pbsTokenId).split('!')[1] ?? `vdc-${row.vdcId.slice(0, 8)}`
       await deleteSubToken(pbs.conn, pbs.rootUser, tokenShortId)
     } catch (e) {
       console.error(`[pbs-unbind] token revoke failed for ${bindingId}:`, e)
     }
   }
 
-  deleteBinding(bindingId)
+  await deleteBinding(bindingId)
   clearVdcScopeCache(tenant.id)
 }

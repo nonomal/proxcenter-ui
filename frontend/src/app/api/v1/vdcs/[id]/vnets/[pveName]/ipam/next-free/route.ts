@@ -8,7 +8,6 @@ import { NextResponse } from "next/server"
 
 import { getCurrentTenantId } from "@/lib/tenant"
 import { checkPermission } from "@/lib/rbac"
-import { getDb } from "@/lib/db/sqlite"
 import { listAllocationsForSubnet } from "@/lib/vdc/ipam"
 import { scanUsedIpsForSubnet, scannedToIntSet } from "@/lib/vdc/ipamScan"
 import { generatePveMacAddress } from "@/lib/vdc/sdn"
@@ -33,23 +32,26 @@ export async function GET(_req: Request, ctx: RouteContext) {
     if (denied) return denied
 
     const tenantId = await getCurrentTenantId()
-    const db = getDb()
 
-    const row = db
-      .prepare(
-        `SELECT s.id AS subnet_id, s.cidr, s.gateway, s.dns_servers,
-                v.pve_name AS vnet_pve_name,
-                d.connection_id, d.pve_pool_name
-         FROM vdc_vnets v
-         JOIN vdcs       d ON d.id = v.vdc_id
-         JOIN vdc_subnets s ON s.vnet_id = v.id
-         WHERE v.vdc_id = ? AND v.display_name = ? AND d.tenant_id = ?
-         LIMIT 1`,
-      )
-      .get(vdcId, displayName, tenantId) as
-        | { subnet_id: string; cidr: string; gateway: string; dns_servers: string | null; vnet_pve_name: string; connection_id: string; pve_pool_name: string }
-        | undefined
-    if (!row) return NextResponse.json({ error: "VNet not found" }, { status: 404 })
+    const vnetRow = await prisma.vdcVnet.findFirst({
+      where: { vdcId, displayName, vdc: { tenantId } },
+      select: {
+        pveName: true,
+        subnet: { select: { id: true, cidr: true, gateway: true, dnsServers: true } },
+        vdc: { select: { connectionId: true, pvePoolName: true } },
+      },
+    })
+    if (!vnetRow || !vnetRow.subnet) return NextResponse.json({ error: "VNet not found" }, { status: 404 })
+
+    const row = {
+      subnet_id: vnetRow.subnet.id,
+      cidr: vnetRow.subnet.cidr,
+      gateway: vnetRow.subnet.gateway,
+      dns_servers: vnetRow.subnet.dnsServers,
+      vnet_pve_name: vnetRow.pveName,
+      connection_id: vnetRow.vdc.connectionId,
+      pve_pool_name: vnetRow.vdc.pvePoolName,
+    }
 
     const parsed = parseCidr(row.cidr)
     if (!parsed) return NextResponse.json({ error: "Invalid CIDR" }, { status: 500 })
@@ -60,7 +62,7 @@ export async function GET(_req: Request, ctx: RouteContext) {
     // matches what the tenant will actually get.
     const taken = new Set<number>()
 
-    const allocs = listAllocationsForSubnet(row.subnet_id)
+    const allocs = await listAllocationsForSubnet(row.subnet_id)
     for (const a of allocs) taken.add(a.ipInt)
 
     try {

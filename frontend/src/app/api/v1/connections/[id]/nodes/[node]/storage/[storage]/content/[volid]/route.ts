@@ -5,7 +5,7 @@ import { getConnectionById } from "@/lib/connections/getConnection"
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
 import { getVdcScope, guardTenantStorageWrite } from "@/lib/vdc/scope"
 import { getCurrentTenantId } from "@/lib/tenant"
-import { getDb } from "@/lib/db/sqlite"
+import { prisma } from "@/lib/db/prisma"
 
 export const runtime = "nodejs"
 
@@ -39,13 +39,13 @@ export async function DELETE(
     // filename, refuse delete on iso/import volumes whose filename doesn't
     // match `custom-<tenantSlug>-*`. Super admins (scope===null) skip this.
     const tenantId = await getCurrentTenantId()
-    const scope = getVdcScope(tenantId)
+    const scope = await getVdcScope(tenantId)
     if (scope) {
       const m = decodedVolid.match(/^[^:]+:([^/]+)\/(.+)$/)
       const itemContent = m?.[1] || ''
       const filename = m?.[2] || ''
       if (TENANT_FILTERED_CONTENT.has(itemContent)) {
-        const row = getDb().prepare('SELECT slug FROM tenants WHERE id = ?').get(tenantId) as { slug?: string } | undefined
+        const row = await prisma.tenant.findUnique({ where: { id: tenantId }, select: { slug: true } })
         const tenantSlug = row?.slug || tenantId.replace(/[^a-z0-9-]/gi, '').toLowerCase()
         if (!filename.startsWith(`custom-${tenantSlug}-`)) {
           return NextResponse.json({ error: "Volume not accessible" }, { status: 403 })

@@ -17,7 +17,7 @@ export async function GET(req: NextRequest) {
     if (denied) return denied
 
     const tenantId = req.nextUrl.searchParams.get("tenantId") || undefined
-    const vdcs = listVdcs(tenantId)
+    const vdcs = await listVdcs(tenantId)
 
     return NextResponse.json({ data: vdcs })
   } catch (e: any) {

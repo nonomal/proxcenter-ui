@@ -2,7 +2,7 @@ export const dynamic = "force-dynamic"
 import { NextRequest, NextResponse } from "next/server"
 import { checkPermission, PERMISSIONS, isUserSuperAdmin } from "@/lib/rbac"
 import { getTenantUsers, addUserToTenant, removeUserFromTenant, TenantMembershipError, requireProviderTenant } from "@/lib/tenant"
-import { getDb } from "@/lib/db/sqlite"
+import { prisma } from "@/lib/db/prisma"
 import { audit } from "@/lib/audit"
 import { getServerSession } from "next-auth"
 import { authOptions } from "@/lib/auth/config"
@@ -17,7 +17,7 @@ export async function GET(_req: NextRequest, ctx: Ctx) {
   if (denied) return denied
 
   const { id } = await ctx.params
-  const users = getTenantUsers(id)
+  const users = await getTenantUsers(id)
   return NextResponse.json({ data: users })
 }
 
@@ -36,27 +36,33 @@ export async function POST(req: NextRequest, ctx: Ctx) {
     return NextResponse.json({ error: "userId is required" }, { status: 400 })
   }
 
-  addUserToTenant(body.userId, id, body.isDefault || false)
+  await addUserToTenant(body.userId, id, body.isDefault || false)
 
   // Grant a default role in this tenant (role from body, or viewer).
   // Super-admins are excluded: their global role_super_admin already grants
   // wildcard access in every tenant, so a per-tenant role would either be
   // misleading (role_viewer chip on a super-admin) or redundant.
-  const db = getDb()
-  const now = new Date().toISOString()
   const roleId = body.roleId || 'role_viewer'
   const roleAssignId = `tenant_add_${id}_${body.userId}_${Date.now()}`
 
-  const targetIsSuperAdmin = isUserSuperAdmin(body.userId)
-  const existingRole = db.prepare(
-    "SELECT 1 FROM rbac_user_roles WHERE user_id = ? AND tenant_id = ? LIMIT 1"
-  ).get(body.userId, id)
+  const targetIsSuperAdmin = await isUserSuperAdmin(body.userId)
+  const existingRole = await prisma.rbacUserRole.findFirst({
+    where: { userId: body.userId, tenantId: id },
+    select: { id: true },
+  })
 
   if (!existingRole && !targetIsSuperAdmin) {
-    db.prepare(
-      `INSERT INTO rbac_user_roles (id, user_id, role_id, scope_type, tenant_id, granted_by, granted_at)
-       VALUES (?, ?, ?, 'global', ?, ?, ?)`
-    ).run(roleAssignId, body.userId, roleId, id, session?.user?.id || null, now)
+    await prisma.rbacUserRole.create({
+      data: {
+        id: roleAssignId,
+        userId: body.userId,
+        roleId,
+        scopeType: 'global',
+        tenantId: id,
+        grantedById: session?.user?.id || null,
+        grantedAt: new Date(),
+      },
+    })
   }
 
   await audit({
@@ -89,7 +95,7 @@ export async function DELETE(req: NextRequest, ctx: Ctx) {
   }
 
   try {
-    removeUserFromTenant(body.userId, id)
+    await removeUserFromTenant(body.userId, id)
   } catch (e) {
     if (e instanceof TenantMembershipError) {
       const status = e.code === "LAST_TENANT" ? 409 : 404

@@ -34,7 +34,7 @@ export async function POST(
     const alertRes = await alertsApi.getAlert(id)
     const tenantId = await getCurrentTenantId()
     const tenantConnectionIds = await getTenantConnectionIds()
-    const vdcScope = getVdcScope(tenantId)
+    const vdcScope = await getVdcScope(tenantId)
     const vdcVmids = vdcScope ? await getVdcVmidsByConnection(tenantId) : undefined
     if (!isAlertVisibleToTenant(alertRes.data as any, { tenantId, tenantConnectionIds, vdcScope, vdcVmids })) {
       return NextResponse.json({ error: 'Alert not found' }, { status: 404 })

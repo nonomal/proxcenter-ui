@@ -1,7 +1,20 @@
 // src/lib/compliance/policies.ts
-// CRUD for security_policies (singleton row) + password validation
+// CRUD for security_policies (singleton row) + password validation.
+//
+// The table is conceptually a singleton (id='default') even after the
+// multi-tenancy refactor added a `tenant_id` column — see the original
+// PRIMARY KEY on id alone. We keep the tenantId argument so the call sites
+// don't need to change shape during the SQLite → Postgres refactor; the
+// field is filtered on but tenant-specific rows are not currently created
+// elsewhere in the codebase.
+//
+// The public SecurityPolicies / ALLOWED_FIELDS / API JSON shape remains in
+// snake_case so existing frontend code (pages/components reading the
+// response) and saved settings payloads keep working unchanged. The Prisma
+// client side uses camelCase; mapping happens at the boundary of this file.
 
-import { getDb } from '@/lib/db/sqlite'
+import { prisma } from '@/lib/db/prisma'
+import type { Prisma } from '@prisma/client'
 
 export interface SecurityPolicies {
   id: string
@@ -20,75 +33,98 @@ export interface SecurityPolicies {
   updated_by: string | null
 }
 
-function rowToPolicies(row: any): SecurityPolicies {
+type PrismaRow = Prisma.SecurityPolicyGetPayload<{}>
+
+function rowToPolicies(row: PrismaRow): SecurityPolicies {
   return {
     id: row.id,
-    password_min_length: row.password_min_length,
-    password_require_uppercase: !!row.password_require_uppercase,
-    password_require_lowercase: !!row.password_require_lowercase,
-    password_require_numbers: !!row.password_require_numbers,
-    password_require_special: !!row.password_require_special,
-    session_timeout_minutes: row.session_timeout_minutes,
-    session_max_concurrent: row.session_max_concurrent,
-    login_max_failed_attempts: row.login_max_failed_attempts,
-    login_lockout_duration_minutes: row.login_lockout_duration_minutes,
-    audit_retention_days: row.audit_retention_days,
-    audit_auto_cleanup: !!row.audit_auto_cleanup,
-    updated_at: row.updated_at,
-    updated_by: row.updated_by,
+    password_min_length: row.passwordMinLength,
+    password_require_uppercase: row.passwordRequireUppercase,
+    password_require_lowercase: row.passwordRequireLowercase,
+    password_require_numbers: row.passwordRequireNumbers,
+    password_require_special: row.passwordRequireSpecial,
+    session_timeout_minutes: row.sessionTimeoutMinutes,
+    session_max_concurrent: row.sessionMaxConcurrent,
+    login_max_failed_attempts: row.loginMaxFailedAttempts,
+    login_lockout_duration_minutes: row.loginLockoutDurationMinutes,
+    audit_retention_days: row.auditRetentionDays,
+    audit_auto_cleanup: row.auditAutoCleanup,
+    updated_at: row.updatedAt.toISOString(),
+    updated_by: row.updatedBy,
   }
 }
 
-export function getSecurityPolicies(tenantId: string = 'default'): SecurityPolicies {
-  const db = getDb()
-  let row: any = db.prepare("SELECT * FROM security_policies WHERE id = 'default' AND tenant_id = ?").get(tenantId) as any
-  // Fallback to global default if no tenant-specific row exists
+export async function getSecurityPolicies(tenantId: string = 'default'): Promise<SecurityPolicies> {
+  // Try the tenant-scoped row first; fall back to the global default if the
+  // tenant hasn't customised security policies. The table is a singleton in
+  // practice (id PK = 'default') so the tenant filter is a no-op today, but
+  // keep it for forward compatibility with the locked multi-tenant decision.
+  let row = await prisma.securityPolicy.findFirst({
+    where: { id: 'default', tenantId },
+  })
   if (!row && tenantId !== 'default') {
-    row = db.prepare("SELECT * FROM security_policies WHERE id = 'default' AND tenant_id = 'default'").get() as any
+    row = await prisma.securityPolicy.findFirst({
+      where: { id: 'default', tenantId: 'default' },
+    })
   }
   if (!row) throw new Error('Security policies not initialized')
   return rowToPolicies(row)
 }
 
-const ALLOWED_FIELDS = [
-  'password_min_length',
-  'password_require_uppercase',
-  'password_require_lowercase',
-  'password_require_numbers',
-  'password_require_special',
-  'session_timeout_minutes',
-  'session_max_concurrent',
-  'login_max_failed_attempts',
-  'login_lockout_duration_minutes',
-  'audit_retention_days',
-  'audit_auto_cleanup',
-] as const
+// Snake-case (frontend / API payload) → camelCase (Prisma) field mapping.
+// Centralised so a future field rename touches one place. Keep in sync with
+// the Prisma model: any new column needs an entry here AND in rowToPolicies.
+const SNAKE_TO_CAMEL: Record<string, keyof Prisma.SecurityPolicyUpdateInput> = {
+  password_min_length: 'passwordMinLength',
+  password_require_uppercase: 'passwordRequireUppercase',
+  password_require_lowercase: 'passwordRequireLowercase',
+  password_require_numbers: 'passwordRequireNumbers',
+  password_require_special: 'passwordRequireSpecial',
+  session_timeout_minutes: 'sessionTimeoutMinutes',
+  session_max_concurrent: 'sessionMaxConcurrent',
+  login_max_failed_attempts: 'loginMaxFailedAttempts',
+  login_lockout_duration_minutes: 'loginLockoutDurationMinutes',
+  audit_retention_days: 'auditRetentionDays',
+  audit_auto_cleanup: 'auditAutoCleanup',
+}
 
-export function updateSecurityPolicies(partial: Partial<Record<string, any>>, userId: string, tenantId: string = 'default'): SecurityPolicies {
-  const db = getDb()
-  const sets: string[] = []
-  const values: any[] = []
+export async function updateSecurityPolicies(
+  partial: Partial<Record<string, unknown>>,
+  userId: string,
+  tenantId: string = 'default',
+): Promise<SecurityPolicies> {
+  const data: Prisma.SecurityPolicyUpdateInput = {}
 
-  for (const field of ALLOWED_FIELDS) {
-    if (field in partial) {
-      let val = partial[field]
-      // Convert booleans to integers for SQLite
-      if (typeof val === 'boolean') val = val ? 1 : 0
-      // Validate numbers
-      if (typeof val === 'number' && (isNaN(val) || val < 0)) continue
-      sets.push(`${field} = ?`)
-      values.push(val)
+  for (const [snake, camel] of Object.entries(SNAKE_TO_CAMEL)) {
+    if (!(snake in partial)) continue
+    const val = partial[snake]
+    if (typeof val === 'boolean') {
+      ;(data as any)[camel] = val
+      continue
+    }
+    if (typeof val === 'number') {
+      // Reject NaN / negative numeric tunables; drop the field rather than
+      // surfacing a 500 from the DB constraint check downstream.
+      if (Number.isNaN(val) || val < 0) continue
+      ;(data as any)[camel] = val
     }
   }
 
-  if (sets.length === 0) {
+  // Nothing valid in the payload → return current state untouched.
+  if (Object.keys(data).length === 0) {
     return getSecurityPolicies(tenantId)
   }
 
-  sets.push('updated_at = ?', 'updated_by = ?')
-  values.push(new Date().toISOString(), userId)
+  data.updatedAt = new Date()
+  data.updatedBy = userId
 
-  db.prepare(`UPDATE security_policies SET ${sets.join(', ')} WHERE id = 'default' AND tenant_id = ?`).run(...values, tenantId)
+  // updateMany so we can scope on (id, tenantId) without hitting the unique
+  // constraint shape on id alone. Idempotent: if no row exists, nothing
+  // happens and getSecurityPolicies below will throw "not initialized".
+  await prisma.securityPolicy.updateMany({
+    where: { id: 'default', tenantId },
+    data,
+  })
 
   return getSecurityPolicies(tenantId)
 }
@@ -98,8 +134,11 @@ export interface PasswordValidationResult {
   errors: string[]
 }
 
-export function validatePassword(password: string, policies?: SecurityPolicies): PasswordValidationResult {
-  const p = policies || getSecurityPolicies()
+export async function validatePassword(
+  password: string,
+  policies?: SecurityPolicies,
+): Promise<PasswordValidationResult> {
+  const p = policies || (await getSecurityPolicies())
   const errors: string[] = []
 
   if (password.length < p.password_min_length) {

@@ -3,7 +3,7 @@
 
 import crypto from 'crypto'
 
-import { getDb } from '@/lib/db/sqlite'
+import { prisma } from '@/lib/db/prisma'
 import { pveFetch } from '@/lib/proxmox/client'
 
 import type { SdnVnet } from './types'
@@ -26,16 +26,20 @@ const ZONE_HASH_LEN = 2        // collision suffix length (hex)
 
 interface ZoneNameInput { id: string; slug: string }
 
-function generateZoneNameImpl(db: any, connectionId: string, vdc: ZoneNameInput): string {
+async function isZoneNameTaken(connectionId: string, sdnZoneName: string): Promise<boolean> {
+  const row = await prisma.vdc.findFirst({
+    where: { connectionId, sdnZoneName },
+    select: { id: true },
+  })
+  return !!row
+}
+
+export async function generateZoneName(connectionId: string, vdc: ZoneNameInput): Promise<string> {
   // 'z' prefix + up to 7 slug chars = 8 total. We always reserve room for
   // the prefix even when the slug is tiny.
   const base = 'z' + stripSlug(vdc.slug).slice(0, ZONE_MAX_LEN - 1)
 
-  const existing = db
-    .prepare('SELECT sdn_zone_name FROM vdcs WHERE connection_id = ? AND sdn_zone_name = ?')
-    .get(connectionId, base)
-
-  if (!existing) return base
+  if (!(await isZoneNameTaken(connectionId, base))) return base
 
   // Collision: drop two slug chars and append a 2-hex-char hash of the
   // vdc id so two vDCs with similar slugs on the same cluster don't
@@ -44,23 +48,10 @@ function generateZoneNameImpl(db: any, connectionId: string, vdc: ZoneNameInput)
   const slugRoom = ZONE_MAX_LEN - 1 - ZONE_HASH_LEN
   const withSuffix = 'z' + stripSlug(vdc.slug).slice(0, slugRoom) + hash
 
-  const collision2 = db
-    .prepare('SELECT sdn_zone_name FROM vdcs WHERE connection_id = ? AND sdn_zone_name = ?')
-    .get(connectionId, withSuffix)
-
-  if (collision2) {
+  if (await isZoneNameTaken(connectionId, withSuffix)) {
     throw new Error(`Cannot generate unique SDN zone name for vDC ${vdc.id} (slug=${vdc.slug})`)
   }
   return withSuffix
-}
-
-/** @internal exported only for testing */
-export function generateZoneNameForTesting(db: any, connectionId: string, vdc: ZoneNameInput): string {
-  return generateZoneNameImpl(db, connectionId, vdc)
-}
-
-export function generateZoneName(connectionId: string, vdc: ZoneNameInput): string {
-  return generateZoneNameImpl(getDb(), connectionId, vdc)
 }
 
 
@@ -84,38 +75,35 @@ function hashVnetSeed(seed: string): string {
   return crypto.createHash('sha256').update(seed).digest('hex').slice(0, PVE_VNET_ID_HEX_LEN)
 }
 
-function generatePveVnetIdImpl(db: any, vdcId: string, displayName: string): string {
+export async function generatePveVnetId(vdcId: string, displayName: string): Promise<string> {
   // Deterministic for the same (vdcId, displayName) pair so re-runs of a
   // failed create don't drift. Collision-check across the whole connection
   // (PVE's actual uniqueness scope), with up to 16 retries appending a nonce.
   const seedBase = `${vdcId}:${displayName}`
 
-  const stmt = db.prepare(
-    `SELECT 1 FROM vdc_vnets v
-     JOIN vdcs d ON d.id = v.vdc_id
-     WHERE d.connection_id = (SELECT connection_id FROM vdcs WHERE id = ?)
-       AND v.pve_name = ?
-     LIMIT 1`
-  )
+  // Resolve the connectionId of vdcId once so we can scope the uniqueness
+  // check to "any vDC on the same PVE cluster".
+  const ownerVdc = await prisma.vdc.findUnique({
+    where: { id: vdcId },
+    select: { connectionId: true },
+  })
+  if (!ownerVdc) {
+    throw new Error(`generatePveVnetId: vDC not found: ${vdcId}`)
+  }
 
   for (let i = 0; i < 16; i++) {
     const seed = i === 0 ? seedBase : `${seedBase}#${i}`
     const candidate = PVE_VNET_ID_PREFIX + hashVnetSeed(seed)
-    if (!stmt.get(vdcId, candidate)) return candidate
+    const collision = await prisma.vdcVnet.findFirst({
+      where: { pveName: candidate, vdc: { connectionId: ownerVdc.connectionId } },
+      select: { id: true },
+    })
+    if (!collision) return candidate
   }
 
   throw new Error(
     `Cannot generate a unique PVE VNet ID for vdc=${vdcId} displayName=${displayName} after 16 retries — extreme collision rate suggests a bug.`
   )
-}
-
-/** @internal exported only for testing */
-export function generatePveVnetIdForTesting(db: any, vdcId: string, displayName: string): string {
-  return generatePveVnetIdImpl(db, vdcId, displayName)
-}
-
-export function generatePveVnetId(vdcId: string, displayName: string): string {
-  return generatePveVnetIdImpl(getDb(), vdcId, displayName)
 }
 
 // ---------------------------------------------------------------------------
@@ -124,31 +112,26 @@ export function generatePveVnetId(vdcId: string, displayName: string): string {
 
 const VNI_BASE = 10000
 
-function allocateVniImpl(db: any, vdcId: string): number {
+export async function allocateVni(vdcId: string): Promise<number> {
   // VXLAN VNIs must be unique across the entire PVE cluster (transport is one
   // shared overlay), not just within a single vDC. Scoping by vdc_id caused
   // tenant A's first VNet (VNI 10000) to collide with tenant B's first VNet
   // (also 10000) on the same cluster → PVE returns a 400 on the second.
-  const row = db
-    .prepare(
-      `SELECT MAX(v.vxlan_tag) AS max_tag
-       FROM vdc_vnets v
-       JOIN vdcs d ON d.id = v.vdc_id
-       WHERE d.connection_id = (SELECT connection_id FROM vdcs WHERE id = ?)`
-    )
-    .get(vdcId) as { max_tag: number | null } | undefined
+  const ownerVdc = await prisma.vdc.findUnique({
+    where: { id: vdcId },
+    select: { connectionId: true },
+  })
+  if (!ownerVdc) {
+    throw new Error(`allocateVni: vDC not found: ${vdcId}`)
+  }
 
-  const maxTag = row?.max_tag ?? null
-  return maxTag === null ? VNI_BASE : maxTag + 1
-}
+  const aggregate = await prisma.vdcVnet.aggregate({
+    where: { vdc: { connectionId: ownerVdc.connectionId } },
+    _max: { vxlanTag: true },
+  })
 
-/** @internal exported only for testing */
-export function allocateVniForTesting(db: any, vdcId: string): number {
-  return allocateVniImpl(db, vdcId)
-}
-
-export function allocateVni(vdcId: string): number {
-  return allocateVniImpl(getDb(), vdcId)
+  const maxTag = aggregate._max.vxlanTag
+  return maxTag == null ? VNI_BASE : maxTag + 1
 }
 
 // ---------------------------------------------------------------------------
@@ -421,10 +404,10 @@ export async function countVnetAttachments(conn: any, pveName: string): Promise<
  * If PVE has a VNet in this zone not in DB: log warning (don't auto-create).
  */
 export async function reconcileVnets(vdcId: string, zoneName: string, conn: any): Promise<void> {
-  const db = getDb()
-  const dbRows = db
-    .prepare('SELECT id, pve_name FROM vdc_vnets WHERE vdc_id = ?')
-    .all(vdcId) as Array<{ id: string; pve_name: string }>
+  const dbRows = await prisma.vdcVnet.findMany({
+    where: { vdcId },
+    select: { id: true, pveName: true },
+  })
 
   let pveVnets: SdnVnet[] = []
   try {
@@ -436,12 +419,12 @@ export async function reconcileVnets(vdcId: string, zoneName: string, conn: any)
   }
 
   const pveSet = new Set(pveVnets.map((v) => v.vnet))
-  const dbSet = new Set(dbRows.map((r) => r.pve_name))
+  const dbSet = new Set(dbRows.map((r) => r.pveName))
 
   for (const row of dbRows) {
-    if (!pveSet.has(row.pve_name)) {
-      db.prepare('DELETE FROM vdc_vnets WHERE id = ?').run(row.id)
-      console.warn(`[vdc-sdn] reconcileVnets: removed stale DB row for VNet ${row.pve_name}`)
+    if (!pveSet.has(row.pveName)) {
+      await prisma.vdcVnet.delete({ where: { id: row.id } })
+      console.warn(`[vdc-sdn] reconcileVnets: removed stale DB row for VNet ${row.pveName}`)
     }
   }
 

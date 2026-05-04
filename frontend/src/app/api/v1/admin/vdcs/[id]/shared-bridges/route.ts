@@ -2,7 +2,7 @@ import { randomUUID } from "crypto"
 
 import { NextResponse } from "next/server"
 
-import { getDb } from "@/lib/db/sqlite"
+import { prisma } from "@/lib/db/prisma"
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
 import { clearVdcScopeCache } from "@/lib/vdc/scope"
 import { requireProviderTenant } from "@/lib/tenant"
@@ -24,19 +24,17 @@ export async function GET(_req: Request, ctx: RouteContext) {
     const denied = await checkPermission(PERMISSIONS.ADMIN_SETTINGS)
     if (denied) return denied
 
-    const db = getDb()
-    const rows = db
-      .prepare(
-        "SELECT id, vdc_id, bridge, label, created_at FROM vdc_shared_bridges WHERE vdc_id = ? ORDER BY bridge"
-      )
-      .all(id) as any[]
+    const rows = await prisma.vdcSharedBridge.findMany({
+      where: { vdcId: id },
+      orderBy: { bridge: "asc" },
+    })
 
-    const data = rows.map((r) => ({
+    const data = rows.map(r => ({
       id: r.id,
-      vdcId: r.vdc_id,
+      vdcId: r.vdcId,
       bridge: r.bridge,
       label: r.label ?? null,
-      createdAt: r.created_at,
+      createdAt: r.createdAt.toISOString(),
     }))
 
     return NextResponse.json({ data })
@@ -81,23 +79,28 @@ export async function PUT(req: Request, ctx: RouteContext) {
       return true
     })
 
-    const db = getDb()
-    const vdc = db.prepare("SELECT tenant_id FROM vdcs WHERE id = ?").get(id) as any
+    const vdc = await prisma.vdc.findUnique({ where: { id }, select: { tenantId: true } })
     if (!vdc) return NextResponse.json({ error: "vDC not found" }, { status: 404 })
 
-    const now = new Date().toISOString()
-    const tx = db.transaction(() => {
-      db.prepare("DELETE FROM vdc_shared_bridges WHERE vdc_id = ?").run(id)
-      const insert = db.prepare(
-        "INSERT INTO vdc_shared_bridges (id, vdc_id, bridge, label, created_at) VALUES (?, ?, ?, ?, ?)"
-      )
-      for (const sb of unique) {
-        insert.run(randomUUID(), id, sb.bridge, sb.label, now)
-      }
-    })
-    tx()
+    const now = new Date()
+    await prisma.$transaction([
+      prisma.vdcSharedBridge.deleteMany({ where: { vdcId: id } }),
+      ...(unique.length > 0
+        ? [
+            prisma.vdcSharedBridge.createMany({
+              data: unique.map(sb => ({
+                id: randomUUID(),
+                vdcId: id,
+                bridge: sb.bridge,
+                label: sb.label,
+                createdAt: now,
+              })),
+            }),
+          ]
+        : []),
+    ])
 
-    clearVdcScopeCache(vdc.tenant_id)
+    clearVdcScopeCache(vdc.tenantId)
 
     return NextResponse.json({ success: true, count: unique.length })
   } catch (e: any) {

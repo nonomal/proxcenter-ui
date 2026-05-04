@@ -31,8 +31,8 @@ import { getVdcScope } from './scope'
  * An empty Set means the tenant has no vDC on this connection: every
  * job is forbidden, every list is empty.
  */
-export function getAllowedJobPools(tenantId: string, connectionId: string): Set<string> | null {
-  const scope = getVdcScope(tenantId)
+export async function getAllowedJobPools(tenantId: string, connectionId: string): Promise<Set<string> | null> {
+  const scope = await getVdcScope(tenantId)
   if (!scope) return null
   return scope.poolsByConnection.get(connectionId) ?? new Set<string>()
 }

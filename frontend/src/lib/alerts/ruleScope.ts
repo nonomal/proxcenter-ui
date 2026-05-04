@@ -30,14 +30,14 @@ import { getVdcScope } from "@/lib/vdc/scope"
  * - no connection_id is set (the orchestrator wouldn't fire anyway)
  * - the vDC has no nodes recorded for that connection (can't form a pattern)
  */
-export function injectVdcNodeScope(
+export async function injectVdcNodeScope(
   body: { connection_id?: string; node_pattern?: string },
   tenantId: string
-): void {
+): Promise<void> {
   if (tenantId === DEFAULT_TENANT_ID) return
   if (!body.connection_id) return
 
-  const vdcScope = getVdcScope(tenantId)
+  const vdcScope = await getVdcScope(tenantId)
   const allowedNodes = vdcScope?.nodesByConnection.get(body.connection_id)
   if (!allowedNodes || allowedNodes.size === 0) return
 

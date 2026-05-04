@@ -35,7 +35,7 @@ export async function GET(req: Request) {
 
     // vDC-aware: tenant's connections belong to the provider, use vDC scope to filter
     const tenantId = await getCurrentTenantId()
-    const vdcScope = getVdcScope(tenantId)
+    const vdcScope = await getVdcScope(tenantId)
     const prisma = vdcScope ? globalPrisma : await getSessionPrisma()
 
     // For vDC tenants, restrict to connections referenced by their vDCs.

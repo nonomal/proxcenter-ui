@@ -74,15 +74,15 @@ function debugDeny(alert: OrchestratorAlertLike, reason: string, extra?: Record<
   return false
 }
 
-export function isAlertVisibleToTenant(
+export async function isAlertVisibleToTenant(
   alert: OrchestratorAlertLike,
   ctx: AlertVisibilityCtx,
-): boolean {
+): Promise<boolean> {
   const { tenantId, tenantConnectionIds, vdcScope } = ctx
 
   // Gate 1: rule visibility.
   if (alert.rule_id) {
-    if (!ruleVisibleToTenant(alert.rule_id, tenantId)) return debugDeny(alert, 'rule_not_owned')
+    if (!(await ruleVisibleToTenant(alert.rule_id, tenantId))) return debugDeny(alert, 'rule_not_owned')
   } else if (tenantId !== DEFAULT_TENANT_ID) {
     // Built-in orchestrator alerts (storage / node / license / cluster /
     // system thresholds): provider only.

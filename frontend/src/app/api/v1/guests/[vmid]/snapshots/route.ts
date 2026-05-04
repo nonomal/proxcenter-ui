@@ -141,7 +141,7 @@ export async function POST(
     // ── vDC quota: enforce maxSnapshots across the tenant's pool ──
     const tenantId = await getCurrentTenantId()
     try {
-      const vdcInfo = resolveVdcForTenant(tenantId, connId, node)
+      const vdcInfo = await resolveVdcForTenant(tenantId, connId, node)
       if (vdcInfo) {
         const quotaCheck = await checkVdcQuota(connId, vdcInfo.poolName, vdcInfo.quota, {
           type: 'snapshot',

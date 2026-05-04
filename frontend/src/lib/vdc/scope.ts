@@ -4,7 +4,7 @@
 // Resolves which nodes/storages/pools a tenant is allowed to see based on
 // their vDC assignments, and provides a filter function for cluster data.
 
-import { getDb } from '@/lib/db/sqlite'
+import { prisma } from '@/lib/db/prisma'
 import { DEFAULT_TENANT_ID } from '@/lib/tenant'
 
 // ---------------------------------------------------------------------------
@@ -62,7 +62,7 @@ const CACHE_TTL_MS = 5_000
  * When a non-null VdcScope is returned, the caller should use it to restrict
  * which nodes, storages, and VMs the tenant can see.
  */
-export function getVdcScope(tenantId: string): VdcScope | null {
+export async function getVdcScope(tenantId: string): Promise<VdcScope | null> {
   // Default tenant = provider, no filtering
   if (tenantId === DEFAULT_TENANT_ID) return null
 
@@ -75,7 +75,7 @@ export function getVdcScope(tenantId: string): VdcScope | null {
   }
 
   // Build scope from DB
-  const scope = buildVdcScope(tenantId)
+  const scope = await buildVdcScope(tenantId)
 
   // Cache the result
   scopeCache.set(tenantId, { data: scope, expiry: now + CACHE_TTL_MS })
@@ -87,48 +87,45 @@ export function getVdcScope(tenantId: string): VdcScope | null {
 // buildVdcScope (internal)
 // ---------------------------------------------------------------------------
 
-function buildVdcScope(tenantId: string): VdcScope | null {
-  const db = getDb()
-
-  // 1. Find all enabled vDCs for this tenant
-  const vdcRows = db
-    .prepare(
-      `SELECT v.id, v.connection_id, v.pve_pool_name, v.primary_storage
-       FROM vdcs v
-       WHERE v.tenant_id = ? AND v.enabled = 1`
-    )
-    .all(tenantId) as Array<{ id: string; connection_id: string; pve_pool_name: string; primary_storage: string | null }>
+async function buildVdcScope(tenantId: string): Promise<VdcScope | null> {
+  // 1. Find all enabled vDCs for this tenant + their child rows in a single
+  //    Prisma query (replaces the SQLite N+1 prepared-statement loop).
+  const vdcRows = await prisma.vdc.findMany({
+    where: { tenantId, enabled: true },
+    select: {
+      id: true,
+      connectionId: true,
+      pvePoolName: true,
+      primaryStorage: true,
+      nodes: { select: { nodeName: true } },
+      storages: { select: { storageId: true } },
+      vnets: { select: { pveName: true } },
+      sharedBridges: { select: { bridge: true } },
+      pbsNamespaces: { select: { pbsConnectionId: true, datastore: true, namespace: true } },
+    },
+  })
 
   // No vDCs for this tenant - backwards compatible, no restrictions
   if (vdcRows.length === 0) return null
 
-  // 2. Prepare statements for child tables
-  const stmtNodes = db.prepare('SELECT node_name FROM vdc_nodes WHERE vdc_id = ?')
-  const stmtStorages = db.prepare('SELECT storage_id FROM vdc_storages WHERE vdc_id = ?')
-  const stmtVnets = db.prepare('SELECT pve_name FROM vdc_vnets WHERE vdc_id = ?')
-  const stmtShared = db.prepare('SELECT bridge FROM vdc_shared_bridges WHERE vdc_id = ?')
-
-  // 3. Build the scope
+  // 2. Build the scope
   const connectionIds = new Set<string>()
   const nodesByConnection = new Map<string, Set<string>>()
   const storagesByConnection = new Map<string, Set<string>>()
   const poolsByConnection = new Map<string, Set<string>>()
   const vnetsByConnection = new Map<string, Set<string>>()
   const sharedBridgesByConnection = new Map<string, Set<string>>()
+  const pbsNamespacesByConnection = new Map<string, Array<{ datastore: string; namespace: string }>>()
+  const pbsConnectionIds = new Set<string>()
 
   for (const row of vdcRows) {
-    const connId = row.connection_id
+    const connId = row.connectionId
     connectionIds.add(connId)
 
     // Nodes: merge across multiple vDCs on the same connection
-    if (!nodesByConnection.has(connId)) {
-      nodesByConnection.set(connId, new Set())
-    }
-
-    const nodeRows = stmtNodes.all(row.id) as Array<{ node_name: string }>
-
-    for (const nr of nodeRows) {
-      nodesByConnection.get(connId)!.add(nr.node_name)
+    if (!nodesByConnection.has(connId)) nodesByConnection.set(connId, new Set())
+    for (const nr of row.nodes) {
+      nodesByConnection.get(connId)!.add(nr.nodeName)
     }
 
     // Storages: merge across multiple vDCs on the same connection.
@@ -136,57 +133,35 @@ function buildVdcScope(tenantId: string): VdcScope | null {
     // and any PBS pseudo-storages bound to the vDC (`vdc_storages` rows
     // managed by pbsOrchestrator). Together these form the tenant's
     // visible storage scope for inventory and deploy paths.
-    if (!storagesByConnection.has(connId)) {
-      storagesByConnection.set(connId, new Set())
-    }
-
-    if (row.primary_storage) {
-      storagesByConnection.get(connId)!.add(row.primary_storage)
-    }
-
-    const storageRows = stmtStorages.all(row.id) as Array<{ storage_id: string }>
-
-    for (const sr of storageRows) {
-      storagesByConnection.get(connId)!.add(sr.storage_id)
+    if (!storagesByConnection.has(connId)) storagesByConnection.set(connId, new Set())
+    if (row.primaryStorage) storagesByConnection.get(connId)!.add(row.primaryStorage)
+    for (const sr of row.storages) {
+      storagesByConnection.get(connId)!.add(sr.storageId)
     }
 
     // Pools: each vDC has exactly one PVE pool
-    if (!poolsByConnection.has(connId)) {
-      poolsByConnection.set(connId, new Set())
-    }
-
-    poolsByConnection.get(connId)!.add(row.pve_pool_name)
+    if (!poolsByConnection.has(connId)) poolsByConnection.set(connId, new Set())
+    poolsByConnection.get(connId)!.add(row.pvePoolName)
 
     // VNets: merge across multiple vDCs on the same connection
-    if (!vnetsByConnection.has(connId)) {
-      vnetsByConnection.set(connId, new Set())
-    }
-
-    for (const vr of stmtVnets.all(row.id) as Array<{ pve_name: string }>) {
-      vnetsByConnection.get(connId)!.add(vr.pve_name)
+    if (!vnetsByConnection.has(connId)) vnetsByConnection.set(connId, new Set())
+    for (const vr of row.vnets) {
+      vnetsByConnection.get(connId)!.add(vr.pveName)
     }
 
     // Shared bridges: merge across multiple vDCs on the same connection
-    if (!sharedBridgesByConnection.has(connId)) {
-      sharedBridgesByConnection.set(connId, new Set())
-    }
-
-    for (const sb of stmtShared.all(row.id) as Array<{ bridge: string }>) {
+    if (!sharedBridgesByConnection.has(connId)) sharedBridgesByConnection.set(connId, new Set())
+    for (const sb of row.sharedBridges) {
       sharedBridgesByConnection.get(connId)!.add(sb.bridge)
     }
-  }
 
-  const pbsNamespacesByConnection = new Map<string, Array<{ datastore: string; namespace: string }>>()
-  const pbsConnectionIds = new Set<string>()
-  const stmtPbs = db.prepare(
-    `SELECT pbs_connection_id, datastore, namespace FROM vdc_pbs_namespaces WHERE vdc_id = ?`
-  )
-  for (const row of vdcRows) {
-    for (const pr of stmtPbs.all(row.id) as Array<{ pbs_connection_id: string; datastore: string; namespace: string }>) {
-      const list = pbsNamespacesByConnection.get(pr.pbs_connection_id) ?? []
+    // PBS namespaces: keyed by PBS connection (a vDC can have bindings on
+    // multiple PBS connections; many vDCs can share the same PBS).
+    for (const pr of row.pbsNamespaces) {
+      const list = pbsNamespacesByConnection.get(pr.pbsConnectionId) ?? []
       list.push({ datastore: pr.datastore, namespace: pr.namespace })
-      pbsNamespacesByConnection.set(pr.pbs_connection_id, list)
-      pbsConnectionIds.add(pr.pbs_connection_id)
+      pbsNamespacesByConnection.set(pr.pbsConnectionId, list)
+      pbsConnectionIds.add(pr.pbsConnectionId)
     }
   }
 
@@ -272,7 +247,7 @@ export async function guardTenantStorageWrite(
   const { getConnectionById } = await import('@/lib/connections/getConnection')
   const { pveFetch } = await import('@/lib/proxmox/client')
 
-  const scope = getVdcScope(await getCurrentTenantId())
+  const scope = await getVdcScope(await getCurrentTenantId())
   if (!scope) return null
 
   const allowed = scope.storagesByConnection.get(connId)
@@ -320,7 +295,7 @@ export async function assertVdcPbsAccess(connId: string): Promise<VdcPbsAccess |
   const { getCurrentTenantId } = await import('@/lib/tenant')
   const { NextResponse } = await import('next/server')
 
-  const scope = getVdcScope(await getCurrentTenantId())
+  const scope = await getVdcScope(await getCurrentTenantId())
   if (!scope) return { kind: 'admin' }
 
   const allowed = scope.pbsNamespacesByConnection.get(connId)

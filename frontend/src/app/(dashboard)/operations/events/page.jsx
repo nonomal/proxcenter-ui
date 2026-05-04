@@ -52,9 +52,18 @@ return t('eventsPage.daysAgo', { count: Math.floor(diff / 86400) })
 }
 
 function formatTaskType(type, t) {
+  // PVE task types are open-ended (pve-ha-lrm, vzdump, qmstart, vncproxy, …)
+  // — we only translate the common ones in messages.events.taskTypes; for
+  // anything else we fall back to the raw type string. next-intl throws
+  // MISSING_MESSAGE on unknown keys, so we probe with t.has() first instead
+  // of using defaultValue (which next-intl doesn't honour).
   const key = `events.taskTypes.${type}`
-  const translated = t(key, { defaultValue: '' })
-  return translated || type
+  if (typeof t.has === 'function' && !t.has(key)) return type
+  try {
+    return t(key)
+  } catch {
+    return type
+  }
 }
 
 /* --------------------------------

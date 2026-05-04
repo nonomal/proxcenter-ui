@@ -77,8 +77,8 @@ export async function POST(req: Request) {
     // VM to its PVE pool. Without this, the inventory filter (which lists
     // VMs by `pool === vdc.pvePoolName`) wouldn't surface the deployed VM
     // and the tenant would think the deploy failed.
-    const vdcInfo = (() => {
-      try { return resolveVdcForTenant(tenantId, body.connectionId, body.node) }
+    const vdcInfo = await (async () => {
+      try { return await resolveVdcForTenant(tenantId, body.connectionId, body.node) }
       catch { return null }
     })()
 
@@ -317,7 +317,7 @@ export async function POST(req: Request) {
         let ipamIpconfig0: string | null = null
         let ipamDns: string[] = []
 
-        const subnet = resolveSubnetForBridge(body.connectionId, hw.networkBridge)
+        const subnet = await resolveSubnetForBridge(body.connectionId, hw.networkBridge)
         if (subnet) {
           const mac = generatePveMacAddress()
           // Pin the MAC into the model token so PVE doesn't roll its own
@@ -340,7 +340,7 @@ export async function POST(req: Request) {
               connectionId: body.connectionId,
             })
             const externalIps = scannedToIntSet(externalScanned)
-            const allocated = allocateIp({
+            const allocated = await allocateIp({
               vdcId: subnet.vdcId,
               subnetId: subnet.subnetId,
               vnetId: subnet.vnetId,
@@ -489,7 +489,7 @@ export async function POST(req: Request) {
         // that never finished creating (or got cleaned up by PVE on error).
         if (ipamAllocation) {
           try {
-            releaseIp({
+            await releaseIp({
               subnetId: ipamAllocation.subnetId,
               ip: ipamAllocation.ip,
             })
@@ -609,7 +609,7 @@ async function runIsoDeploy(args: {
   // a hint.
   let isoNetSpec = `${hw.networkModel},bridge=${hw.networkBridge}${hw.vlanTag ? `,tag=${hw.vlanTag}` : ""}`
   let isoIpamAlloc: { subnetId: string; ip: string } | null = null
-  const isoSubnet = resolveSubnetForBridge(body.connectionId, hw.networkBridge)
+  const isoSubnet = await resolveSubnetForBridge(body.connectionId, hw.networkBridge)
   if (isoSubnet) {
     if (!body.staticIp) {
       throw new Error('Static IP is required when deploying an ISO into an IPAM-managed VNet — pass staticIp in the request body')
@@ -622,7 +622,7 @@ async function runIsoDeploy(args: {
       subnetId: isoSubnet.subnetId,
       connectionId: body.connectionId,
     })
-    const allocated = allocateIp({
+    const allocated = await allocateIp({
       vdcId: isoSubnet.vdcId,
       subnetId: isoSubnet.subnetId,
       vnetId: isoSubnet.vnetId,

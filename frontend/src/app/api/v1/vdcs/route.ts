@@ -19,7 +19,7 @@ export async function GET() {
     if (denied) return denied
 
     const tenantId = await getCurrentTenantId()
-    let vdcs = listVdcs(tenantId)
+    let vdcs = await listVdcs(tenantId)
 
     const now = Date.now()
     const stale = vdcs.filter((v) => {
@@ -31,7 +31,7 @@ export async function GET() {
 
     if (stale.length > 0) {
       await Promise.allSettled(stale.map((v) => refreshVdcUsage(v.id)))
-      vdcs = listVdcs(tenantId)
+      vdcs = await listVdcs(tenantId)
     }
 
     return NextResponse.json({ data: vdcs })

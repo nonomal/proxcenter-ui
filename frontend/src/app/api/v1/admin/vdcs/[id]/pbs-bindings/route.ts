@@ -10,7 +10,7 @@ export const runtime = 'nodejs'
 
 async function requireSuperAdmin(): Promise<Response | null> {
   const s = await getServerSession(authOptions)
-  if (!s?.user?.id || !isUserSuperAdmin(s.user.id)) {
+  if (!s?.user?.id || !(await isUserSuperAdmin(s.user.id))) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
   }
   return null
@@ -20,7 +20,7 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
   const denied = await requireSuperAdmin()
   if (denied) return denied
   const { id } = await ctx.params
-  const rows = listBindingsForVdc(id).map(({ pbsTokenSecret, ...r }) => r)
+  const rows = (await listBindingsForVdc(id)).map(({ pbsTokenSecret, ...r }) => r)
   return NextResponse.json({ data: rows })
 }
 

@@ -1,7 +1,9 @@
 // src/lib/auth/ldap.ts
-// L'authentification LDAP est déléguée à l'orchestrator Go
+// LDAP authentication helpers. The actual LDAP bind happens in the Go
+// orchestrator; this module owns the local config state (read/decrypt) and
+// the role-resolution mapping.
 
-import { getDb } from "@/lib/db/sqlite"
+import { prisma } from "@/lib/db/prisma"
 import { decryptSecret } from "@/lib/crypto/secret"
 
 export interface LdapUser {
@@ -29,109 +31,100 @@ export interface LdapConfig {
   allowedGroups: string[]
 }
 
-// Configuration orchestrator
-const ORCHESTRATOR_URL = process.env.ORCHESTRATOR_URL || 'http://localhost:8080'
-const ORCHESTRATOR_API_KEY = process.env.ORCHESTRATOR_API_KEY || ''
+const ORCHESTRATOR_URL = process.env.ORCHESTRATOR_URL || "http://localhost:8080"
+const ORCHESTRATOR_API_KEY = process.env.ORCHESTRATOR_API_KEY || ""
 
 /**
- * Vérifie si LDAP est activé
+ * Cheap "is LDAP turned on" probe used by the login UI / NextAuth provider
+ * predicate. Reads only the boolean flag so the row's encrypted bind password
+ * does not need to be touched on every page load.
  */
-export function isLdapEnabled(): boolean {
-  const db = getDb()
-
-  const config = db
-    .prepare("SELECT enabled FROM ldap_config WHERE id = 'default'")
-    .get() as { enabled: number } | undefined
-
-  return config?.enabled === 1
+export async function isLdapEnabled(): Promise<boolean> {
+  const row = await prisma.ldapConfig.findUnique({
+    where: { id: "default" },
+    select: { enabled: true },
+  })
+  return row?.enabled === true
 }
 
-/**
- * Récupère la configuration LDAP depuis la base de données
- */
-export function getLdapConfig(): LdapConfig | null {
-  const db = getDb()
+/** Reads the full LDAP config + decrypts the bind password. */
+export async function getLdapConfig(): Promise<LdapConfig | null> {
+  const row = await prisma.ldapConfig.findUnique({ where: { id: "default" } })
+  if (!row) return null
 
-  const config = db
-    .prepare("SELECT * FROM ldap_config WHERE id = 'default'")
-    .get() as any
-
-  if (!config) return null
-
-  let bindPassword = null
-
-  if (config.bind_password_enc) {
+  let bindPassword: string | null = null
+  if (row.bindPasswordEnc) {
     try {
-      bindPassword = decryptSecret(config.bind_password_enc)
+      bindPassword = decryptSecret(row.bindPasswordEnc)
     } catch (e) {
       console.error("Erreur déchiffrement bind password LDAP:", e)
     }
   }
 
-  let groupRoleMapping: Record<string, string> = {}
-  try {
-    if (config.group_role_mapping) {
-      groupRoleMapping = JSON.parse(config.group_role_mapping)
-    }
-  } catch {}
+  // group_role_mapping is now a JSONB column, so Prisma returns the parsed
+  // object directly. Coerce to Record<string,string> defensively in case a
+  // legacy row somehow still holds an array or unrelated shape.
+  const groupRoleMapping: Record<string, string> =
+    row.groupRoleMapping && typeof row.groupRoleMapping === "object" && !Array.isArray(row.groupRoleMapping)
+      ? (row.groupRoleMapping as Record<string, string>)
+      : {}
+
+  // allowed_groups is JSONB string[] — defensive cast for the same reason.
+  const allowedGroups: string[] = Array.isArray(row.allowedGroups)
+    ? (row.allowedGroups as string[])
+    : []
 
   return {
-    enabled: config.enabled === 1,
-    url: config.url,
-    bindDn: config.bind_dn,
+    enabled: row.enabled,
+    url: row.url,
+    bindDn: row.bindDn,
     bindPassword,
-    baseDn: config.base_dn,
-    userFilter: config.user_filter,
-    emailAttribute: config.email_attribute,
-    nameAttribute: config.name_attribute,
-    tlsInsecure: config.tls_insecure === 1,
-    groupAttribute: config.group_attribute || 'memberOf',
+    baseDn: row.baseDn,
+    userFilter: row.userFilter,
+    emailAttribute: row.emailAttribute,
+    nameAttribute: row.nameAttribute,
+    tlsInsecure: row.tlsInsecure,
+    groupAttribute: row.groupAttribute || "memberOf",
     groupRoleMapping,
-    defaultRole: config.default_role || 'role_viewer',
-    requireGroup: config.require_group === 1,
-    allowedGroups: (() => {
-      try { return JSON.parse(config.allowed_groups || '[]') }
-      catch { return [] }
-    })(),
+    defaultRole: row.defaultRole || "role_viewer",
+    requireGroup: row.requireGroup,
+    allowedGroups,
   }
 }
 
 /**
- * Authentifie un utilisateur via LDAP
- * 
- * L'authentification est déléguée à l'orchestrator Go.
- * La config LDAP est envoyée dans la requête.
+ * Authenticate against LDAP via the Go orchestrator. The orchestrator does
+ * the actual bind + group lookup; we forward the locally-stored config so
+ * credentials never leave the server. Returns null on auth failure, throws
+ * on transport / orchestrator-down failures so the caller can surface a
+ * "service unavailable" rather than mistaking it for invalid creds.
  */
 export async function authenticateLdap(
   username: string,
-  password: string
+  password: string,
 ): Promise<LdapUser | null> {
-  // Vérifier si LDAP est activé
-  if (!isLdapEnabled()) {
+  if (!(await isLdapEnabled())) {
     return null
   }
 
-  // Récupérer la config LDAP depuis la DB
-  const config = getLdapConfig()
-  
+  const config = await getLdapConfig()
   if (!config || !config.enabled) {
     return null
   }
 
   try {
     const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
+      "Content-Type": "application/json",
     }
-
     if (ORCHESTRATOR_API_KEY) {
-      headers['X-API-Key'] = ORCHESTRATOR_API_KEY
+      headers["X-API-Key"] = ORCHESTRATOR_API_KEY
     }
 
     const res = await fetch(`${ORCHESTRATOR_URL}/api/v1/auth/ldap/authenticate`, {
-      method: 'POST',
+      method: "POST",
       headers,
-      body: JSON.stringify({ 
-        username, 
+      body: JSON.stringify({
+        username,
         password,
         config: {
           url: config.url,
@@ -143,19 +136,18 @@ export async function authenticateLdap(
           name_attribute: config.nameAttribute,
           tls_insecure: config.tlsInsecure,
           group_attribute: config.groupAttribute,
-        }
+        },
       }),
       signal: AbortSignal.timeout(15000),
     })
 
     if (!res.ok) {
-      const text = await res.text().catch(() => '')
+      const text = await res.text().catch(() => "")
       console.error(`Orchestrator LDAP auth failed: ${res.status} ${text}`)
       return null
     }
 
     const data = await res.json()
-
     if (!data.success || !data.user) {
       return null
     }
@@ -174,24 +166,20 @@ export async function authenticateLdap(
 }
 
 /**
- * Résout le rôle RBAC depuis les groupes LDAP en utilisant le mapping configuré.
- * - Match exact d'abord (DN complet), puis extraction du CN
- * - Premier match gagne
- * - Fallback vers config.defaultRole
+ * Resolve a ProxCenter role from LDAP group membership. Tries an exact-DN
+ * match first, then falls back to extracting the CN. First match wins.
+ * Returns null when no group matches so the caller can preserve manually
+ * assigned roles instead of forcing the defaultRole.
  */
 export function resolveLdapRole(groups: string[], config: LdapConfig): string | null {
   if (!groups || groups.length === 0 || !config.groupRoleMapping || Object.keys(config.groupRoleMapping).length === 0) {
-    // No mapping configured — return null to preserve manually assigned roles
     return null
   }
 
   for (const group of groups) {
-    // Match exact (DN complet)
     if (config.groupRoleMapping[group]) {
       return config.groupRoleMapping[group]
     }
-
-    // Extraction du CN pour match simplifié
     const cnMatch = group.match(/^CN=([^,]+)/i)
     if (cnMatch) {
       const cn = cnMatch[1]
@@ -201,6 +189,5 @@ export function resolveLdapRole(groups: string[], config: LdapConfig): string | 
     }
   }
 
-  // No group matched — return null to preserve manually assigned roles
   return null
 }

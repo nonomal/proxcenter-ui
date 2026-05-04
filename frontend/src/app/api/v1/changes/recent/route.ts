@@ -24,7 +24,7 @@ export async function GET(req: Request) {
     const tenantConnectionIds = await getTenantConnectionIds()
     // Same multi-tenant tightening as /api/v1/changes — connection-level
     // filter alone leaks neighbour activity on shared clusters.
-    const vdcScope = getVdcScope(await getCurrentTenantId())
+    const vdcScope = await getVdcScope(await getCurrentTenantId())
 
     const data = await orchestratorFetch<any>(`/changes/recent?limit=100`)
 

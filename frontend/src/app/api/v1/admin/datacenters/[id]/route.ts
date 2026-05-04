@@ -18,7 +18,7 @@ export async function GET(_req: NextRequest, ctx: RouteContext) {
 
     const params = await Promise.resolve(ctx.params)
     const id = (params as any)?.id
-    const dc = getDatacenterById(id)
+    const dc = await getDatacenterById(id)
     if (!dc) return NextResponse.json({ error: 'Not found' }, { status: 404 })
     return NextResponse.json({ data: dc })
   } catch (e: any) {
@@ -37,7 +37,7 @@ export async function PUT(req: NextRequest, ctx: RouteContext) {
     const id = (params as any)?.id
     const body = await req.json().catch(() => ({})) as any
 
-    const dc = updateDatacenter(id, {
+    const dc = await updateDatacenter(id, {
       name: body.name,
       locationLabel: body.locationLabel ?? undefined,
       country: body.country ?? undefined,
@@ -72,7 +72,7 @@ export async function DELETE(_req: NextRequest, ctx: RouteContext) {
 
     const params = await Promise.resolve(ctx.params)
     const id = (params as any)?.id
-    deleteDatacenter(id)
+    await deleteDatacenter(id)
     invalidateGreenResolution()
     return new NextResponse(null, { status: 204 })
   } catch (e: any) {

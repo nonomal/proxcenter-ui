@@ -2,7 +2,7 @@ import { NextResponse } from "next/server"
 
 import { getCurrentTenantId } from "@/lib/tenant"
 import { checkPermission } from "@/lib/rbac"
-import { getDb } from "@/lib/db/sqlite"
+import { prisma } from "@/lib/db/prisma"
 import { updateVnetForTenant, deleteVnetForTenant } from "@/lib/vdc/vnets"
 
 export const runtime = "nodejs"
@@ -24,49 +24,40 @@ export async function GET(_req: Request, ctx: RouteContext) {
     if (denied) return denied
 
     const tenantId = await getCurrentTenantId()
-    const db = getDb()
-    const row = db.prepare(`
-      SELECT v.id, v.vdc_id, v.pve_name, v.display_name, v.description, v.vxlan_tag, v.firewall,
-             v.created_by, v.created_at
-      FROM vdc_vnets v
-      JOIN vdcs d ON d.id = v.vdc_id
-      WHERE v.vdc_id = ? AND v.display_name = ? AND d.tenant_id = ?
-    `).get(vdcId, displayName, tenantId) as any
+    const row = await prisma.vdcVnet.findFirst({
+      where: { vdcId, displayName, vdc: { tenantId } },
+      include: { subnet: true },
+    })
 
     if (!row) return NextResponse.json({ error: "VNet not found" }, { status: 404 })
-
-    const subnetRow = db.prepare(`
-      SELECT id, vnet_id, cidr, gateway, dns_servers, ipam_enabled, created_at
-      FROM vdc_subnets WHERE vnet_id = ? LIMIT 1
-    `).get(row.id) as any
-
-    if (!subnetRow) {
+    if (!row.subnet) {
       return NextResponse.json({ error: "VNet has no subnet — DB migration required" }, { status: 500 })
     }
+
     const subnet = {
-      id: subnetRow.id,
-      vnetId: subnetRow.vnet_id,
-      cidr: subnetRow.cidr,
-      gateway: subnetRow.gateway,
-      dnsServers: subnetRow.dns_servers
-        ? String(subnetRow.dns_servers).split(',').map((s: string) => s.trim()).filter(Boolean)
+      id: row.subnet.id,
+      vnetId: row.subnet.vnetId,
+      cidr: row.subnet.cidr,
+      gateway: row.subnet.gateway,
+      dnsServers: row.subnet.dnsServers
+        ? row.subnet.dnsServers.split(',').map((s: string) => s.trim()).filter(Boolean)
         : [],
-      ipamEnabled: !!subnetRow.ipam_enabled,
-      createdAt: subnetRow.created_at,
+      ipamEnabled: row.subnet.ipamEnabled,
+      createdAt: row.subnet.createdAt.toISOString(),
     }
 
     return NextResponse.json({
       data: {
         id: row.id,
-        vdcId: row.vdc_id,
-        pveName: row.pve_name,
-        displayName: row.display_name ?? row.pve_name,
+        vdcId: row.vdcId,
+        pveName: row.pveName,
+        displayName: row.displayName ?? row.pveName,
         description: row.description ?? null,
-        vxlanTag: row.vxlan_tag,
-        firewall: !!row.firewall,
+        vxlanTag: row.vxlanTag,
+        firewall: row.firewall !== false,
         subnet,
-        createdBy: row.created_by ?? null,
-        createdAt: row.created_at,
+        createdBy: row.createdBy ?? null,
+        createdAt: row.createdAt.toISOString(),
       },
     })
   } catch (e: any) {

@@ -30,7 +30,7 @@ export async function getVdcVmidsByConnection(tenantId: string): Promise<Map<str
   const cached = cache.get(tenantId)
   if (cached && cached.expiry > now) return cached.data
 
-  const vdcScope = getVdcScope(tenantId)
+  const vdcScope = await getVdcScope(tenantId)
   const result = new Map<string, Set<string>>()
   if (!vdcScope) {
     cache.set(tenantId, { data: result, expiry: now + TTL_MS })

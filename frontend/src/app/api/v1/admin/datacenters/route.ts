@@ -16,8 +16,8 @@ export async function GET() {
 
     // First-visit migration: seed a "Default" datacentre from the legacy
     // settings.green row so existing installs see something on day one.
-    ensureDefaultDatacenter()
-    return NextResponse.json({ data: listDatacenters() })
+    await ensureDefaultDatacenter()
+    return NextResponse.json({ data: await listDatacenters() })
   } catch (e: any) {
     return NextResponse.json({ error: e?.message || String(e) }, { status: 500 })
   }
@@ -34,7 +34,7 @@ export async function POST(req: NextRequest) {
     if (!body.name || typeof body.name !== 'string') {
       return NextResponse.json({ error: 'Missing name' }, { status: 400 })
     }
-    const dc = insertDatacenter({
+    const dc = await insertDatacenter({
       name: body.name,
       locationLabel: body.locationLabel ?? null,
       country: body.country ?? null,

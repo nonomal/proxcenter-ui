@@ -187,7 +187,7 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
   }))
 
   // vDC filtering: restrict to nodes assigned to the tenant's vDC
-  const vdcScope = getVdcScope(tenantId)
+  const vdcScope = await getVdcScope(tenantId)
   if (vdcScope) {
     const allowedNodes = vdcScope.nodesByConnection.get(id)
     if (allowedNodes) {

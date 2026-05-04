@@ -6,17 +6,20 @@ import { isOidcEnabled, getOidcConfig } from "@/lib/auth/oidc"
 
 export async function GET() {
   try {
-    const oidcEnabled = isOidcEnabled()
+    const [oidcEnabled, ldapEnabled] = await Promise.all([
+      isOidcEnabled(),
+      isLdapEnabled(),
+    ])
     let oidcProviderName = 'SSO'
 
     if (oidcEnabled) {
-      const config = getOidcConfig()
+      const config = await getOidcConfig()
       oidcProviderName = config?.providerName || 'SSO'
     }
 
     return NextResponse.json({
       credentialsEnabled: true,
-      ldapEnabled: isLdapEnabled(),
+      ldapEnabled,
       oidcEnabled,
       oidcProviderName,
     })

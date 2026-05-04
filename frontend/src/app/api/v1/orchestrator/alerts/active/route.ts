@@ -28,7 +28,7 @@ export async function GET(req: Request) {
 
     const tenantConnectionIds = await getTenantConnectionIds()
     const tenantId = await getCurrentTenantId()
-    const vdcScope = getVdcScope(tenantId)
+    const vdcScope = await getVdcScope(tenantId)
     const vdcVmids = vdcScope ? await getVdcVmidsByConnection(tenantId) : undefined
     const response = await alertsApi.getActiveAlerts(connectionId)
 

@@ -13,7 +13,7 @@ import { authOptions } from "@/lib/auth/config"
 import { filterVmsByPermission, filterNodesByPermission } from "@/lib/rbac"
 import { alertsApi } from "@/lib/orchestrator/client"
 import { demoResponse } from "@/lib/demo/demo-api"
-import { getDb } from "@/lib/db/sqlite"
+import { getSetting } from "@/lib/db/settings"
 
 export const runtime = "nodejs"
 
@@ -127,7 +127,7 @@ export async function GET(req: Request) {
     const tenantId = (session as any).user?.tenantId || 'default'
 
     // vDC scope: restrict dashboard to tenant's vDC resources
-    const vdcScope = getVdcScope(tenantId)
+    const vdcScope = await getVdcScope(tenantId)
 
     // Thresholds configurés par l'utilisateur (via Settings > Alert thresholds)
     // Stockés localement en SQLite, fonctionne sans orchestrator (Community + Enterprise).
@@ -140,15 +140,10 @@ export async function GET(req: Request) {
       storage_critical: 90,
     }
     try {
-      const row = getDb()
-        .prepare('SELECT value FROM settings WHERE key = ? AND tenant_id = ?')
-        .get('alert_thresholds', tenantId) as { value: string } | undefined
-      if (row?.value) {
-        const stored = JSON.parse(row.value)
-        if (stored && typeof stored === 'object') {
-          for (const k of ['cpu_warning', 'cpu_critical', 'memory_warning', 'memory_critical', 'storage_warning', 'storage_critical'] as const) {
-            if (typeof stored[k] === 'number') thresholds[k] = stored[k]
-          }
+      const stored = await getSetting<any>('alert_thresholds', tenantId)
+      if (stored && typeof stored === 'object') {
+        for (const k of ['cpu_warning', 'cpu_critical', 'memory_warning', 'memory_critical', 'storage_warning', 'storage_critical'] as const) {
+          if (typeof stored[k] === 'number') thresholds[k] = stored[k]
         }
       }
     } catch {
@@ -672,9 +667,9 @@ return null
     // ============================================
     // RBAC FILTERING — scope data to user's permissions
     // ============================================
-    const filteredVms = filterVmsByPermission(userId, allVms, undefined, tenantId)
-    const filteredLxcs = filterVmsByPermission(userId, allLxcs, undefined, tenantId)
-    const filteredNodes = filterNodesByPermission(userId, allNodes, undefined, tenantId)
+    const filteredVms = await filterVmsByPermission(userId, allVms, undefined, tenantId)
+    const filteredLxcs = await filterVmsByPermission(userId, allLxcs, undefined, tenantId)
+    const filteredNodes = await filterNodesByPermission(userId, allNodes, undefined, tenantId)
 
     // Recompute node-level aggregates from filtered nodes
     const fOnlineNodes = filteredNodes.filter((n: any) => n.status === 'online').length

@@ -3,8 +3,9 @@ import { headers } from "next/headers"
 
 import { nanoid } from "nanoid"
 import { getServerSession } from "next-auth"
+import type { Prisma } from "@prisma/client"
 
-import { getDb } from "@/lib/db/sqlite"
+import { prisma } from "@/lib/db/prisma"
 import { authOptions } from "@/lib/auth/config"
 import { getCurrentTenantId } from "@/lib/tenant"
 
@@ -97,12 +98,15 @@ export interface AuditLogEntry {
 }
 
 /**
- * Enregistre une entrée dans les logs d'audit
+ * Enregistre une entrée dans les logs d'audit. La table `audit_logs.details`
+ * est désormais JSONB (Postgres), donc on stocke l'objet JS tel quel — plus
+ * besoin de JSON.stringify côté caller. Si les infos de session / headers ne
+ * sont pas fournies par l'appelant, on tente de les récupérer depuis la
+ * requête en cours (best-effort, l'absence n'est jamais bloquante).
  */
 export async function audit(entry: AuditLogEntry): Promise<string> {
-  const db = getDb()
   const id = nanoid()
-  const timestamp = new Date().toISOString()
+  const timestamp = new Date()
 
   // Récupérer les infos de session si non fournies
   let userId = entry.userId
@@ -134,39 +138,33 @@ export async function audit(entry: AuditLogEntry): Promise<string> {
     }
   }
 
-  const details = entry.details ? JSON.stringify(entry.details) : null
-
   // Get tenant ID for scoping
-  let tenantId = 'default'
+  let tenantId = "default"
   try {
     tenantId = await getCurrentTenantId()
   } catch {
     // Fallback to default (e.g. during login before session exists)
   }
 
-  db.prepare(
-    `INSERT INTO audit_logs (
-      id, timestamp, user_id, user_email, action, category,
-      resource_type, resource_id, resource_name, details,
-      ip_address, user_agent, status, error_message, tenant_id
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(
-    id,
-    timestamp,
-    userId || null,
-    userEmail || null,
-    entry.action,
-    entry.category,
-    entry.resourceType || null,
-    entry.resourceId || null,
-    entry.resourceName || null,
-    details,
-    ipAddress || null,
-    userAgent || null,
-    entry.status || "success",
-    entry.errorMessage || null,
-    tenantId
-  )
+  await prisma.auditLog.create({
+    data: {
+      id,
+      tenantId,
+      timestamp,
+      userId: userId || null,
+      userEmail: userEmail || null,
+      action: entry.action,
+      category: entry.category,
+      resourceType: entry.resourceType || null,
+      resourceId: entry.resourceId || null,
+      resourceName: entry.resourceName || null,
+      details: (entry.details ?? null) as Prisma.InputJsonValue,
+      ipAddress: ipAddress || null,
+      userAgent: userAgent || null,
+      status: entry.status || "success",
+      errorMessage: entry.errorMessage || null,
+    },
+  })
 
   return id
 }
@@ -217,9 +215,15 @@ export async function auditResource(
 }
 
 /**
- * Récupère les logs d'audit avec filtres et pagination
+ * Récupère les logs d'audit avec filtres et pagination.
+ *
+ * The legacy raw-SQL version surfaced rows in the SQLite shape (snake_case
+ * columns, ISO-string timestamps, JSON-string details). We translate the
+ * Prisma rows back into that wire shape so the API consumer (which the
+ * `/api/v1/audit` route forwards verbatim to the frontend) keeps the same
+ * field names and value types after the cutover.
  */
-export function getAuditLogs(options: {
+export async function getAuditLogs(options: {
   tenantId: string
   limit?: number
   offset?: number
@@ -232,80 +236,70 @@ export function getAuditLogs(options: {
   startDate?: string
   endDate?: string
   search?: string
-}) {
-  const db = getDb()
-  const conditions: string[] = ['tenant_id = ?']
-  const params: any[] = [options.tenantId]
+}): Promise<{
+  data: Array<Record<string, unknown>>
+  meta: { total: number; limit: number; offset: number }
+}> {
+  const limit = options.limit ?? 100
+  const offset = options.offset ?? 0
 
-  if (options.category) {
-    conditions.push("category = ?")
-    params.push(options.category)
-  }
+  const where: Prisma.AuditLogWhereInput = { tenantId: options.tenantId }
+  if (options.category) where.category = options.category
+  if (options.action) where.action = options.action
+  if (options.userId) where.userId = options.userId
+  if (options.resourceType) where.resourceType = options.resourceType
+  if (options.resourceId) where.resourceId = options.resourceId
+  if (options.status) where.status = options.status
 
-  if (options.action) {
-    conditions.push("action = ?")
-    params.push(options.action)
-  }
-
-  if (options.userId) {
-    conditions.push("user_id = ?")
-    params.push(options.userId)
-  }
-
-  if (options.resourceType) {
-    conditions.push("resource_type = ?")
-    params.push(options.resourceType)
-  }
-
-  if (options.resourceId) {
-    conditions.push("resource_id = ?")
-    params.push(options.resourceId)
-  }
-
-  if (options.status) {
-    conditions.push("status = ?")
-    params.push(options.status)
-  }
-
-  if (options.startDate) {
-    conditions.push("timestamp >= ?")
-    params.push(options.startDate)
-  }
-
-  if (options.endDate) {
-    conditions.push("timestamp <= ?")
-    params.push(options.endDate)
+  if (options.startDate || options.endDate) {
+    const ts: Prisma.DateTimeFilter = {}
+    if (options.startDate) ts.gte = new Date(options.startDate)
+    if (options.endDate) ts.lte = new Date(options.endDate)
+    where.timestamp = ts
   }
 
   if (options.search) {
-    conditions.push("(user_email LIKE ? OR resource_name LIKE ? OR action LIKE ?)")
-    const searchPattern = `%${options.search}%`
-
-    params.push(searchPattern, searchPattern, searchPattern)
+    // Mirror the legacy LIKE %term% across user_email / resource_name / action.
+    // Postgres supports `mode: 'insensitive'`; we keep it case-sensitive here
+    // to stay byte-for-byte compatible with the SQLite behaviour. Flip the
+    // mode flag once the consumer is confirmed insensitive-friendly.
+    const term = options.search
+    where.OR = [
+      { userEmail: { contains: term } },
+      { resourceName: { contains: term } },
+      { action: { contains: term } },
+    ]
   }
 
-  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : ""
-  const limit = options.limit || 100
-  const offset = options.offset || 0
+  const [total, rows] = await Promise.all([
+    prisma.auditLog.count({ where }),
+    prisma.auditLog.findMany({
+      where,
+      orderBy: { timestamp: "desc" },
+      take: limit,
+      skip: offset,
+    }),
+  ])
 
-  // Récupérer le total
-  const countResult = db
-    .prepare(`SELECT COUNT(*) as count FROM audit_logs ${whereClause}`)
-    .get(...params) as { count: number }
+  // Re-map Prisma camelCase + JSONB → legacy SQLite snake_case + JSON-string
+  // shape so the public response wire contract is unchanged.
+  const data = rows.map(row => ({
+    id: row.id,
+    timestamp: row.timestamp.toISOString(),
+    user_id: row.userId,
+    user_email: row.userEmail,
+    action: row.action,
+    category: row.category,
+    resource_type: row.resourceType,
+    resource_id: row.resourceId,
+    resource_name: row.resourceName,
+    details: row.details === null || row.details === undefined ? null : JSON.stringify(row.details),
+    ip_address: row.ipAddress,
+    user_agent: row.userAgent,
+    status: row.status,
+    error_message: row.errorMessage,
+    tenant_id: row.tenantId,
+  }))
 
-  // Récupérer les logs
-  const logs = db
-    .prepare(
-      `SELECT * FROM audit_logs ${whereClause} ORDER BY timestamp DESC LIMIT ? OFFSET ?`
-    )
-    .all(...params, limit, offset)
-
-  return {
-    data: logs,
-    meta: {
-      total: countResult.count,
-      limit,
-      offset,
-    },
-  }
+  return { data, meta: { total, limit, offset } }
 }

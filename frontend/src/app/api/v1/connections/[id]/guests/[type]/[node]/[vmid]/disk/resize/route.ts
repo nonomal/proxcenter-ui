@@ -49,7 +49,7 @@ export async function POST(
 
     const tenantId = await getCurrentTenantId()
     try {
-      const vdcInfo = resolveVdcForTenant(tenantId, id, node)
+      const vdcInfo = await resolveVdcForTenant(tenantId, id, node)
 
       if (vdcInfo) {
         const deltaMb = parseSizeDeltaMb(size)

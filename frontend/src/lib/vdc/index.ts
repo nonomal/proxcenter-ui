@@ -1,9 +1,8 @@
 // src/lib/vdc/index.ts
-// vDC CRUD library with PVE pool integration
+// vDC CRUD library with PVE pool integration (Postgres / Prisma).
 
 import { randomUUID } from 'crypto'
 
-import { getDb } from '@/lib/db/sqlite'
 import { pveFetch } from '@/lib/proxmox/client'
 import { pbsFetch } from '@/lib/proxmox/pbs-client'
 import { getConnectionById } from '@/lib/connections/getConnection'
@@ -28,47 +27,63 @@ export type { Vdc, VdcWithDetails, VdcQuota, VdcUsage, CreateVdcInput, UpdateVdc
 // Row mapping helpers
 // ---------------------------------------------------------------------------
 
-function rowToVdc(row: any): Vdc {
+type VdcRow = {
+  id: string
+  tenantId: string
+  connectionId: string
+  name: string
+  slug: string
+  description: string | null
+  pvePoolName: string
+  enabled: boolean | null
+  primaryStorage: string | null
+  sdnZoneName: string | null
+  createdBy: string | null
+  createdAt: Date
+  updatedAt: Date
+}
+
+function rowToVdc(row: VdcRow): Vdc {
   return {
     id: row.id,
-    tenantId: row.tenant_id,
-    connectionId: row.connection_id,
+    tenantId: row.tenantId,
+    connectionId: row.connectionId,
     name: row.name,
     slug: row.slug,
     description: row.description ?? null,
-    pvePoolName: row.pve_pool_name,
-    sdnZoneName: row.sdn_zone_name ?? null,
-    primaryStorage: row.primary_storage ?? null,
-    enabled: !!row.enabled,
-    createdBy: row.created_by ?? null,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
+    pvePoolName: row.pvePoolName,
+    sdnZoneName: row.sdnZoneName ?? null,
+    primaryStorage: row.primaryStorage ?? null,
+    enabled: row.enabled !== false,
+    createdBy: row.createdBy ?? null,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
   }
 }
 
 function rowToQuota(row: any): VdcQuota | null {
   if (!row) return null
   return {
-    maxVcpus: row.max_vcpus ?? null,
-    maxRamMb: row.max_ram_mb ?? null,
-    maxStorageMb: row.max_storage_mb ?? null,
-    maxVms: row.max_vms ?? null,
-    maxSnapshots: row.max_snapshots ?? null,
-    maxBackups: row.max_backups ?? null,
-    maxVnets: row.max_vnets ?? null,
+    maxVcpus: row.maxVcpus ?? null,
+    maxRamMb: row.maxRamMb ?? null,
+    maxStorageMb: row.maxStorageMb ?? null,
+    maxVms: row.maxVms ?? null,
+    maxSnapshots: row.maxSnapshots ?? null,
+    maxBackups: row.maxBackups ?? null,
+    maxVnets: row.maxVnets ?? null,
   }
 }
 
 function rowToUsage(row: any): VdcUsage | null {
   if (!row) return null
   return {
-    usedVcpus: row.used_vcpus ?? 0,
-    usedRamMb: row.used_ram_mb ?? 0,
-    usedStorageMb: row.used_storage_mb ?? 0,
-    usedVms: row.used_vms ?? 0,
-    usedSnapshots: row.used_snapshots ?? 0,
-    usedBackups: row.used_backups ?? 0,
-    lastSyncedAt: row.last_synced_at ?? null,
+    usedVcpus: row.usedVcpus ?? 0,
+    usedRamMb: row.usedRamMb ?? 0,
+    usedStorageMb: row.usedStorageMb ?? 0,
+    usedVms: row.usedVms ?? 0,
+    usedSnapshots: row.usedSnapshots ?? 0,
+    usedBackups: row.usedBackups ?? 0,
+    lastSyncedAt: row.lastSyncedAt?.toISOString() ?? null,
   }
 }
 
@@ -83,188 +98,67 @@ async function getConnectionOwnerTenantId(connectionId: string): Promise<string>
   return conn.tenantId
 }
 
-// ---------------------------------------------------------------------------
-// listVdcs
-// ---------------------------------------------------------------------------
-
-export function listVdcs(tenantId?: string): VdcWithDetails[] {
-  const db = getDb()
-
-  const baseQuery = `
-    SELECT v.*, t.name AS tenant_name
-    FROM vdcs v
-    LEFT JOIN tenants t ON t.id = v.tenant_id
-  `
-  const rows = tenantId
-    ? db.prepare(`${baseQuery} WHERE v.tenant_id = ? ORDER BY v.name`).all(tenantId)
-    : db.prepare(`${baseQuery} ORDER BY v.name`).all()
-
-  const stmtNodes = db.prepare('SELECT node_name FROM vdc_nodes WHERE vdc_id = ?')
-  const stmtStorages = db.prepare('SELECT storage_id FROM vdc_storages WHERE vdc_id = ?')
-  const stmtQuota = db.prepare('SELECT * FROM vdc_quotas WHERE vdc_id = ?')
-  const stmtUsage = db.prepare('SELECT * FROM vdc_usage_cache WHERE vdc_id = ?')
-  const stmtShared = db.prepare('SELECT id, vdc_id, bridge, label, created_at FROM vdc_shared_bridges WHERE vdc_id = ? ORDER BY bridge')
-  const stmtVnets = db.prepare(`
-    SELECT v.id, v.vdc_id, v.pve_name, v.display_name, v.description, v.vxlan_tag, v.firewall, v.created_by, v.created_at,
-           s.id AS subnet_id, s.cidr, s.gateway, s.dns_servers, s.ipam_enabled, s.created_at AS subnet_created_at
-    FROM vdc_vnets v
-    LEFT JOIN vdc_subnets s ON s.vnet_id = v.id
-    WHERE v.vdc_id = ?
-    ORDER BY v.pve_name
-  `)
-  const stmtPbs = db.prepare(
-    `SELECT b.id, b.vdc_id, b.pbs_connection_id, b.datastore, b.namespace, b.mode, b.created_at,
-            c.name AS pbs_name
-     FROM vdc_pbs_namespaces b
-     LEFT JOIN Connection c ON c.id = b.pbs_connection_id
-     WHERE b.vdc_id = ?
-     ORDER BY c.name, b.datastore, b.namespace`
-  )
-
-  return (rows as any[]).map((row) => {
-    const vdc = rowToVdc(row)
-    const nodes = (stmtNodes.all(vdc.id) as any[]).map((r) => r.node_name)
-    // VdcWithDetails.storages = the tenant's full storage scope. Today
-    // that's the primary VM-disk storage plus any PBS pseudo-storages
-    // bound to the vDC (kept in vdc_storages as `pbs:<id>` rows).
-    const pbsStorages = (stmtStorages.all(vdc.id) as any[]).map((r) => r.storage_id)
-    const storages = vdc.primaryStorage
-      ? [vdc.primaryStorage, ...pbsStorages.filter(s => s !== vdc.primaryStorage)]
-      : pbsStorages
-    const quota = rowToQuota(stmtQuota.get(vdc.id))
-    const usage = rowToUsage(stmtUsage.get(vdc.id))
-    const sharedBridges = (stmtShared.all(vdc.id) as any[]).map((r) => ({
-      id: r.id,
-      vdcId: r.vdc_id,
-      bridge: r.bridge,
-      label: r.label ?? null,
-      createdAt: r.created_at,
-    }))
-    const vnets = (stmtVnets.all(vdc.id) as any[]).map((r) => ({
-      id: r.id,
-      vdcId: r.vdc_id,
-      pveName: r.pve_name,
-      displayName: r.display_name ?? r.pve_name,
-      description: r.description ?? null,
-      vxlanTag: r.vxlan_tag,
-      firewall: !!r.firewall,
-      subnet: {
-        id: r.subnet_id,
-        vnetId: r.id,
-        cidr: r.cidr,
-        gateway: r.gateway,
-        dnsServers: r.dns_servers ? String(r.dns_servers).split(',').map((s: string) => s.trim()).filter(Boolean) : [],
-        ipamEnabled: !!r.ipam_enabled,
-        createdAt: r.subnet_created_at,
-      },
-      createdBy: r.created_by ?? null,
-      createdAt: r.created_at,
-    }))
-    const pbsBindings = (stmtPbs.all(vdc.id) as any[]).map((r) => ({
-      id: r.id,
-      vdcId: r.vdc_id,
-      pbsConnectionId: r.pbs_connection_id,
-      pbsConnectionName: r.pbs_name ?? r.pbs_connection_id,
-      datastore: r.datastore,
-      namespace: r.namespace,
-      mode: (r.mode ?? 'auto') as 'auto' | 'manual',
-      createdAt: r.created_at,
-    }))
-
-    return {
-      ...vdc,
-      tenantName: row.tenant_name ?? undefined,
-      nodes,
-      storages,
-      quota,
-      usage,
-      sharedBridges,
-      vnets,
-      pbsBindings,
-    } as VdcWithDetails
-  })
-}
-
-// ---------------------------------------------------------------------------
-// getVdcById
-// ---------------------------------------------------------------------------
-
-export function getVdcById(id: string): VdcWithDetails | null {
-  const db = getDb()
-
-  const row = db.prepare(`
-    SELECT v.*, t.name AS tenant_name
-    FROM vdcs v
-    LEFT JOIN tenants t ON t.id = v.tenant_id
-    WHERE v.id = ?
-  `).get(id) as any
-
-  if (!row) return null
-
+/**
+ * Project a Prisma vDC row (with all child relations included) into the
+ * VdcWithDetails wire shape consumed by the frontend. Matches the legacy
+ * SQLite output column-for-column.
+ */
+function buildVdcWithDetails(row: any, pbsConnNames?: Map<string, string>): VdcWithDetails {
   const vdc = rowToVdc(row)
-  const nodes = (db.prepare('SELECT node_name FROM vdc_nodes WHERE vdc_id = ?').all(id) as any[]).map((r) => r.node_name)
-  // See listVdcs: storages = primary VM-disk storage + PBS pseudo-storages.
-  const pbsStorages = (db.prepare('SELECT storage_id FROM vdc_storages WHERE vdc_id = ?').all(id) as any[]).map((r) => r.storage_id)
+  const nodes = row.nodes.map((n: any) => n.nodeName)
+  // VdcWithDetails.storages = primary VM-disk storage + PBS pseudo-storages
+  // (kept in vdc_storages as `pbs:<id>` rows by pbsOrchestrator).
+  const pbsStorages = row.storages.map((s: any) => s.storageId)
   const storages = vdc.primaryStorage
-    ? [vdc.primaryStorage, ...pbsStorages.filter(s => s !== vdc.primaryStorage)]
+    ? [vdc.primaryStorage, ...pbsStorages.filter((s: string) => s !== vdc.primaryStorage)]
     : pbsStorages
-  const quota = rowToQuota(db.prepare('SELECT * FROM vdc_quotas WHERE vdc_id = ?').get(id))
-  const usage = rowToUsage(db.prepare('SELECT * FROM vdc_usage_cache WHERE vdc_id = ?').get(id))
-  const sharedBridges = (db.prepare('SELECT id, vdc_id, bridge, label, created_at FROM vdc_shared_bridges WHERE vdc_id = ? ORDER BY bridge').all(id) as any[]).map((r) => ({
-    id: r.id,
-    vdcId: r.vdc_id,
-    bridge: r.bridge,
-    label: r.label ?? null,
-    createdAt: r.created_at,
+  const quota = rowToQuota(row.quota)
+  const usage = rowToUsage(row.usageCache)
+  const sharedBridges = row.sharedBridges.map((b: any) => ({
+    id: b.id,
+    vdcId: b.vdcId,
+    bridge: b.bridge,
+    label: b.label ?? null,
+    createdAt: b.createdAt.toISOString(),
   }))
-  const vnets = (db.prepare(`
-    SELECT v.id, v.vdc_id, v.pve_name, v.display_name, v.description, v.vxlan_tag, v.firewall, v.created_by, v.created_at,
-           s.id AS subnet_id, s.cidr, s.gateway, s.dns_servers, s.ipam_enabled, s.created_at AS subnet_created_at
-    FROM vdc_vnets v
-    LEFT JOIN vdc_subnets s ON s.vnet_id = v.id
-    WHERE v.vdc_id = ?
-    ORDER BY v.pve_name
-  `).all(id) as any[]).map((r) => ({
-    id: r.id,
-    vdcId: r.vdc_id,
-    pveName: r.pve_name,
-    displayName: r.display_name ?? r.pve_name,
-    description: r.description ?? null,
-    vxlanTag: r.vxlan_tag,
-    firewall: !!r.firewall,
-    subnet: {
-      id: r.subnet_id,
-      vnetId: r.id,
-      cidr: r.cidr,
-      gateway: r.gateway,
-      dnsServers: r.dns_servers ? String(r.dns_servers).split(',').map((s: string) => s.trim()).filter(Boolean) : [],
-      ipamEnabled: !!r.ipam_enabled,
-      createdAt: r.subnet_created_at,
-    },
-    createdBy: r.created_by ?? null,
-    createdAt: r.created_at,
+  const vnets = row.vnets.map((v: any) => ({
+    id: v.id,
+    vdcId: v.vdcId,
+    pveName: v.pveName,
+    displayName: v.displayName ?? v.pveName,
+    description: v.description ?? null,
+    vxlanTag: v.vxlanTag,
+    firewall: v.firewall !== false,
+    subnet: v.subnet
+      ? {
+          id: v.subnet.id,
+          vnetId: v.id,
+          cidr: v.subnet.cidr,
+          gateway: v.subnet.gateway,
+          dnsServers: v.subnet.dnsServers
+            ? String(v.subnet.dnsServers).split(',').map((s: string) => s.trim()).filter(Boolean)
+            : [],
+          ipamEnabled: v.subnet.ipamEnabled !== false,
+          createdAt: v.subnet.createdAt.toISOString(),
+        }
+      : null,
+    createdBy: v.createdBy ?? null,
+    createdAt: v.createdAt.toISOString(),
   }))
-  const pbsBindings = (db.prepare(
-    `SELECT b.id, b.vdc_id, b.pbs_connection_id, b.datastore, b.namespace, b.mode, b.created_at,
-            c.name AS pbs_name
-     FROM vdc_pbs_namespaces b
-     LEFT JOIN Connection c ON c.id = b.pbs_connection_id
-     WHERE b.vdc_id = ?
-     ORDER BY c.name, b.datastore, b.namespace`
-  ).all(id) as any[]).map((r) => ({
-    id: r.id,
-    vdcId: r.vdc_id,
-    pbsConnectionId: r.pbs_connection_id,
-    pbsConnectionName: r.pbs_name ?? r.pbs_connection_id,
-    datastore: r.datastore,
-    namespace: r.namespace,
-    mode: (r.mode ?? 'auto') as 'auto' | 'manual',
-    createdAt: r.created_at,
+  const pbsBindings = row.pbsNamespaces.map((b: any) => ({
+    id: b.id,
+    vdcId: b.vdcId,
+    pbsConnectionId: b.pbsConnectionId,
+    pbsConnectionName: pbsConnNames?.get(b.pbsConnectionId) ?? b.pbsConnectionId,
+    datastore: b.datastore,
+    namespace: b.namespace,
+    mode: (b.mode ?? 'auto') as 'auto' | 'manual',
+    createdAt: b.createdAt.toISOString(),
   }))
 
   return {
     ...vdc,
-    tenantName: row.tenant_name ?? undefined,
+    tenantName: row.tenant?.name ?? undefined,
     nodes,
     storages,
     quota,
@@ -275,31 +169,110 @@ export function getVdcById(id: string): VdcWithDetails | null {
   }
 }
 
+const vdcWithDetailsInclude = {
+  tenant: { select: { name: true } },
+  nodes: true,
+  storages: true,
+  quota: true,
+  usageCache: true,
+  sharedBridges: { orderBy: { bridge: 'asc' as const } },
+  vnets: {
+    include: { subnet: true },
+    orderBy: { pveName: 'asc' as const },
+  },
+  pbsNamespaces: true,
+} as const
+
+// ---------------------------------------------------------------------------
+// listVdcs
+// ---------------------------------------------------------------------------
+
+/** Fetch a map of connectionId → connection name for a set of PBS connection IDs. */
+async function fetchPbsConnNames(connIds: Set<string>): Promise<Map<string, string>> {
+  if (connIds.size === 0) return new Map()
+  const rows = await prisma.connection.findMany({
+    where: { id: { in: [...connIds] } },
+    select: { id: true, name: true },
+  })
+  return new Map(rows.map(r => [r.id, r.name]))
+}
+
+export async function listVdcs(tenantId?: string): Promise<VdcWithDetails[]> {
+  const rows = await prisma.vdc.findMany({
+    where: tenantId ? { tenantId } : undefined,
+    include: vdcWithDetailsInclude,
+    orderBy: { name: 'asc' },
+  })
+  // Collect all unique PBS connection IDs across all rows, then fetch names in one query.
+  const allPbsConnIds = new Set<string>()
+  for (const row of rows) {
+    for (const ns of row.pbsNamespaces) allPbsConnIds.add(ns.pbsConnectionId)
+  }
+  const pbsConnNames = await fetchPbsConnNames(allPbsConnIds)
+  // Sort PBS bindings client-side: connection name → datastore → namespace.
+  return rows.map(row => {
+    const sortedPbs = [...row.pbsNamespaces].sort((a, b) => {
+      const an = pbsConnNames.get(a.pbsConnectionId) ?? a.pbsConnectionId
+      const bn = pbsConnNames.get(b.pbsConnectionId) ?? b.pbsConnectionId
+      if (an !== bn) return an.localeCompare(bn)
+      if (a.datastore !== b.datastore) return a.datastore.localeCompare(b.datastore)
+      return a.namespace.localeCompare(b.namespace)
+    })
+    return buildVdcWithDetails({ ...row, pbsNamespaces: sortedPbs }, pbsConnNames)
+  })
+}
+
+// ---------------------------------------------------------------------------
+// getVdcById
+// ---------------------------------------------------------------------------
+
+export async function getVdcById(id: string): Promise<VdcWithDetails | null> {
+  const row = await prisma.vdc.findUnique({
+    where: { id },
+    include: vdcWithDetailsInclude,
+  })
+
+  if (!row) return null
+
+  const pbsConnNames = await fetchPbsConnNames(new Set(row.pbsNamespaces.map(ns => ns.pbsConnectionId)))
+  const sortedPbs = [...row.pbsNamespaces].sort((a, b) => {
+    const an = pbsConnNames.get(a.pbsConnectionId) ?? a.pbsConnectionId
+    const bn = pbsConnNames.get(b.pbsConnectionId) ?? b.pbsConnectionId
+    if (an !== bn) return an.localeCompare(bn)
+    if (a.datastore !== b.datastore) return a.datastore.localeCompare(b.datastore)
+    return a.namespace.localeCompare(b.namespace)
+  })
+
+  return buildVdcWithDetails({ ...row, pbsNamespaces: sortedPbs }, pbsConnNames)
+}
+
 // ---------------------------------------------------------------------------
 // createVdc
 // ---------------------------------------------------------------------------
 
 export async function createVdc(input: CreateVdcInput, createdBy: string | null): Promise<VdcWithDetails> {
-  const db = getDb()
-
-  // 1. Resolve tenant slug
-  const tenantRow = db.prepare('SELECT slug FROM tenants WHERE id = ?').get(input.tenantId) as any
+  // 1. Resolve tenant slug.
+  const tenantRow = await prisma.tenant.findUnique({
+    where: { id: input.tenantId },
+    select: { slug: true },
+  })
   if (!tenantRow) {
     throw new Error(`Tenant not found: ${input.tenantId}`)
   }
-  const tenantSlug = tenantRow.slug as string
+  const tenantSlug = tenantRow.slug
 
   // 2. Check slug uniqueness within tenant + connection
-  const existing = db.prepare(
-    'SELECT id FROM vdcs WHERE tenant_id = ? AND connection_id = ? AND slug = ?'
-  ).get(input.tenantId, input.connectionId, input.slug) as any
+  const existing = await prisma.vdc.findFirst({
+    where: { tenantId: input.tenantId, connectionId: input.connectionId, slug: input.slug },
+    select: { id: true },
+  })
   if (existing) {
     throw new Error(`A vDC with slug "${input.slug}" already exists for this tenant/connection`)
   }
 
   // 3. Allocate vDC id (needed for zone generation)
   const id = randomUUID()
-  const now = new Date().toISOString()
+  const now = new Date()
 
   // 4. Create PVE pool (existing behavior)
   const poolName = generatePoolName(tenantSlug, input.slug)
@@ -323,7 +296,7 @@ export async function createVdc(input: CreateVdcInput, createdBy: string | null)
   }
 
   // 5. Create SDN zone on PVE
-  const sdnZoneName = generateZoneName(input.connectionId, { id, slug: input.slug })
+  const sdnZoneName = await generateZoneName(input.connectionId, { id, slug: input.slug })
   try {
     await createZone(conn, sdnZoneName)
   } catch (err: any) {
@@ -333,62 +306,81 @@ export async function createVdc(input: CreateVdcInput, createdBy: string | null)
     throw new Error(`Failed to create SDN zone: ${err?.message}`)
   }
 
-  // 6. DB transaction
-  const insertVdc = db.prepare(`
-    INSERT INTO vdcs (id, tenant_id, connection_id, name, slug, description, pve_pool_name, sdn_zone_name, primary_storage, enabled, created_by, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
-  `)
-  const insertNode = db.prepare('INSERT INTO vdc_nodes (id, vdc_id, node_name) VALUES (?, ?, ?)')
-  const insertQuota = db.prepare(`
-    INSERT INTO vdc_quotas (id, vdc_id, max_vcpus, max_ram_mb, max_storage_mb, max_vms, max_snapshots, max_backups, max_vnets, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `)
-  const insertUsage = db.prepare(`
-    INSERT INTO vdc_usage_cache (id, vdc_id, used_vcpus, used_ram_mb, used_storage_mb, used_vms, used_snapshots, used_backups, last_synced_at)
-    VALUES (?, ?, 0, 0, 0, 0, 0, 0, NULL)
-  `)
-
-  const runTransaction = db.transaction(() => {
-    insertVdc.run(
-      id, input.tenantId, input.connectionId, input.name, input.slug,
-      input.description ?? null, poolName, sdnZoneName, input.primaryStorage, createdBy, now, now
-    )
-
-    for (const nodeName of input.nodes) {
-      insertNode.run(randomUUID(), id, nodeName)
-    }
-
-    // The legacy `vdc_storages` table is no longer used for the vDC's
-    // VM disk storage — that lives in `vdcs.primary_storage` now. The
-    // table is kept around for PBS pseudo-storage rows inserted by
-    // pbsOrchestrator.bindPbsToVdc.
-
-    if (input.quota) {
-      insertQuota.run(
-        randomUUID(), id,
-        input.quota.maxVcpus ?? null,
-        input.quota.maxRamMb ?? null,
-        input.quota.maxStorageMb ?? null,
-        input.quota.maxVms ?? null,
-        input.quota.maxSnapshots ?? null,
-        input.quota.maxBackups ?? null,
-        input.quota.maxVnets ?? null,
-        now
-      )
-    }
-
-    const insertShared = db.prepare(
-      'INSERT INTO vdc_shared_bridges (id, vdc_id, bridge, label, created_at) VALUES (?, ?, ?, ?, ?)'
-    )
-    for (const sb of input.sharedBridges ?? []) {
-      insertShared.run(randomUUID(), id, sb.bridge, sb.label ?? null, now)
-    }
-
-    insertUsage.run(randomUUID(), id)
-  })
-
+  // 6. DB transaction (Prisma)
   try {
-    runTransaction()
+    await prisma.$transaction(async tx => {
+      await tx.vdc.create({
+        data: {
+          id,
+          tenantId: input.tenantId,
+          connectionId: input.connectionId,
+          name: input.name,
+          slug: input.slug,
+          description: input.description ?? null,
+          pvePoolName: poolName,
+          sdnZoneName,
+          primaryStorage: input.primaryStorage ?? null,
+          enabled: true,
+          createdBy,
+          createdAt: now,
+          updatedAt: now,
+        },
+      })
+
+      if (input.nodes.length > 0) {
+        await tx.vdcNode.createMany({
+          data: input.nodes.map(nodeName => ({ id: randomUUID(), vdcId: id, nodeName })),
+        })
+      }
+
+      // The legacy `vdc_storages` table is no longer used for the vDC's
+      // VM disk storage — that lives in `vdcs.primary_storage` now. The
+      // table is kept around for PBS pseudo-storage rows inserted by
+      // pbsOrchestrator.bindPbsToVdc.
+
+      if (input.quota) {
+        await tx.vdcQuota.create({
+          data: {
+            id: randomUUID(),
+            vdcId: id,
+            maxVcpus: input.quota.maxVcpus ?? null,
+            maxRamMb: input.quota.maxRamMb ?? null,
+            maxStorageMb: input.quota.maxStorageMb ?? null,
+            maxVms: input.quota.maxVms ?? null,
+            maxSnapshots: input.quota.maxSnapshots ?? null,
+            maxBackups: input.quota.maxBackups ?? null,
+            maxVnets: input.quota.maxVnets ?? null,
+            updatedAt: now,
+          },
+        })
+      }
+
+      if (input.sharedBridges && input.sharedBridges.length > 0) {
+        await tx.vdcSharedBridge.createMany({
+          data: input.sharedBridges.map(sb => ({
+            id: randomUUID(),
+            vdcId: id,
+            bridge: sb.bridge,
+            label: sb.label ?? null,
+            createdAt: now,
+          })),
+        })
+      }
+
+      await tx.vdcUsageCache.create({
+        data: {
+          id: randomUUID(),
+          vdcId: id,
+          usedVcpus: 0,
+          usedRamMb: 0,
+          usedStorageMb: 0,
+          usedVms: 0,
+          usedSnapshots: 0,
+          usedBackups: 0,
+          lastSyncedAt: null,
+        },
+      })
+    })
   } catch (err: any) {
     // DB transaction failed - rollback PVE resources to avoid orphans
     try { await deleteZone(conn, sdnZoneName) } catch {}
@@ -405,7 +397,7 @@ export async function createVdc(input: CreateVdcInput, createdBy: string | null)
     console.warn(`[vdc] applySdn failed after creating zone "${sdnZoneName}": ${err?.message}`)
   }
 
-  return getVdcById(id)!
+  return (await getVdcById(id))!
 }
 
 // ---------------------------------------------------------------------------
@@ -413,89 +405,77 @@ export async function createVdc(input: CreateVdcInput, createdBy: string | null)
 // ---------------------------------------------------------------------------
 
 export async function updateVdc(id: string, input: UpdateVdcInput): Promise<VdcWithDetails> {
-  const db = getDb()
-
   // Verify vDC exists
-  const existing = db.prepare('SELECT id FROM vdcs WHERE id = ?').get(id) as any
+  const existing = await prisma.vdc.findUnique({ where: { id }, select: { id: true } })
   if (!existing) {
     throw new Error(`vDC not found: ${id}`)
   }
 
-  const now = new Date().toISOString()
+  const now = new Date()
 
-  const updateVdcStmt = db.prepare(`
-    UPDATE vdcs SET
-      name = COALESCE(?, name),
-      description = COALESCE(?, description),
-      enabled = COALESCE(?, enabled),
-      primary_storage = COALESCE(?, primary_storage),
-      updated_at = ?
-    WHERE id = ?
-  `)
+  await prisma.$transaction(async tx => {
+    const updateData: Record<string, unknown> = { updatedAt: now }
+    if (input.name !== undefined) updateData.name = input.name
+    if (input.description !== undefined) updateData.description = input.description
+    if (input.enabled !== undefined) updateData.enabled = input.enabled
+    if (input.primaryStorage !== undefined) updateData.primaryStorage = input.primaryStorage
 
-  const deleteNodes = db.prepare('DELETE FROM vdc_nodes WHERE vdc_id = ?')
-  const insertNode = db.prepare('INSERT INTO vdc_nodes (id, vdc_id, node_name) VALUES (?, ?, ?)')
-
-  // Upsert quota: try UPDATE first, INSERT if no row exists
-  const upsertQuota = db.prepare(`
-    INSERT INTO vdc_quotas (id, vdc_id, max_vcpus, max_ram_mb, max_storage_mb, max_vms, max_snapshots, max_backups, max_vnets, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(vdc_id) DO UPDATE SET
-      max_vcpus = excluded.max_vcpus,
-      max_ram_mb = excluded.max_ram_mb,
-      max_storage_mb = excluded.max_storage_mb,
-      max_vms = excluded.max_vms,
-      max_snapshots = excluded.max_snapshots,
-      max_backups = excluded.max_backups,
-      max_vnets = excluded.max_vnets,
-      updated_at = excluded.updated_at
-  `)
-
-  const runTransaction = db.transaction(() => {
-    updateVdcStmt.run(
-      input.name ?? null,
-      input.description ?? null,
-      input.enabled !== undefined ? (input.enabled ? 1 : 0) : null,
-      input.primaryStorage ?? null,
-      now,
-      id
-    )
+    await tx.vdc.update({ where: { id }, data: updateData })
 
     if (input.nodes) {
-      deleteNodes.run(id)
-      for (const nodeName of input.nodes) {
-        insertNode.run(randomUUID(), id, nodeName)
+      await tx.vdcNode.deleteMany({ where: { vdcId: id } })
+      if (input.nodes.length > 0) {
+        await tx.vdcNode.createMany({
+          data: input.nodes.map(nodeName => ({ id: randomUUID(), vdcId: id, nodeName })),
+        })
       }
     }
 
     if (input.sharedBridges) {
-      db.prepare('DELETE FROM vdc_shared_bridges WHERE vdc_id = ?').run(id)
-      const insertShared = db.prepare(
-        'INSERT INTO vdc_shared_bridges (id, vdc_id, bridge, label, created_at) VALUES (?, ?, ?, ?, ?)'
-      )
-      for (const sb of input.sharedBridges) {
-        insertShared.run(randomUUID(), id, sb.bridge, sb.label ?? null, now)
+      await tx.vdcSharedBridge.deleteMany({ where: { vdcId: id } })
+      if (input.sharedBridges.length > 0) {
+        await tx.vdcSharedBridge.createMany({
+          data: input.sharedBridges.map(sb => ({
+            id: randomUUID(),
+            vdcId: id,
+            bridge: sb.bridge,
+            label: sb.label ?? null,
+            createdAt: now,
+          })),
+        })
       }
     }
 
     if (input.quota) {
-      upsertQuota.run(
-        randomUUID(), id,
-        input.quota.maxVcpus ?? null,
-        input.quota.maxRamMb ?? null,
-        input.quota.maxStorageMb ?? null,
-        input.quota.maxVms ?? null,
-        input.quota.maxSnapshots ?? null,
-        input.quota.maxBackups ?? null,
-        input.quota.maxVnets ?? null,
-        now
-      )
+      await tx.vdcQuota.upsert({
+        where: { vdcId: id },
+        update: {
+          maxVcpus: input.quota.maxVcpus ?? null,
+          maxRamMb: input.quota.maxRamMb ?? null,
+          maxStorageMb: input.quota.maxStorageMb ?? null,
+          maxVms: input.quota.maxVms ?? null,
+          maxSnapshots: input.quota.maxSnapshots ?? null,
+          maxBackups: input.quota.maxBackups ?? null,
+          maxVnets: input.quota.maxVnets ?? null,
+          updatedAt: now,
+        },
+        create: {
+          id: randomUUID(),
+          vdcId: id,
+          maxVcpus: input.quota.maxVcpus ?? null,
+          maxRamMb: input.quota.maxRamMb ?? null,
+          maxStorageMb: input.quota.maxStorageMb ?? null,
+          maxVms: input.quota.maxVms ?? null,
+          maxSnapshots: input.quota.maxSnapshots ?? null,
+          maxBackups: input.quota.maxBackups ?? null,
+          maxVnets: input.quota.maxVnets ?? null,
+          updatedAt: now,
+        },
+      })
     }
   })
 
-  runTransaction()
-
-  return getVdcById(id)!
+  return (await getVdcById(id))!
 }
 
 // ---------------------------------------------------------------------------
@@ -503,14 +483,12 @@ export async function updateVdc(id: string, input: UpdateVdcInput): Promise<VdcW
 // ---------------------------------------------------------------------------
 
 export async function deleteVdc(id: string): Promise<void> {
-  const db = getDb()
-
   // 1. Load vDC from DB
-  const row = db.prepare('SELECT * FROM vdcs WHERE id = ?').get(id) as any
+  const row = await prisma.vdc.findUnique({ where: { id } })
   if (!row) {
     throw new Error(`vDC not found: ${id}`)
   }
-  const vdc = rowToVdc(row)
+  const vdc = rowToVdc(row as VdcRow)
 
   // 2. Check PVE pool for VMs
   const connOwnerTenantId = await getConnectionOwnerTenantId(vdc.connectionId)
@@ -570,26 +548,17 @@ export async function deleteVdc(id: string): Promise<void> {
   }
 
   // 3. Delete all VNets in the vDC zone (best effort).
-  //    Cascade order matters on PVE: subnet → vnet → zone. Skipping the
-  //    subnet leaves PVE with "vnet has subnets" → vnet delete fails →
-  //    zone delete fails because the vnet is still attached. Each helper
-  //    is idempotent (404 / "does not exist" tolerated) so external drift
-  //    doesn't block the rest of the cascade.
   if (vdc.sdnZoneName) {
-    const vnetRows = db.prepare(`
-      SELECT v.id AS vnet_id, v.pve_name
-      FROM vdc_vnets v
-      WHERE v.vdc_id = ?
-    `).all(id) as Array<{ vnet_id: string; pve_name: string }>
-
-    // No PVE-side subnet to drop anymore — subnets only live in our DB and
-    // are removed by the vdc_vnets ON DELETE CASCADE / vdc_subnets cascade.
+    const vnetRows = await prisma.vdcVnet.findMany({
+      where: { vdcId: id },
+      select: { pveName: true },
+    })
 
     for (const v of vnetRows) {
       try {
-        await deleteVnetPve(conn, v.pve_name)
+        await deleteVnetPve(conn, v.pveName)
       } catch (err: any) {
-        console.warn(`[vdc] Failed to delete VNet "${v.pve_name}": ${err?.message}`)
+        console.warn(`[vdc] Failed to delete VNet "${v.pveName}": ${err?.message}`)
       }
     }
 
@@ -617,34 +586,12 @@ export async function deleteVdc(id: string): Promise<void> {
     }
   }
 
-  // 6. Delete from DB.
-  //
-  // The schema declares ON DELETE CASCADE on every child table, but
-  // `PRAGMA foreign_keys = ON` is NOT enabled at db init — better-sqlite3
-  // defaults to OFF, so the cascade clauses are decorative. Without
-  // these explicit DELETEs, deleting a vDC leaves orphan rows in
-  // vdc_nodes, vdc_storages, vdc_quotas, vdc_usage_cache,
-  // vdc_shared_bridges, vdc_vnets, vdc_subnets and vdc_ipam_allocations
-  // — functionally inert (nothing queries them once the parent vDC is
-  // gone) but they accumulate and pollute the IPAM count queries on
-  // any future vDC reusing the same subnet IDs.
-  //
-  // Wrapped in a transaction so a partial failure leaves the DB
-  // consistent. PBS namespaces are intentionally NOT deleted here —
-  // the unbindFromVdc loop in step 1 already handles them, including
-  // the PVE-side `pbs:` storage + sub-token cleanup we don't want to
-  // duplicate.
-  db.transaction(() => {
-    db.prepare('DELETE FROM vdc_ipam_allocations WHERE vdc_id = ?').run(id)
-    db.prepare('DELETE FROM vdc_subnets WHERE vnet_id IN (SELECT id FROM vdc_vnets WHERE vdc_id = ?)').run(id)
-    db.prepare('DELETE FROM vdc_vnets WHERE vdc_id = ?').run(id)
-    db.prepare('DELETE FROM vdc_shared_bridges WHERE vdc_id = ?').run(id)
-    db.prepare('DELETE FROM vdc_usage_cache WHERE vdc_id = ?').run(id)
-    db.prepare('DELETE FROM vdc_quotas WHERE vdc_id = ?').run(id)
-    db.prepare('DELETE FROM vdc_storages WHERE vdc_id = ?').run(id)
-    db.prepare('DELETE FROM vdc_nodes WHERE vdc_id = ?').run(id)
-    db.prepare('DELETE FROM vdcs WHERE id = ?').run(id)
-  })()
+  // 6. Delete from DB. Postgres FK cascades drop child rows automatically
+  // (Prisma schema declares onDelete: Cascade for every vdc_* child table).
+  // PBS namespaces are intentionally NOT deleted here — the unbindFromVdc
+  // loop in step 1 already handles them, including the PVE-side `pbs:`
+  // storage + sub-token cleanup we don't want to duplicate.
+  await prisma.vdc.delete({ where: { id } })
 }
 
 // ---------------------------------------------------------------------------
@@ -652,14 +599,12 @@ export async function deleteVdc(id: string): Promise<void> {
 // ---------------------------------------------------------------------------
 
 export async function refreshVdcUsage(vdcId: string): Promise<VdcUsage> {
-  const db = getDb()
-
   // 1. Load vDC
-  const row = db.prepare('SELECT * FROM vdcs WHERE id = ?').get(vdcId) as any
+  const row = await prisma.vdc.findUnique({ where: { id: vdcId } })
   if (!row) {
     throw new Error(`vDC not found: ${vdcId}`)
   }
-  const vdc = rowToVdc(row)
+  const vdc = rowToVdc(row as VdcRow)
 
   // 2. Get connection (use the connection's owner tenantId, not the vDC's tenantId)
   const connOwnerTenantId = await getConnectionOwnerTenantId(vdc.connectionId)
@@ -696,10 +641,7 @@ export async function refreshVdcUsage(vdcId: string): Promise<VdcUsage> {
       const ghosts = vmMembers.filter(m => !validIds.has(`${m.type}/${m.vmid}`))
       vmMembers = vmMembers.filter(m => validIds.has(`${m.type}/${m.vmid}`))
 
-      // Best-effort cleanup of ghost references on the PVE pool. PVE
-      // accepts PUT /pools/<poolname> with `delete=1` + `vms=<id>` to
-      // remove a member. We do them sequentially to avoid PVE locking
-      // issues on the same pool config.
+      // Best-effort cleanup of ghost references on the PVE pool.
       for (const g of ghosts) {
         try {
           await pveFetch(conn, `/pools/${encodeURIComponent(vdc.pvePoolName)}`, {
@@ -721,7 +663,7 @@ export async function refreshVdcUsage(vdcId: string): Promise<VdcUsage> {
   let usedVcpus = 0
   let usedRamMb = 0
   let usedStorageMb = 0
-  let usedVms = vmMembers.length
+  const usedVms = vmMembers.length
   let usedSnapshots = 0
   let usedBackups = 0
 
@@ -746,24 +688,21 @@ export async function refreshVdcUsage(vdcId: string): Promise<VdcUsage> {
     }
   }
 
-  // 7. Count backups across the vDC's PBS bindings. Each binding pins a
-  //    (PBS connection, datastore, namespace) tuple; we list snapshots
-  //    in that namespace and keep only those whose backup-id matches a
-  //    vmid in the vDC pool. Failures on a single PBS are skipped — a
-  //    flaky PBS shouldn't blank the whole usage refresh.
+  // 7. Count backups across the vDC's PBS bindings.
   const vmidSet = new Set(vmMembers.map(vm => String(vm.vmid)))
   if (vmidSet.size > 0) {
-    const bindings = db.prepare(
-      `SELECT pbs_connection_id, datastore, namespace FROM vdc_pbs_namespaces WHERE vdc_id = ?`
-    ).all(vdcId) as Array<{ pbs_connection_id: string; datastore: string; namespace: string }>
+    const bindings = await prisma.vdcPbsNamespace.findMany({
+      where: { vdcId },
+      select: { pbsConnectionId: true, datastore: true, namespace: true },
+    })
 
     // Group by PBS connection so we authenticate / decrypt once per PBS
     // instead of per binding.
     const byPbs = new Map<string, Array<{ datastore: string; namespace: string }>>()
     for (const b of bindings) {
-      const list = byPbs.get(b.pbs_connection_id) || []
+      const list = byPbs.get(b.pbsConnectionId) || []
       list.push({ datastore: b.datastore, namespace: b.namespace })
-      byPbs.set(b.pbs_connection_id, list)
+      byPbs.set(b.pbsConnectionId, list)
     }
 
     for (const [pbsId, locations] of byPbs.entries()) {
@@ -801,20 +740,31 @@ export async function refreshVdcUsage(vdcId: string): Promise<VdcUsage> {
   }
 
   // 8. Upsert into vdc_usage_cache
-  const now = new Date().toISOString()
+  const now = new Date()
 
-  db.prepare(`
-    INSERT INTO vdc_usage_cache (id, vdc_id, used_vcpus, used_ram_mb, used_storage_mb, used_vms, used_snapshots, used_backups, last_synced_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(vdc_id) DO UPDATE SET
-      used_vcpus = excluded.used_vcpus,
-      used_ram_mb = excluded.used_ram_mb,
-      used_storage_mb = excluded.used_storage_mb,
-      used_vms = excluded.used_vms,
-      used_snapshots = excluded.used_snapshots,
-      used_backups = excluded.used_backups,
-      last_synced_at = excluded.last_synced_at
-  `).run(randomUUID(), vdcId, usedVcpus, usedRamMb, usedStorageMb, usedVms, usedSnapshots, usedBackups, now)
+  await prisma.vdcUsageCache.upsert({
+    where: { vdcId },
+    update: {
+      usedVcpus,
+      usedRamMb,
+      usedStorageMb,
+      usedVms,
+      usedSnapshots,
+      usedBackups,
+      lastSyncedAt: now,
+    },
+    create: {
+      id: randomUUID(),
+      vdcId,
+      usedVcpus,
+      usedRamMb,
+      usedStorageMb,
+      usedVms,
+      usedSnapshots,
+      usedBackups,
+      lastSyncedAt: now,
+    },
+  })
 
   return {
     usedVcpus,
@@ -823,6 +773,6 @@ export async function refreshVdcUsage(vdcId: string): Promise<VdcUsage> {
     usedVms,
     usedSnapshots,
     usedBackups,
-    lastSyncedAt: now,
+    lastSyncedAt: now.toISOString(),
   }
 }

@@ -32,7 +32,7 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
     // vdcs.connection_id, PBS via vdc_pbs_namespaces). Mutations stay
     // tenant-scoped via getSessionPrisma() in PATCH/DELETE below.
     const tenantId = await getCurrentTenantId()
-    const vdcScope = getVdcScope(tenantId)
+    const vdcScope = await getVdcScope(tenantId)
 
     const connection = await globalPrisma.connection.findUnique({
       where: { id },

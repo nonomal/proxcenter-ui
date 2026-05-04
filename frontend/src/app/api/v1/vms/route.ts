@@ -118,12 +118,12 @@ return []
     const rbacCtx = await getRBACContext()
 
     if (rbacCtx && !rbacCtx.isAdmin) {
-      allVms = filterVmsByPermission(rbacCtx.userId, allVms, PERMISSIONS.VM_VIEW, rbacCtx.tenantId)
+      allVms = await filterVmsByPermission(rbacCtx.userId, allVms, PERMISSIONS.VM_VIEW, rbacCtx.tenantId)
     }
 
     // vDC filtering: restrict VMs to those in the tenant's vDC pools
     const tenantId = await getCurrentTenantId()
-    const vdcScope = getVdcScope(tenantId)
+    const vdcScope = await getVdcScope(tenantId)
 
     if (vdcScope) {
       allVms = allVms.filter(vm => {

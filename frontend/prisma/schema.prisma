@@ -3,7 +3,7 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
 }
 
 // ============================================
@@ -13,26 +13,26 @@ datasource db {
 // ============================================
 
 model Connection {
-  id          String  @id @default(cuid())
-  tenantId    String  @default("default") @map("tenant_id")
-  name        String
-  type        String  @default("pve")
+  id               String  @id @default(cuid())
+  tenantId         String  @default("default") @map("tenant_id")
+  name             String
+  type             String  @default("pve")
   subType          String? @map("sub_type")
   vmwareDatacenter String? @map("vmware_datacenter")
   hypervShareName  String? @map("hyperv_share_name")
-  baseUrl      String
-  behindProxy  Boolean @default(false)
-  insecureTLS  Boolean @default(false)
-  hasCeph     Boolean @default(false)
-  latitude      Float?
-  longitude     Float?
-  locationLabel String?
-  country       String?  // ISO-3166-1 alpha-2 (e.g. "FR", "DE"). Optional, set in /settings?tab=connections.
-  apiTokenEnc String
-  fingerprint String?   // SHA256 cert fingerprint; populated for PBS connections
+  baseUrl          String
+  behindProxy      Boolean @default(false)
+  insecureTLS      Boolean @default(false)
+  hasCeph          Boolean @default(false)
+  latitude         Float?
+  longitude        Float?
+  locationLabel    String?
+  country          String? // ISO-3166-1 alpha-2 (e.g. "FR", "DE"). Optional, set in /settings?tab=connections.
+  apiTokenEnc      String
+  fingerprint      String? // SHA256 cert fingerprint; populated for PBS connections
 
   // Custom ProxCenter tags (semicolon-separated)
-  tags          String?
+  tags String?
 
   // SSH fields
   sshEnabled    Boolean @default(false)
@@ -47,6 +47,12 @@ model Connection {
   updatedAt DateTime @updatedAt
 
   hosts ManagedHost[]
+
+  // Back-references for the green-IT datacentre overrides. Required by
+  // Prisma's relation declaration on ConnectionGreenConfig / NodeGreenConfig
+  // — they let the FKs exist without needing to be queried from this side.
+  greenConfig     ConnectionGreenConfig?
+  nodeGreenConfig NodeGreenConfig[]
 }
 
 model ManagedHost {
@@ -73,7 +79,7 @@ model DashboardLayout {
   tenantId  String   @default("default") @map("tenant_id")
   userId    String   @default("default")
   name      String   @default("custom")
-  widgets   String   // JSON array of widgets
+  widgets   String // JSON array of widgets
   isActive  Boolean  @default(true)
   sortOrder Int      @default(0) @map("sort_order")
   createdAt DateTime @default(now())
@@ -83,25 +89,25 @@ model DashboardLayout {
 }
 
 model Alert {
-  id             String    @id @default(cuid())
-  tenantId       String    @default("default") @map("tenant_id")
-  fingerprint    String
+  id          String @id @default(cuid())
+  tenantId    String @default("default") @map("tenant_id")
+  fingerprint String
 
   // Alert info
-  severity       String
-  message        String
-  source         String
-  sourceType     String    @default("pve") @map("source_type")
+  severity   String
+  message    String
+  source     String
+  sourceType String @default("pve") @map("source_type")
 
   // Entity info
-  entityType     String?   @map("entity_type")
-  entityId       String?   @map("entity_id")
-  entityName     String?   @map("entity_name")
+  entityType String? @map("entity_type")
+  entityId   String? @map("entity_id")
+  entityName String? @map("entity_name")
 
   // Metric info
-  metric         String?
-  currentValue   Float?    @map("current_value")
-  threshold      Float?
+  metric       String?
+  currentValue Float?  @map("current_value")
+  threshold    Float?
 
   // Status tracking
   status         String    @default("active")
@@ -112,28 +118,31 @@ model Alert {
   acknowledgedBy String?   @map("acknowledged_by")
   resolvedAt     DateTime? @map("resolved_at")
 
-  createdAt      DateTime  @default(now()) @map("created_at")
-  updatedAt      DateTime  @updatedAt @map("updated_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
 
+  @@unique([tenantId, fingerprint])
   @@index([status])
   @@index([severity])
   @@index([source])
   @@index([lastSeenAt])
-  @@unique([tenantId, fingerprint])
   @@index([status, severity, lastSeenAt])
-  @@map("alerts")
+  // Renamed from "alerts" → "frontend_alerts" during the SQLite → Postgres
+  // consolidation. The backend orchestrator owns its own `alerts` table; this
+  // rename keeps both alert systems on a single DB without colliding.
+  @@map("frontend_alerts")
 }
 
 model AlertSilence {
-  id           String    @id @default(cuid())
-  tenantId     String    @default("default") @map("tenant_id")
-  fingerprint  String
-  silencedBy   String    @map("silenced_by")
-  silencedAt   DateTime  @default(now()) @map("silenced_at")
+  id            String    @id @default(cuid())
+  tenantId      String    @default("default") @map("tenant_id")
+  fingerprint   String
+  silencedBy    String    @map("silenced_by")
+  silencedAt    DateTime  @default(now()) @map("silenced_at")
   silencedUntil DateTime? @map("silenced_until")
-  reason       String?
+  reason        String?
 
-  createdAt    DateTime  @default(now()) @map("created_at")
+  createdAt DateTime @default(now()) @map("created_at")
 
   @@unique([tenantId, fingerprint])
   @@index([silencedUntil])
@@ -177,13 +186,14 @@ model Blueprint {
   name        String
   description String?
   imageSlug   String   @map("image_slug")
-  hardware    String   // JSON: { cores, sockets, memory, diskSize, scsihw, networkModel, networkBridge, vlanTag, ostype, agent, cpu }
+  hardware    String // JSON: { cores, sockets, memory, diskSize, scsihw, networkModel, networkBridge, vlanTag, ostype, agent, cpu }
   cloudInit   String?  @map("cloud_init") // JSON: { ciuser, sshKeys, ipconfig0, nameserver, searchdomain }
   tags        String?
   isPublic    Boolean  @default(true) @map("is_public")
   createdBy   String?  @map("created_by")
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
+
   @@map("blueprints")
 }
 
@@ -197,7 +207,7 @@ model Deployment {
   vmid          Int
   vmName        String?   @map("vm_name")
   imageSlug     String?   @map("image_slug")
-  config        String?   // JSON: full deploy config for retry { storage, hardware, cloudInit }
+  config        String? // JSON: full deploy config for retry { storage, hardware, cloudInit }
   status        String    @default("pending") // pending|downloading|creating|configuring|starting|completed|failed
   currentStep   String?   @map("current_step")
   error         String?
@@ -206,54 +216,758 @@ model Deployment {
   completedAt   DateTime? @map("completed_at")
   createdAt     DateTime  @default(now()) @map("created_at")
   updatedAt     DateTime  @updatedAt @map("updated_at")
+
   @@index([status])
   @@index([connectionId])
   @@map("deployments")
 }
 
 model MigrationJob {
-  id                  String    @id @default(cuid())
-  tenantId            String    @default("default") @map("tenant_id")
+  id       String @id @default(cuid())
+  tenantId String @default("default") @map("tenant_id")
 
   // Source (ESXi)
-  sourceConnectionId  String    @map("source_connection_id")
-  sourceVmId          String    @map("source_vm_id")
-  sourceVmName        String?   @map("source_vm_name")
-  sourceHost          String?   @map("source_host")
+  sourceConnectionId String  @map("source_connection_id")
+  sourceVmId         String  @map("source_vm_id")
+  sourceVmName       String? @map("source_vm_name")
+  sourceHost         String? @map("source_host")
 
   // Target (Proxmox)
-  targetConnectionId  String    @map("target_connection_id")
-  targetNode          String    @map("target_node")
-  targetStorage       String    @map("target_storage")
-  targetVmid          Int?      @map("target_vmid")
+  targetConnectionId String @map("target_connection_id")
+  targetNode         String @map("target_node")
+  targetStorage      String @map("target_storage")
+  targetVmid         Int?   @map("target_vmid")
 
   // Full config for retry
-  config              String?
+  config String?
 
   // Status tracking
-  status              String    @default("pending") // pending|preflight|creating_vm|transferring|configuring|completed|failed|cancelled
-  currentStep         String?   @map("current_step")
-  progress            Int       @default(0)
-  totalDisks          Int?      @map("total_disks")
-  currentDisk         Int?      @map("current_disk")
-  bytesTransferred    BigInt?   @map("bytes_transferred")
-  totalBytes          BigInt?   @map("total_bytes")
-  transferSpeed       String?   @map("transfer_speed")
-  error               String?
+  status           String  @default("pending") // pending|preflight|creating_vm|transferring|configuring|completed|failed|cancelled
+  currentStep      String? @map("current_step")
+  progress         Int     @default(0)
+  totalDisks       Int?    @map("total_disks")
+  currentDisk      Int?    @map("current_disk")
+  bytesTransferred BigInt? @map("bytes_transferred")
+  totalBytes       BigInt? @map("total_bytes")
+  transferSpeed    String? @map("transfer_speed")
+  error            String?
 
   // Logs
-  logs                String?   // JSON array of log entries
+  logs String? // JSON array of log entries
 
   // Timing
-  startedAt           DateTime? @map("started_at")
-  completedAt         DateTime? @map("completed_at")
-  createdAt           DateTime  @default(now()) @map("created_at")
-  updatedAt           DateTime  @updatedAt @map("updated_at")
+  startedAt   DateTime? @map("started_at")
+  completedAt DateTime? @map("completed_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
 
-  createdBy           String?   @map("created_by")
+  createdBy String? @map("created_by")
 
   @@index([status])
   @@index([sourceConnectionId])
   @@index([targetConnectionId])
   @@map("migration_jobs")
+}
+
+// ============================================================================
+// Models ported from lib/db/sqlite.ts during the SQLite → Postgres migration.
+// Each section mirrors postgres-migration-inventory.md §1.1–1.6.
+//
+// Conventions:
+//   - PascalCase model names; snake_case @@map for the table.
+//   - camelCase Prisma fields; snake_case @map for the column.
+//   - DateTime with @default(now()) replaces SQLite's TEXT + datetime('now').
+//   - Boolean replaces SQLite's INTEGER 0/1.
+//   - Json (JSONB on Postgres) replaces TEXT columns that hold JSON payloads.
+//   - tenant_id stays a plain String when there is no FK in the source schema.
+// ============================================================================
+
+// ─────────────── §1.1 Identity / authn ───────────────
+
+model User {
+  id           String    @id
+  tenantId     String    @default("default") @map("tenant_id")
+  email        String    @unique
+  password     String?
+  name         String?
+  avatar       String?
+  role         String    @default("viewer")
+  authProvider String    @default("credentials") @map("auth_provider")
+  ldapDn       String?   @map("ldap_dn")
+  oidcSub      String?   @map("oidc_sub")
+  enabled      Boolean   @default(true)
+  lastLoginAt  DateTime? @map("last_login_at")
+  createdAt    DateTime  @map("created_at")
+  updatedAt    DateTime  @map("updated_at")
+
+  sessions            Session[]
+  tenants             UserTenant[]
+  rolesAssigned       RbacUserRole[]       @relation("RbacUserRoleUser")
+  rolesGranted        RbacUserRole[]       @relation("RbacUserRoleGrantedBy")
+  permissionsAssigned RbacUserPermission[] @relation("RbacUserPermissionUser")
+  permissionsGranted  RbacUserPermission[] @relation("RbacUserPermissionGrantedBy")
+
+  @@index([tenantId])
+  @@map("users")
+}
+
+model Session {
+  id        String   @id
+  userId    String   @map("user_id")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token     String   @unique
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @map("created_at")
+  ipAddress String?  @map("ip_address")
+  userAgent String?  @map("user_agent")
+
+  @@index([userId])
+  @@index([token])
+  @@index([expiresAt])
+  @@map("sessions")
+}
+
+model AuditLog {
+  id           String   @id
+  tenantId     String   @default("default") @map("tenant_id")
+  timestamp    DateTime
+  userId       String?  @map("user_id")
+  userEmail    String?  @map("user_email")
+  action       String
+  category     String
+  resourceType String?  @map("resource_type")
+  resourceId   String?  @map("resource_id")
+  resourceName String?  @map("resource_name")
+  // JSON payload describing the action's parameters / before-after snapshot.
+  // Stored as TEXT in SQLite, promoted to JSONB on Postgres (locked decision §4).
+  details      Json?
+  ipAddress    String?  @map("ip_address")
+  userAgent    String?  @map("user_agent")
+  status       String   @default("success")
+  errorMessage String?  @map("error_message")
+
+  @@index([timestamp])
+  @@index([userId])
+  @@index([action])
+  @@index([category])
+  @@index([resourceType, resourceId])
+  @@index([tenantId])
+  @@map("audit_logs")
+}
+
+model LdapConfig {
+  id               String   @id @default("default")
+  tenantId         String   @default("default") @map("tenant_id")
+  enabled          Boolean  @default(false)
+  url              String
+  bindDn           String?  @map("bind_dn")
+  bindPasswordEnc  String?  @map("bind_password_enc")
+  baseDn           String   @map("base_dn")
+  userFilter       String   @default("(uid={{username}})") @map("user_filter")
+  emailAttribute   String   @default("mail") @map("email_attribute")
+  nameAttribute    String   @default("cn") @map("name_attribute")
+  tlsInsecure      Boolean  @default(false) @map("tls_insecure")
+  startTls         Boolean  @default(false) @map("start_tls")
+  groupAttribute   String?  @default("memberOf") @map("group_attribute")
+  // JSON object: { "<group_dn>": "<role_id>", ... }. Empty default '{}'.
+  groupRoleMapping Json     @default("{}") @map("group_role_mapping")
+  defaultRole      String?  @default("role_viewer") @map("default_role")
+  requireGroup     Boolean  @default(false) @map("require_group")
+  // JSON array of group DNs allowed to authenticate. Empty default '[]'.
+  allowedGroups    Json     @default("[]") @map("allowed_groups")
+  createdAt        DateTime @map("created_at")
+  updatedAt        DateTime @map("updated_at")
+
+  @@index([tenantId])
+  @@map("ldap_config")
+}
+
+model OidcConfig {
+  id               String   @id @default("default")
+  tenantId         String   @default("default") @map("tenant_id")
+  enabled          Boolean  @default(false)
+  providerName     String   @default("SSO") @map("provider_name")
+  issuerUrl        String   @default("") @map("issuer_url")
+  clientId         String   @default("") @map("client_id")
+  clientSecretEnc  String?  @map("client_secret_enc")
+  scopes           String   @default("openid profile email")
+  authorizationUrl String?  @map("authorization_url")
+  tokenUrl         String?  @map("token_url")
+  userinfoUrl      String?  @map("userinfo_url")
+  claimEmail       String   @default("email") @map("claim_email")
+  claimName        String   @default("name") @map("claim_name")
+  claimGroups      String?  @default("groups") @map("claim_groups")
+  autoProvision    Boolean  @default(true) @map("auto_provision")
+  defaultRole      String   @default("viewer") @map("default_role")
+  // JSON object mapping IdP group claims to internal role names.
+  groupRoleMapping Json     @default("{}") @map("group_role_mapping")
+  createdAt        DateTime @map("created_at")
+  updatedAt        DateTime @map("updated_at")
+
+  @@index([tenantId])
+  @@map("oidc_config")
+}
+
+// ─────────────── §1.2 Multi-tenancy ───────────────
+
+model Tenant {
+  id          String   @id
+  slug        String   @unique
+  name        String
+  description String?
+  enabled     Boolean  @default(true)
+  // Free-form per-tenant settings (theme, feature flags, ...). JSONB.
+  settings    Json?
+  createdBy   String?  @map("created_by")
+  createdAt   DateTime @map("created_at")
+  updatedAt   DateTime @map("updated_at")
+
+  members UserTenant[]
+  vdcs    Vdc[]
+
+  @@index([slug])
+  @@map("tenants")
+}
+
+model UserTenant {
+  userId    String   @map("user_id")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenantId  String   @map("tenant_id")
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  isDefault Boolean  @default(false) @map("is_default")
+  joinedAt  DateTime @map("joined_at")
+
+  @@id([userId, tenantId])
+  @@index([userId])
+  @@index([tenantId])
+  @@map("user_tenants")
+}
+
+model Setting {
+  key       String
+  tenantId  String   @default("default") @map("tenant_id")
+  // Stored as TEXT in SQLite (often serialised JSON). Migrating to plain TEXT
+  // on Postgres preserves call-site behaviour; future cleanup can split typed
+  // columns or move to JSONB on a per-key basis.
+  value     String
+  updatedAt DateTime @default(now()) @map("updated_at")
+
+  @@id([key, tenantId])
+  @@unique([key, tenantId], map: "idx_settings_key_tenant")
+  @@map("settings")
+}
+
+// ─────────────── §1.3 RBAC ───────────────
+
+model RbacRole {
+  id          String   @id
+  name        String   @unique
+  description String?
+  isSystem    Boolean  @default(false) @map("is_system")
+  color       String?  @default("#6366f1")
+  createdAt   DateTime @map("created_at")
+  updatedAt   DateTime @map("updated_at")
+
+  permissions RbacRolePermission[]
+  userRoles   RbacUserRole[]
+
+  @@index([name])
+  @@index([isSystem])
+  @@map("rbac_roles")
+}
+
+model RbacPermission {
+  id          String   @id
+  name        String   @unique
+  category    String
+  description String?
+  isDangerous Boolean  @default(false) @map("is_dangerous")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  roles           RbacRolePermission[]
+  userPermissions RbacUserPermission[]
+
+  @@index([category])
+  @@map("rbac_permissions")
+}
+
+model RbacRolePermission {
+  roleId       String         @map("role_id")
+  role         RbacRole       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permissionId String         @map("permission_id")
+  permission   RbacPermission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@map("rbac_role_permissions")
+}
+
+model RbacUserRole {
+  id          String    @id
+  userId      String    @map("user_id")
+  user        User      @relation("RbacUserRoleUser", fields: [userId], references: [id], onDelete: Cascade)
+  roleId      String    @map("role_id")
+  role        RbacRole  @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  scopeType   String    @default("global") @map("scope_type")
+  scopeTarget String?   @map("scope_target")
+  tenantId    String    @default("default") @map("tenant_id")
+  grantedById String?   @map("granted_by")
+  grantedBy   User?     @relation("RbacUserRoleGrantedBy", fields: [grantedById], references: [id], onDelete: SetNull)
+  grantedAt   DateTime  @map("granted_at")
+  expiresAt   DateTime? @map("expires_at")
+
+  @@index([userId])
+  @@index([roleId])
+  @@index([scopeType, scopeTarget])
+  @@index([tenantId])
+  @@map("rbac_user_roles")
+}
+
+model RbacUserPermission {
+  id           String         @id
+  userId       String         @map("user_id")
+  user         User           @relation("RbacUserPermissionUser", fields: [userId], references: [id], onDelete: Cascade)
+  permissionId String         @map("permission_id")
+  permission   RbacPermission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+  scopeType    String         @default("global") @map("scope_type")
+  scopeTarget  String?        @map("scope_target")
+  tenantId     String         @default("default") @map("tenant_id")
+  grantedById  String?        @map("granted_by")
+  grantedBy    User?          @relation("RbacUserPermissionGrantedBy", fields: [grantedById], references: [id], onDelete: SetNull)
+  grantedAt    DateTime       @map("granted_at")
+  expiresAt    DateTime?      @map("expires_at")
+
+  @@index([userId])
+  @@index([scopeType, scopeTarget])
+  @@index([tenantId])
+  @@map("rbac_user_permissions")
+}
+
+// ─────────────── §1.4 vDC ───────────────
+
+model Vdc {
+  id             String   @id
+  tenantId       String   @map("tenant_id")
+  tenant         Tenant   @relation(fields: [tenantId], references: [id])
+  connectionId   String   @map("connection_id")
+  name           String
+  slug           String
+  description    String?
+  pvePoolName    String   @map("pve_pool_name")
+  enabled        Boolean? @default(true)
+  primaryStorage String?  @map("primary_storage")
+  sdnZoneName    String?  @map("sdn_zone_name")
+  createdBy      String?  @map("created_by")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @default(now()) @map("updated_at")
+
+  nodes         VdcNode[]
+  storages      VdcStorage[]
+  quota         VdcQuota?
+  usageCache    VdcUsageCache?
+  sharedBridges VdcSharedBridge[]
+  vnets         VdcVnet[]
+  ipam          VdcIpamAllocation[]
+  pbsNamespaces VdcPbsNamespace[]
+
+  @@unique([tenantId, connectionId, slug])
+  @@unique([connectionId, sdnZoneName], map: "idx_vdcs_sdn_zone_name")
+  @@index([tenantId])
+  @@index([connectionId])
+  @@map("vdcs")
+}
+
+model VdcNode {
+  id       String @id
+  vdcId    String @map("vdc_id")
+  vdc      Vdc    @relation(fields: [vdcId], references: [id], onDelete: Cascade)
+  nodeName String @map("node_name")
+
+  @@unique([vdcId, nodeName])
+  @@index([vdcId])
+  @@map("vdc_nodes")
+}
+
+// Legacy multi-row whitelist of allowed storages per vDC. Replaced for VM
+// disks by Vdc.primaryStorage; today the table only holds PBS pseudo-storage
+// bindings. Kept for parity per locked decision §3 (drop after a follow-up
+// audit confirms zero callers).
+model VdcStorage {
+  id        String @id
+  vdcId     String @map("vdc_id")
+  vdc       Vdc    @relation(fields: [vdcId], references: [id], onDelete: Cascade)
+  storageId String @map("storage_id")
+
+  @@unique([vdcId, storageId])
+  @@index([vdcId])
+  @@map("vdc_storages")
+}
+
+model VdcQuota {
+  id           String   @id
+  vdcId        String   @unique @map("vdc_id")
+  vdc          Vdc      @relation(fields: [vdcId], references: [id], onDelete: Cascade)
+  maxVcpus     Int?     @map("max_vcpus")
+  maxRamMb     Int?     @map("max_ram_mb")
+  maxStorageMb Int?     @map("max_storage_mb")
+  maxVms       Int?     @map("max_vms")
+  maxSnapshots Int?     @map("max_snapshots")
+  maxBackups   Int?     @map("max_backups")
+  maxVnets     Int?     @map("max_vnets")
+  updatedAt    DateTime @default(now()) @map("updated_at")
+
+  @@map("vdc_quotas")
+}
+
+model VdcUsageCache {
+  id            String    @id
+  vdcId         String    @unique @map("vdc_id")
+  vdc           Vdc       @relation(fields: [vdcId], references: [id], onDelete: Cascade)
+  usedVcpus     Int       @default(0) @map("used_vcpus")
+  usedRamMb     Int       @default(0) @map("used_ram_mb")
+  usedStorageMb Int       @default(0) @map("used_storage_mb")
+  usedVms       Int       @default(0) @map("used_vms")
+  usedSnapshots Int       @default(0) @map("used_snapshots")
+  usedBackups   Int       @default(0) @map("used_backups")
+  lastSyncedAt  DateTime? @map("last_synced_at")
+
+  @@map("vdc_usage_cache")
+}
+
+model VdcSharedBridge {
+  id        String   @id
+  vdcId     String   @map("vdc_id")
+  vdc       Vdc      @relation(fields: [vdcId], references: [id], onDelete: Cascade)
+  bridge    String
+  label     String?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@unique([vdcId, bridge])
+  @@index([vdcId])
+  @@map("vdc_shared_bridges")
+}
+
+model VdcVnet {
+  id          String   @id
+  vdcId       String   @map("vdc_id")
+  vdc         Vdc      @relation(fields: [vdcId], references: [id], onDelete: Cascade)
+  pveName     String   @map("pve_name")
+  displayName String?  @map("display_name")
+  description String?
+  vxlanTag    Int      @map("vxlan_tag")
+  firewall    Boolean? @default(true)
+  createdBy   String?  @map("created_by")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  subnet VdcSubnet?
+  ipam   VdcIpamAllocation[]
+
+  @@unique([vdcId, pveName])
+  @@unique([vdcId, vxlanTag])
+  @@unique([vdcId, displayName], map: "idx_vdc_vnets_display_name")
+  @@index([vdcId])
+  @@map("vdc_vnets")
+}
+
+model VdcSubnet {
+  id          String   @id
+  vnetId      String   @unique @map("vnet_id")
+  vnet        VdcVnet  @relation(fields: [vnetId], references: [id], onDelete: Cascade)
+  cidr        String
+  gateway     String
+  // Comma-separated list, optional.
+  dnsServers  String?  @map("dns_servers")
+  ipamEnabled Boolean  @default(true) @map("ipam_enabled")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  ipam VdcIpamAllocation[]
+
+  @@index([vnetId])
+  @@map("vdc_subnets")
+}
+
+model VdcIpamAllocation {
+  id           String    @id
+  vdcId        String    @map("vdc_id")
+  vdc          Vdc       @relation(fields: [vdcId], references: [id], onDelete: Cascade)
+  subnetId     String    @map("subnet_id")
+  subnet       VdcSubnet @relation(fields: [subnetId], references: [id], onDelete: Cascade)
+  vnetId       String    @map("vnet_id")
+  vnet         VdcVnet   @relation(fields: [vnetId], references: [id], onDelete: Cascade)
+  // Denormalised connection_id so the VM-delete hook can release in one query.
+  connectionId String    @map("connection_id")
+  ip           String
+  // uint32 representation of the IP. SQLite stored it as INTEGER (any size);
+  // Postgres `Int` (int4) overflows above 2.1 billion, so this column is
+  // promoted to BigInt to safely hold values up to 4.3 billion (255.255.255.255).
+  ipInt        BigInt    @map("ip_int")
+  mac          String
+  vmid         Int?
+  hostname     String?
+  createdAt    DateTime  @default(now()) @map("created_at")
+
+  @@unique([subnetId, ip])
+  @@unique([subnetId, mac])
+  @@index([vdcId])
+  @@index([subnetId])
+  @@index([connectionId, vmid])
+  @@map("vdc_ipam_allocations")
+}
+
+model VdcPbsNamespace {
+  id              String   @id
+  vdcId           String   @map("vdc_id")
+  vdc             Vdc      @relation(fields: [vdcId], references: [id], onDelete: Cascade)
+  pbsConnectionId String   @map("pbs_connection_id")
+  datastore       String
+  namespace       String
+  mode            String   @default("auto")
+  pbsTokenId      String?  @map("pbs_token_id")
+  pbsTokenSecret  String?  @map("pbs_token_secret")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  pveStorages VdcPbsPveStorage[]
+
+  @@unique([pbsConnectionId, datastore, namespace])
+  @@index([vdcId])
+  @@map("vdc_pbs_namespaces")
+}
+
+model VdcPbsPveStorage {
+  id                String          @id
+  vdcPbsNamespaceId String          @map("vdc_pbs_namespace_id")
+  vdcPbsNamespace   VdcPbsNamespace @relation(fields: [vdcPbsNamespaceId], references: [id], onDelete: Cascade)
+  pveConnectionId   String          @map("pve_connection_id")
+  pveStorageName    String          @map("pve_storage_name")
+  managed           Boolean         @default(true)
+  createdAt         DateTime        @default(now()) @map("created_at")
+
+  @@unique([pveConnectionId, pveStorageName])
+  @@index([vdcPbsNamespaceId])
+  @@map("vdc_pbs_pve_storages")
+}
+
+// ─────────────── §1.5 Alerts (legacy frontend system) ───────────────
+
+model AlertRule {
+  id          String   @id
+  tenantId    String   @default("default") @map("tenant_id")
+  name        String
+  description String?
+  enabled     Boolean  @default(true)
+  metric      String
+  operator    String
+  threshold   Float
+  duration    Int      @default(0)
+  severity    String   @default("warning")
+  scopeType   String   @default("all") @map("scope_type")
+  scopeTarget String?  @map("scope_target")
+  createdAt   DateTime @map("created_at")
+  updatedAt   DateTime @map("updated_at")
+
+  instances AlertInstance[]
+
+  @@index([enabled])
+  @@index([metric])
+  @@index([tenantId])
+  @@map("alert_rules")
+}
+
+model AlertInstance {
+  id             String    @id
+  tenantId       String    @default("default") @map("tenant_id")
+  ruleId         String    @map("rule_id")
+  rule           AlertRule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+  status         String    @default("active")
+  entityType     String    @map("entity_type")
+  entityId       String    @map("entity_id")
+  entityName     String?   @map("entity_name")
+  node           String?
+  connectionId   String?   @map("connection_id")
+  connectionName String?   @map("connection_name")
+  metric         String
+  currentValue   Float?    @map("current_value")
+  threshold      Float
+  severity       String
+  message        String
+  triggeredAt    DateTime  @map("triggered_at")
+  resolvedAt     DateTime? @map("resolved_at")
+  acknowledgedAt DateTime? @map("acknowledged_at")
+  acknowledgedBy String?   @map("acknowledged_by")
+
+  @@index([status])
+  @@index([ruleId])
+  @@index([triggeredAt])
+  @@index([entityType, entityId])
+  @@index([tenantId])
+  @@map("alert_instances")
+}
+
+// Maps a backend orchestrator alert rule to the tenant that authored it. The
+// orchestrator (Go) doesn't track tenant ownership on its rules, so we record
+// it here at POST time and use it at GET time to scope both the rule list and
+// the resulting alerts.
+model AlertRuleOwner {
+  ruleId    String   @id @map("rule_id")
+  tenantId  String   @map("tenant_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([tenantId])
+  @@map("alert_rule_owners")
+}
+
+// ─────────────── §1.6 Misc / domain ───────────────
+
+model Favorite {
+  id           String   @id
+  tenantId     String   @default("default") @map("tenant_id")
+  userId       String   @map("user_id")
+  vmKey        String   @map("vm_key")
+  connectionId String   @map("connection_id")
+  node         String
+  vmType       String   @map("vm_type")
+  vmid         String
+  vmName       String?  @map("vm_name")
+  createdAt    DateTime @map("created_at")
+
+  @@unique([userId, vmKey])
+  @@index([userId])
+  @@index([vmKey])
+  @@index([tenantId])
+  @@map("favorites")
+}
+
+model HealthScoreHistory {
+  id           String   @id
+  tenantId     String   @default("default") @map("tenant_id")
+  date         String   @unique
+  score        Int
+  cpuPct       Float?   @map("cpu_pct")
+  ramPct       Float?   @map("ram_pct")
+  storagePct   Float?   @map("storage_pct")
+  // Free-form JSON detail snapshot.
+  details      Json?
+  connectionId String?  @map("connection_id")
+  createdAt    DateTime @map("created_at")
+
+  @@index([date])
+  @@index([tenantId])
+  @@map("health_score_history")
+}
+
+model SecurityPolicy {
+  id                          String   @id @default("default")
+  tenantId                    String   @default("default") @map("tenant_id")
+  passwordMinLength           Int      @default(8) @map("password_min_length")
+  passwordRequireUppercase    Boolean  @default(false) @map("password_require_uppercase")
+  passwordRequireLowercase    Boolean  @default(false) @map("password_require_lowercase")
+  passwordRequireNumbers      Boolean  @default(false) @map("password_require_numbers")
+  passwordRequireSpecial      Boolean  @default(false) @map("password_require_special")
+  sessionTimeoutMinutes       Int      @default(43200) @map("session_timeout_minutes")
+  sessionMaxConcurrent        Int      @default(0) @map("session_max_concurrent")
+  loginMaxFailedAttempts      Int      @default(0) @map("login_max_failed_attempts")
+  loginLockoutDurationMinutes Int      @default(15) @map("login_lockout_duration_minutes")
+  auditRetentionDays          Int      @default(90) @map("audit_retention_days")
+  auditAutoCleanup            Boolean  @default(false) @map("audit_auto_cleanup")
+  updatedAt                   DateTime @map("updated_at")
+  updatedBy                   String?  @map("updated_by")
+
+  @@index([tenantId])
+  @@map("security_policies")
+}
+
+model ComplianceProfile {
+  id           String   @id
+  tenantId     String   @default("default") @map("tenant_id")
+  name         String
+  description  String?
+  frameworkId  String?  @map("framework_id")
+  isActive     Boolean  @default(false) @map("is_active")
+  connectionId String?  @map("connection_id")
+  createdBy    String?  @map("created_by")
+  createdAt    DateTime @map("created_at")
+  updatedAt    DateTime @map("updated_at")
+
+  checks ComplianceProfileCheck[]
+
+  @@index([isActive])
+  @@index([connectionId])
+  @@index([tenantId])
+  @@map("compliance_profiles")
+}
+
+model ComplianceProfileCheck {
+  id         String            @id
+  tenantId   String            @default("default") @map("tenant_id")
+  profileId  String            @map("profile_id")
+  profile    ComplianceProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  checkId    String            @map("check_id")
+  enabled    Boolean           @default(true)
+  weight     Float             @default(1.0)
+  controlRef String?           @map("control_ref")
+  category   String?
+
+  @@index([profileId])
+  @@index([tenantId])
+  @@map("compliance_profile_checks")
+}
+
+// Multi-DC Green-IT (Phase A) — provider-managed datacentre catalogue.
+// idx_datacenters_default is a PARTIAL UNIQUE INDEX (`WHERE is_default = 1`)
+// in SQLite. Prisma cannot express partial unique indexes today, so the
+// constraint is recreated by a hand-written ALTER in the baseline migration.
+// See postgres-migration-inventory.md step 1.3.
+model Datacenter {
+  id               String   @id
+  tenantId         String   @default("default") @map("tenant_id")
+  name             String
+  locationLabel    String?  @map("location_label")
+  country          String?
+  latitude         Float?
+  longitude        Float?
+  pue              Float    @default(1.4)
+  electricityPrice Float    @default(0.18) @map("electricity_price")
+  currency         String   @default("EUR")
+  co2Factor        Float    @default(0.052) @map("co2_factor")
+  co2CountryPreset String?  @map("co2_country_preset")
+  tdpPerCoreW      Float    @default(10) @map("tdp_per_core_w")
+  wattsPerGbRam    Float    @default(0.375) @map("watts_per_gb_ram")
+  overheadPerNodeW Float    @default(50) @map("overhead_per_node_w")
+  comment          String?
+  isDefault        Boolean  @default(false) @map("is_default")
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @default(now()) @map("updated_at")
+
+  connectionGreen ConnectionGreenConfig[]
+  nodeGreen       NodeGreenConfig[]
+
+  @@index([tenantId])
+  @@map("datacenters")
+}
+
+model ConnectionGreenConfig {
+  connectionId     String      @id @map("connection_id")
+  connection       Connection  @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  datacenterId     String?     @map("datacenter_id")
+  datacenter       Datacenter? @relation(fields: [datacenterId], references: [id], onDelete: SetNull)
+  tdpPerCoreW      Float?      @map("tdp_per_core_w")
+  wattsPerGbRam    Float?      @map("watts_per_gb_ram")
+  overheadPerNodeW Float?      @map("overhead_per_node_w")
+  updatedAt        DateTime    @default(now()) @map("updated_at")
+
+  @@map("connection_green_config")
+}
+
+model NodeGreenConfig {
+  connectionId     String      @map("connection_id")
+  connection       Connection  @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  nodeName         String      @map("node_name")
+  datacenterId     String?     @map("datacenter_id")
+  datacenter       Datacenter? @relation(fields: [datacenterId], references: [id], onDelete: SetNull)
+  tdpPerCoreW      Float?      @map("tdp_per_core_w")
+  wattsPerGbRam    Float?      @map("watts_per_gb_ram")
+  overheadPerNodeW Float?      @map("overhead_per_node_w")
+  updatedAt        DateTime    @default(now()) @map("updated_at")
+
+  @@id([connectionId, nodeName])
+  @@map("node_green_config")
 }

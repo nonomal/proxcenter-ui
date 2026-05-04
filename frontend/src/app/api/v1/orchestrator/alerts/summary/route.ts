@@ -42,7 +42,7 @@ export async function GET(req: Request) {
 
     const tenantConnectionIds = await getTenantConnectionIds()
     const tenantId = await getCurrentTenantId()
-    const vdcScope = getVdcScope(tenantId)
+    const vdcScope = await getVdcScope(tenantId)
 
     // Fetch all alerts to recompute summary from tenant-filtered data
     const response = await alertsApi.getAlerts({ limit: 1000, offset: 0 })

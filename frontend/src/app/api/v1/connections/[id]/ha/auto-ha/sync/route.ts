@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server"
 
-import { getDb } from "@/lib/db/sqlite"
+import { getSetting } from "@/lib/db/settings"
 import { pveFetch } from "@/lib/proxmox/client"
 import { getConnectionById } from "@/lib/connections/getConnection"
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
@@ -14,9 +14,7 @@ export async function POST(_req: Request, ctx: { params: Promise<{ id: string }>
     if (denied) return denied
 
     // Read Auto-HA settings
-    const db = getDb()
-    const row = db.prepare("SELECT value FROM settings WHERE key = ? AND tenant_id = ?").get(`auto_ha:${id}`, "default") as any
-    const settings = row?.value ? JSON.parse(row.value) : null
+    const settings = await getSetting<any>(`auto_ha:${id}`)
 
     if (!settings?.enabled) {
       return NextResponse.json({ error: "Auto-HA is not enabled for this connection" }, { status: 400 })

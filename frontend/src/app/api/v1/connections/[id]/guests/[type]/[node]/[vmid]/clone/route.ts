@@ -56,7 +56,7 @@ export async function POST(
     const tenantId = await getCurrentTenantId()
     let vdcPoolName: string | null = null
     try {
-      const vdcInfo = resolveVdcForTenant(tenantId, id, node)
+      const vdcInfo = await resolveVdcForTenant(tenantId, id, node)
 
       if (vdcInfo) {
         // Fetch source VM config to estimate resources for the clone
@@ -93,7 +93,7 @@ export async function POST(
     }
 
     // Phase 4b: Enforce bridge whitelist
-    const allowedBridges = getAllowedBridgesForTenant(tenantId, id)
+    const allowedBridges = await getAllowedBridgesForTenant(tenantId, id)
     if (allowedBridges !== null) {
       for (const key of Object.keys(body || {})) {
         if (!/^net\d+$/.test(key)) continue
@@ -124,7 +124,7 @@ export async function POST(
         for (const k of Object.keys(sourceConfig || {})) {
           if (!/^net\d+$/.test(k)) continue
           const bridge = parseBridgeFromNet(String(sourceConfig[k] || ''))
-          if (bridge && resolveSubnetForBridge(id, bridge)) {
+          if (bridge && await resolveSubnetForBridge(id, bridge)) {
             cloneTouchesIpam = true
             break
           }
@@ -215,7 +215,7 @@ export async function POST(
             } catch (err: any) {
               console.error(`[clone-ipam-sync] PVE PUT config failed for vmid=${newVmid}: ${err?.message ?? err}`)
               try { sync.rollback() } catch { /* tolerate */ }
-              try { releaseAllocationsForVm(id, newVmid) } catch { /* tolerate */ }
+              try { await releaseAllocationsForVm(id, newVmid) } catch { /* tolerate */ }
             }
           }
         } catch (err: any) {

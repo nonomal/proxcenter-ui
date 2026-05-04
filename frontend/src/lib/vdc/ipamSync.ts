@@ -77,7 +77,7 @@ export interface SyncIpamResult {
   /** Compensating action — invoke if the caller's PVE write fails after
    *  the sync. Replays the IPAM mutations in reverse order so the DB
    *  ends up consistent with the unchanged PVE config. */
-  rollback: () => void
+  rollback: () => Promise<void>
 }
 
 // ---------------------------------------------------------------------------
@@ -111,8 +111,10 @@ function nicSlotIndexes(cfg: PveConfigShape | null): number[] {
 }
 
 interface JournalEntry {
-  /** Inverse op recorded at apply time. Idempotent. */
-  undo: () => void
+  /** Inverse op recorded at apply time. Idempotent. Async because the
+   *  underlying release/allocate helpers became async after the Postgres
+   *  cutover. */
+  undo: () => Promise<void>
 }
 
 /**
@@ -120,10 +122,10 @@ interface JournalEntry {
  * inserted. Idempotent: if the row got cleaned up by another path the
  * undo just no-ops.
  */
-function undoAllocate(connectionId: string, subnetId: string, ip: string): JournalEntry {
+function undoAllocate(_connectionId: string, subnetId: string, ip: string): JournalEntry {
   return {
-    undo: () => {
-      try { releaseIp({ subnetId, ip }) } catch { /* tolerate */ }
+    undo: async () => {
+      try { await releaseIp({ subnetId, ip }) } catch { /* tolerate */ }
     },
   }
 }
@@ -143,9 +145,9 @@ function undoRelease(args: {
   hostname: string | null
 }): JournalEntry {
   return {
-    undo: () => {
+    undo: async () => {
       try {
-        allocateIp({
+        await allocateIp({
           vdcId: args.vdcId,
           subnetId: args.subnetId,
           vnetId: args.vnetId,
@@ -211,7 +213,7 @@ export async function syncIpamForVmConfig(args: SyncIpamArgs): Promise<SyncIpamR
   const allIdx = Array.from(new Set([...beforeIdx, ...afterIdx])).sort((a, b) => a - b)
 
   if (allIdx.length === 0) {
-    return { bodyOverrides, rollback: () => undefined }
+    return { bodyOverrides, rollback: async () => undefined }
   }
 
   // Memoise per-subnet scan results across slots to avoid double-fetching
@@ -221,7 +223,7 @@ export async function syncIpamForVmConfig(args: SyncIpamArgs): Promise<SyncIpamR
   // Snapshot the VM's existing allocations so a release-by-MAC has the
   // metadata it needs to rollback (vdcId, vnetId, etc. aren't in the
   // PVE config).
-  const existingAllocs = findAllocationsForVm(args.connectionId, args.vmid)
+  const existingAllocs = await findAllocationsForVm(args.connectionId, args.vmid)
   const allocByMac = new Map<string, IpamAllocation>()
   for (const a of existingAllocs) allocByMac.set(a.mac.toUpperCase(), a)
 
@@ -231,20 +233,20 @@ export async function syncIpamForVmConfig(args: SyncIpamArgs): Promise<SyncIpamR
     for (const idx of allIdx) {
       const beforeSlot = readNicSlot(args.before, idx)
       const afterSlot = readNicSlot(args.after, idx)
-      const beforeSubnet = beforeSlot.bridge ? resolveSubnetForBridge(args.connectionId, beforeSlot.bridge) : null
-      const afterSubnet = afterSlot.bridge ? resolveSubnetForBridge(args.connectionId, afterSlot.bridge) : null
+      const beforeSubnet = beforeSlot.bridge ? await resolveSubnetForBridge(args.connectionId, beforeSlot.bridge) : null
+      const afterSubnet = afterSlot.bridge ? await resolveSubnetForBridge(args.connectionId, afterSlot.bridge) : null
       if (beforeSubnet || afterSubnet) { anyIpamRelevantSlot = true; break }
     }
     if (!anyIpamRelevantSlot) {
-      return { bodyOverrides, rollback: () => undefined }
+      return { bodyOverrides, rollback: async () => undefined }
     }
   }
 
-  const rollback = () => {
+  const rollback = async () => {
     // Replay undos in reverse — releases first, allocates second so the
     // (subnet, ip) UNIQUE doesn't trip.
     for (let i = journal.length - 1; i >= 0; i--) {
-      journal[i].undo()
+      await journal[i].undo()
     }
   }
 
@@ -252,8 +254,8 @@ export async function syncIpamForVmConfig(args: SyncIpamArgs): Promise<SyncIpamR
     for (const idx of allIdx) {
       const beforeSlot = readNicSlot(args.before, idx)
       const afterSlot = readNicSlot(args.after, idx)
-      const beforeSubnet = beforeSlot.bridge ? resolveSubnetForBridge(args.connectionId, beforeSlot.bridge) : null
-      const afterSubnet = afterSlot.bridge ? resolveSubnetForBridge(args.connectionId, afterSlot.bridge) : null
+      const beforeSubnet = beforeSlot.bridge ? await resolveSubnetForBridge(args.connectionId, beforeSlot.bridge) : null
+      const afterSubnet = afterSlot.bridge ? await resolveSubnetForBridge(args.connectionId, afterSlot.bridge) : null
 
       // Both sides outside IPAM-managed VNets — nothing to do for this slot.
       if (!beforeSubnet && !afterSubnet) continue
@@ -276,7 +278,7 @@ export async function syncIpamForVmConfig(args: SyncIpamArgs): Promise<SyncIpamR
         // the rollback (re-allocate with hint=ip recreates the same row).
         const stale = allocByMac.get(macBefore!)
         if (stale && stale.subnetId === beforeSubnet!.subnetId) {
-          releaseByMac({ subnetId: beforeSubnet!.subnetId, mac: macBefore! })
+          await releaseByMac({ subnetId: beforeSubnet!.subnetId, mac: macBefore! })
           journal.push(undoRelease({
             vdcId: stale.vdcId,
             subnetId: stale.subnetId,
@@ -306,7 +308,7 @@ export async function syncIpamForVmConfig(args: SyncIpamArgs): Promise<SyncIpamR
         if (stillSameAllocation && afterSlot.ipFromIpconfig && allocByMac.get(macAfter!)?.ip !== afterSlot.ipFromIpconfig) {
           const old = allocByMac.get(macAfter!)
           if (old) {
-            releaseByMac({ subnetId: afterSubnet.subnetId, mac: macAfter! })
+            await releaseByMac({ subnetId: afterSubnet.subnetId, mac: macAfter! })
             journal.push(undoRelease({
               vdcId: old.vdcId,
               subnetId: old.subnetId,
@@ -321,7 +323,7 @@ export async function syncIpamForVmConfig(args: SyncIpamArgs): Promise<SyncIpamR
         }
 
         const hint = afterSlot.ipFromIpconfig ?? undefined
-        const allocated = allocateIp({
+        const allocated = await allocateIp({
           vdcId: afterSubnet.vdcId,
           subnetId: afterSubnet.subnetId,
           vnetId: afterSubnet.vnetId,
@@ -350,7 +352,7 @@ export async function syncIpamForVmConfig(args: SyncIpamArgs): Promise<SyncIpamR
   } catch (err) {
     // Auto-rollback on any failure during the apply phase — we don't
     // want to leak partial mutations to the caller's catch block.
-    rollback()
+    await rollback()
     throw err
   }
 

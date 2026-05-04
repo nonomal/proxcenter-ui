@@ -575,7 +575,7 @@ export async function GET(request: NextRequest) {
 
     const forceRefresh = request.nextUrl.searchParams.get('refresh') === 'true'
     const tenantId = await getCurrentTenantId()
-    const vdcScope = getVdcScope(tenantId)
+    const vdcScope = await getVdcScope(tenantId)
 
     // 1) Tenter le cache (sauf si refresh forcé)
     const cacheResult = forceRefresh ? { status: 'miss' as const } : getInventoryFromCache(tenantId)
@@ -613,15 +613,14 @@ export async function GET(request: NextRequest) {
     // 3) RBAC + vDC: Filter guests by user permissions, then by vDC scope (nodes + pools)
     const rbacCtx = await getRBACContext()
 
-    clusters = clusters.map(cluster => {
+    clusters = await Promise.all(clusters.map(async cluster => {
       // Apply RBAC first
       let filtered = cluster
       if (rbacCtx && !rbacCtx.isAdmin) {
-        filtered = {
-          ...cluster,
-          nodes: cluster.nodes.map(node => ({
+        const filteredNodes = await Promise.all(
+          cluster.nodes.map(async node => ({
             ...node,
-            guests: filterVmsByPermission(
+            guests: await filterVmsByPermission(
               rbacCtx.userId,
               node.guests.map(g => ({
                 ...g,
@@ -633,11 +632,15 @@ export async function GET(request: NextRequest) {
               rbacCtx.tenantId
             )
           }))
+        )
+        filtered = {
+          ...cluster,
+          nodes: filteredNodes,
         }
       }
       // Then apply vDC filter (nodes + pool membership)
       return applyVdcFilter(filtered, vdcScope)
-    })
+    }))
 
     // 4) Recalculer les stats après filtrage RBAC
     let totalNodes = 0

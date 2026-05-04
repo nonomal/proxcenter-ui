@@ -3,7 +3,6 @@
 
 import { randomUUID } from 'crypto'
 
-import { getDb } from '@/lib/db/sqlite'
 import { getConnectionById } from '@/lib/connections/getConnection'
 import { prisma } from '@/lib/db/prisma'
 
@@ -16,7 +15,6 @@ import {
 
 import {
   createVnetPve,
-  updateVnetPve,
   setVnetFirewallEnabled,
   deleteVnetPve,
   allocateVni,
@@ -36,31 +34,20 @@ interface ResolvedVdc {
   sdnZoneName: string
 }
 
-function resolveVdcForVnetImpl(db: any, vdcId: string, tenantId: string): ResolvedVdc | null {
-  const row = db
-    .prepare(
-      `SELECT id, tenant_id, connection_id, sdn_zone_name, enabled
-       FROM vdcs WHERE id = ? AND tenant_id = ?`
-    )
-    .get(vdcId, tenantId) as any
+export async function resolveVdcForVnet(vdcId: string, tenantId: string): Promise<ResolvedVdc | null> {
+  const row = await prisma.vdc.findFirst({
+    where: { id: vdcId, tenantId },
+    select: { id: true, tenantId: true, connectionId: true, sdnZoneName: true, enabled: true },
+  })
   if (!row) return null
-  if (!row.enabled) return null
-  if (!row.sdn_zone_name) return null
+  if (row.enabled === false) return null
+  if (!row.sdnZoneName) return null
   return {
     id: row.id,
-    tenantId: row.tenant_id,
-    connectionId: row.connection_id,
-    sdnZoneName: row.sdn_zone_name,
+    tenantId: row.tenantId,
+    connectionId: row.connectionId,
+    sdnZoneName: row.sdnZoneName,
   }
-}
-
-/** @internal exported only for testing */
-export function resolveVdcForVnetForTesting(db: any, vdcId: string, tenantId: string): ResolvedVdc | null {
-  return resolveVdcForVnetImpl(db, vdcId, tenantId)
-}
-
-export function resolveVdcForVnet(vdcId: string, tenantId: string): ResolvedVdc | null {
-  return resolveVdcForVnetImpl(getDb(), vdcId, tenantId)
 }
 
 // ---------------------------------------------------------------------------
@@ -73,22 +60,14 @@ export interface VnetQuotaResult {
   max: number | null
 }
 
-function checkVnetQuotaImpl(db: any, vdcId: string): VnetQuotaResult {
-  const quotaRow = db.prepare('SELECT max_vnets FROM vdc_quotas WHERE vdc_id = ?').get(vdcId) as any
-  const max: number | null = quotaRow?.max_vnets ?? null
-  const countRow = db.prepare('SELECT COUNT(*) AS n FROM vdc_vnets WHERE vdc_id = ?').get(vdcId) as any
-  const current: number = countRow?.n ?? 0
+export async function checkVnetQuota(vdcId: string): Promise<VnetQuotaResult> {
+  const [quotaRow, current] = await Promise.all([
+    prisma.vdcQuota.findUnique({ where: { vdcId }, select: { maxVnets: true } }),
+    prisma.vdcVnet.count({ where: { vdcId } }),
+  ])
+  const max: number | null = quotaRow?.maxVnets ?? null
   if (max === null) return { allowed: true, current, max: null }
   return { allowed: current < max, current, max }
-}
-
-/** @internal exported only for testing */
-export function checkVnetQuotaForTesting(db: any, vdcId: string): VnetQuotaResult {
-  return checkVnetQuotaImpl(db, vdcId)
-}
-
-export function checkVnetQuota(vdcId: string): VnetQuotaResult {
-  return checkVnetQuotaImpl(getDb(), vdcId)
 }
 
 // ---------------------------------------------------------------------------
@@ -97,23 +76,23 @@ export function checkVnetQuota(vdcId: string): VnetQuotaResult {
 
 function rowToSubnet(r: any): VdcSubnet | null {
   if (!r || !r.id) return null
-  const dnsRaw: string | null = r.dns_servers ?? null
+  const dnsRaw: string | null = r.dnsServers ?? null
   const dnsServers = dnsRaw
     ? dnsRaw.split(',').map((s: string) => s.trim()).filter(Boolean)
     : []
   return {
     id: r.id,
-    vnetId: r.vnet_id,
+    vnetId: r.vnetId,
     cidr: r.cidr,
     gateway: r.gateway,
     dnsServers,
-    ipamEnabled: !!r.ipam_enabled,
-    createdAt: r.created_at,
+    ipamEnabled: r.ipamEnabled !== false,
+    createdAt: r.createdAt instanceof Date ? r.createdAt.toISOString() : String(r.createdAt),
   }
 }
 
-function rowToVnet(r: any, subnetRow: any): VdcVnet {
-  const subnet = rowToSubnet(subnetRow)
+function rowToVnet(r: any): VdcVnet {
+  const subnet = rowToSubnet(r.subnet)
   if (!subnet) {
     // The schema enforces a 1-1 between VNet and subnet now (subnet is
     // created in the same transaction as the VNet). A missing row means
@@ -123,38 +102,33 @@ function rowToVnet(r: any, subnetRow: any): VdcVnet {
   }
   return {
     id: r.id,
-    vdcId: r.vdc_id,
-    pveName: r.pve_name,
-    displayName: r.display_name ?? r.pve_name,
+    vdcId: r.vdcId,
+    pveName: r.pveName,
+    displayName: r.displayName ?? r.pveName,
     description: r.description ?? null,
-    vxlanTag: r.vxlan_tag,
-    firewall: !!r.firewall,
+    vxlanTag: r.vxlanTag,
+    firewall: r.firewall !== false,
     subnet,
-    createdBy: r.created_by ?? null,
-    createdAt: r.created_at,
+    createdBy: r.createdBy ?? null,
+    createdAt: r.createdAt instanceof Date ? r.createdAt.toISOString() : String(r.createdAt),
   }
 }
 
-const VNET_SELECT_COLS = 'id, vdc_id, pve_name, display_name, description, vxlan_tag, firewall, created_by, created_at'
-const SUBNET_SELECT_COLS = 'id, vnet_id, cidr, gateway, dns_servers, ipam_enabled, created_at'
-
-function findSubnetByVnetId(db: any, vnetId: string): any {
-  return db.prepare(`SELECT ${SUBNET_SELECT_COLS} FROM vdc_subnets WHERE vnet_id = ? LIMIT 1`).get(vnetId)
-}
-
-export function listVnetsForTenant(vdcId: string): VdcVnet[] {
-  const db = getDb()
-  const rows = db
-    .prepare(`SELECT ${VNET_SELECT_COLS} FROM vdc_vnets WHERE vdc_id = ? ORDER BY display_name`)
-    .all(vdcId) as any[]
-  return rows.map(r => rowToVnet(r, findSubnetByVnetId(db, r.id)))
+export async function listVnetsForTenant(vdcId: string): Promise<VdcVnet[]> {
+  const rows = await prisma.vdcVnet.findMany({
+    where: { vdcId },
+    include: { subnet: true },
+    orderBy: { displayName: 'asc' },
+  })
+  return rows.map(rowToVnet)
 }
 
 /** Resolve a user-facing display name (scoped to a vDC) to its row. */
-function findVnetByDisplayName(db: any, vdcId: string, displayName: string): any {
-  return db
-    .prepare(`SELECT ${VNET_SELECT_COLS} FROM vdc_vnets WHERE vdc_id = ? AND display_name = ? LIMIT 1`)
-    .get(vdcId, displayName)
+async function findVnetByDisplayName(vdcId: string, displayName: string) {
+  return prisma.vdcVnet.findFirst({
+    where: { vdcId, displayName },
+    include: { subnet: true },
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -207,7 +181,7 @@ async function getConn(vdc: ResolvedVdc): Promise<any> {
 }
 
 export async function createVnetForTenant(input: CreateVnetInput): Promise<VdcVnet> {
-  const vdc = resolveVdcForVnet(input.vdcId, input.tenantId)
+  const vdc = await resolveVdcForVnet(input.vdcId, input.tenantId)
   if (!vdc) throw new Error('vDC not found')
 
   const displayName = input.displayName
@@ -218,22 +192,20 @@ export async function createVnetForTenant(input: CreateVnetInput): Promise<VdcVn
   // Subnet is mandatory — IPAM only works with a CIDR + gateway.
   validateSubnetInput(input.subnet)
 
-  const db = getDb()
-
   // Display name uniqueness is scoped to the vDC — two tenants can both
   // legitimately have a "lan". The unique index on (vdc_id, display_name)
   // also enforces this at the DB level.
-  if (findVnetByDisplayName(db, vdc.id, displayName)) {
+  if (await findVnetByDisplayName(vdc.id, displayName)) {
     throw new Error(`VNet "${displayName}" already exists in this vDC`)
   }
 
-  const quota = checkVnetQuota(vdc.id)
+  const quota = await checkVnetQuota(vdc.id)
   if (!quota.allowed) {
     throw new Error(`Quota exceeded: max_vnets=${quota.max}, current=${quota.current}`)
   }
 
-  const pveName = generatePveVnetId(vdc.id, displayName)
-  const tag = allocateVni(vdc.id)
+  const pveName = await generatePveVnetId(vdc.id, displayName)
+  const tag = await allocateVni(vdc.id)
   const conn = await getConn(vdc)
   const firewall = input.firewall !== false
 
@@ -245,12 +217,22 @@ export async function createVnetForTenant(input: CreateVnetInput): Promise<VdcVn
   })
 
   const id = randomUUID()
-  const now = new Date().toISOString()
+  const now = new Date()
 
   try {
-    db.prepare(
-      'INSERT INTO vdc_vnets (id, vdc_id, pve_name, display_name, description, vxlan_tag, firewall, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
-    ).run(id, vdc.id, pveName, displayName, input.description ?? null, tag, firewall ? 1 : 0, input.createdBy, now)
+    await prisma.vdcVnet.create({
+      data: {
+        id,
+        vdcId: vdc.id,
+        pveName,
+        displayName,
+        description: input.description ?? null,
+        vxlanTag: tag,
+        firewall,
+        createdBy: input.createdBy,
+        createdAt: now,
+      },
+    })
   } catch (err: any) {
     try { await deleteVnetPve(conn, pveName) } catch {}
     throw new Error(`Failed to persist VNet: ${err?.message}`)
@@ -270,7 +252,7 @@ export async function createVnetForTenant(input: CreateVnetInput): Promise<VdcVn
     try {
       await setVnetFirewallEnabled(conn, pveName, true)
     } catch (err: any) {
-      db.prepare('DELETE FROM vdc_vnets WHERE id = ?').run(id)
+      await prisma.vdcVnet.delete({ where: { id } }).catch(() => undefined)
       try { await deleteVnetPve(conn, pveName) } catch {}
       try { await applySdn(conn) } catch {}
       throw err
@@ -282,41 +264,34 @@ export async function createVnetForTenant(input: CreateVnetInput): Promise<VdcVn
   const dnsList = (input.subnet.dnsServers ?? []).map(s => s.trim()).filter(Boolean)
   const subnetId = randomUUID()
   try {
-    db.prepare(
-      'INSERT INTO vdc_subnets (id, vnet_id, cidr, gateway, dns_servers, ipam_enabled, created_at) VALUES (?, ?, ?, ?, ?, 1, ?)'
-    ).run(
-      subnetId,
-      id,
-      input.subnet.cidr,
-      input.subnet.gateway,
-      dnsList.length > 0 ? dnsList.join(',') : null,
-      now,
-    )
+    await prisma.vdcSubnet.create({
+      data: {
+        id: subnetId,
+        vnetId: id,
+        cidr: input.subnet.cidr,
+        gateway: input.subnet.gateway,
+        dnsServers: dnsList.length > 0 ? dnsList.join(',') : null,
+        ipamEnabled: true,
+        createdAt: now,
+      },
+    })
   } catch (err: any) {
-    db.prepare('DELETE FROM vdc_vnets WHERE id = ?').run(id)
+    await prisma.vdcVnet.delete({ where: { id } }).catch(() => undefined)
     try { await deleteVnetPve(conn, pveName) } catch {}
     try { await applySdn(conn) } catch {}
     throw new Error(`Failed to persist subnet: ${err?.message}`)
   }
 
-  const subnetRow = findSubnetByVnetId(db, id)
+  const created = await prisma.vdcVnet.findUnique({
+    where: { id },
+    include: { subnet: true },
+  })
 
   // Invalidate the tenant scope cache so the next network-choices /
   // VM-create flow sees the new VNet instead of stale 60s-cached data.
   clearVdcScopeCache(vdc.tenantId)
 
-  return {
-    id,
-    vdcId: vdc.id,
-    pveName,
-    displayName,
-    description: input.description ?? null,
-    vxlanTag: tag,
-    firewall,
-    subnet: rowToSubnet(subnetRow)!,
-    createdBy: input.createdBy,
-    createdAt: now,
-  }
+  return rowToVnet(created)
 }
 
 // ---------------------------------------------------------------------------
@@ -337,14 +312,13 @@ export async function updateVnetForTenant(
     }
   }
 ): Promise<VdcVnet> {
-  const vdc = resolveVdcForVnet(vdcId, tenantId)
+  const vdc = await resolveVdcForVnet(vdcId, tenantId)
   if (!vdc) throw new Error('vDC not found')
 
-  const db = getDb()
-  const row = findVnetByDisplayName(db, vdc.id, displayName)
+  const row = await findVnetByDisplayName(vdc.id, displayName)
   if (!row) throw new Error(`VNet "${displayName}" not found`)
 
-  const pveName: string = row.pve_name
+  const pveName: string = row.pveName
   const conn = await getConn(vdc)
 
   if (patch.firewall !== undefined) {
@@ -353,15 +327,16 @@ export async function updateVnetForTenant(
 
   // DNS edits are DB-only — CloudInit pushes them to VMs at create time.
   if (patch.subnet?.dnsServers !== undefined) {
-    const subnetRow = findSubnetByVnetId(db, row.id) as any | null
-    if (!subnetRow) {
+    if (!row.subnet) {
       throw new Error(`VNet "${displayName}" has no subnet — DB migration required`)
     }
     const dnsCsv = patch.subnet.dnsServers.length > 0
       ? patch.subnet.dnsServers.map(s => s.trim()).filter(Boolean).join(',')
       : ''
-    db.prepare(`UPDATE vdc_subnets SET dns_servers = ? WHERE id = ?`)
-      .run(dnsCsv || null, subnetRow.id)
+    await prisma.vdcSubnet.update({
+      where: { id: row.subnet.id },
+      data: { dnsServers: dnsCsv || null },
+    })
   }
 
   if (patch.firewall !== undefined) {
@@ -370,21 +345,18 @@ export async function updateVnetForTenant(
     }
   }
 
-  db.prepare(
-    `UPDATE vdc_vnets SET
-       description = CASE WHEN ? IS NULL THEN description ELSE ? END,
-       firewall    = CASE WHEN ? IS NULL THEN firewall ELSE ? END
-     WHERE id = ?`
-  ).run(
-    patch.description === undefined ? null : patch.description,
-    patch.description === undefined ? null : patch.description,
-    patch.firewall === undefined ? null : (patch.firewall ? 1 : 0),
-    patch.firewall === undefined ? null : (patch.firewall ? 1 : 0),
-    row.id
-  )
+  const updateData: Record<string, unknown> = {}
+  if (patch.description !== undefined) updateData.description = patch.description
+  if (patch.firewall !== undefined) updateData.firewall = patch.firewall
+  if (Object.keys(updateData).length > 0) {
+    await prisma.vdcVnet.update({ where: { id: row.id }, data: updateData })
+  }
 
-  const updated = db.prepare(`SELECT ${VNET_SELECT_COLS} FROM vdc_vnets WHERE id = ?`).get(row.id)
-  return rowToVnet(updated, findSubnetByVnetId(db, row.id))
+  const updated = await prisma.vdcVnet.findUnique({
+    where: { id: row.id },
+    include: { subnet: true },
+  })
+  return rowToVnet(updated)
 }
 
 // ---------------------------------------------------------------------------
@@ -396,14 +368,13 @@ export async function deleteVnetForTenant(
   tenantId: string,
   displayName: string
 ): Promise<{ deleted: true } | { deleted: false; attachmentCount: number }> {
-  const vdc = resolveVdcForVnet(vdcId, tenantId)
+  const vdc = await resolveVdcForVnet(vdcId, tenantId)
   if (!vdc) throw new Error('vDC not found')
 
-  const db = getDb()
-  const row = findVnetByDisplayName(db, vdc.id, displayName)
+  const row = await findVnetByDisplayName(vdc.id, displayName)
   if (!row) throw new Error(`VNet "${displayName}" not found`)
 
-  const pveName: string = row.pve_name
+  const pveName: string = row.pveName
 
   const conn = await getConn(vdc)
   const attachments = await countVnetAttachments(conn, pveName)
@@ -412,11 +383,11 @@ export async function deleteVnetForTenant(
   }
 
   // No PVE-side subnet to drop anymore — subnet only lives in our DB and
-  // is removed by the ON DELETE CASCADE below.
+  // is removed by the FK CASCADE below.
   await deleteVnetPve(conn, pveName)
 
   // ON DELETE CASCADE on vdc_subnets.vnet_id removes the subnet row.
-  db.prepare('DELETE FROM vdc_vnets WHERE id = ?').run(row.id)
+  await prisma.vdcVnet.delete({ where: { id: row.id } })
 
   try { await applySdn(conn) } catch (err: any) {
     console.warn(`[vdc-vnets] applySdn failed after delete: ${err?.message}`)
@@ -431,29 +402,25 @@ export async function deleteVnetForTenant(
 // Bridge whitelist helpers (used by guest route enforcement in Task 4)
 // ---------------------------------------------------------------------------
 
-// getTenantIpamBridgesForConnection used to live here. It filtered by
-// session tenant, which broke the IPAM hook when a super-admin (default
-// tenant) deployed into a tenant-owned vDC. Replaced by
-// resolveSubnetForBridge below — same inputs minus the tenant filter,
-// since tenant authorisation is enforced separately upstream.
-
 /**
  * Returns the set of bridge names a tenant is allowed to attach to on a given connection.
  * Returns null if no restrictions apply (tenant without vDCs on this connection).
  */
-export function getAllowedBridgesForTenant(tenantId: string, connectionId: string): Set<string> | null {
-  const db = getDb()
-  const vdcRows = db
-    .prepare('SELECT id FROM vdcs WHERE tenant_id = ? AND connection_id = ? AND enabled = 1')
-    .all(tenantId, connectionId) as Array<{ id: string }>
+export async function getAllowedBridgesForTenant(tenantId: string, connectionId: string): Promise<Set<string> | null> {
+  const vdcRows = await prisma.vdc.findMany({
+    where: { tenantId, connectionId, enabled: true },
+    select: {
+      id: true,
+      vnets: { select: { pveName: true } },
+      sharedBridges: { select: { bridge: true } },
+    },
+  })
   if (vdcRows.length === 0) return null
 
   const allowed = new Set<string>()
-  const stmtVnets = db.prepare('SELECT pve_name FROM vdc_vnets WHERE vdc_id = ?')
-  const stmtShared = db.prepare('SELECT bridge FROM vdc_shared_bridges WHERE vdc_id = ?')
   for (const vdc of vdcRows) {
-    for (const v of stmtVnets.all(vdc.id) as Array<{ pve_name: string }>) allowed.add(v.pve_name)
-    for (const b of stmtShared.all(vdc.id) as Array<{ bridge: string }>) allowed.add(b.bridge)
+    for (const v of vdc.vnets) allowed.add(v.pveName)
+    for (const b of vdc.sharedBridges) allowed.add(b.bridge)
   }
   return allowed
 }
@@ -494,45 +461,33 @@ export interface SubnetForBridge {
  *   - no VNet on this connection matches the bridge name, OR
  *   - the matching VNet has no subnet (bridge-only mode)
  */
-export function resolveSubnetForBridge(
+export async function resolveSubnetForBridge(
   connectionId: string,
   bridgePveName: string,
-): SubnetForBridge | null {
-  const db = getDb()
-  const row = db
-    .prepare(
-      `SELECT
-         d.id   AS vdc_id,
-         d.sdn_zone_name AS sdn_zone_name,
-         d.pve_pool_name AS pve_pool_name,
-         v.id   AS vnet_id,
-         v.pve_name,
-         s.id   AS subnet_id,
-         s.cidr,
-         s.gateway,
-         s.dns_servers
-       FROM vdc_vnets v
-       JOIN vdcs d        ON d.id = v.vdc_id
-       JOIN vdc_subnets s ON s.vnet_id = v.id
-       WHERE d.connection_id = ?
-         AND d.enabled = 1
-         AND v.pve_name = ?
-         AND s.ipam_enabled = 1
-       LIMIT 1`,
-    )
-    .get(connectionId, bridgePveName) as
-      | { vdc_id: string; sdn_zone_name: string; pve_pool_name: string; vnet_id: string; pve_name: string; subnet_id: string; cidr: string; gateway: string; dns_servers: string | null }
-      | undefined
-  if (!row) return null
+): Promise<SubnetForBridge | null> {
+  const row = await prisma.vdcVnet.findFirst({
+    where: {
+      pveName: bridgePveName,
+      vdc: { connectionId, enabled: true },
+      subnet: { ipamEnabled: true },
+    },
+    include: {
+      vdc: { select: { id: true, sdnZoneName: true, pvePoolName: true } },
+      subnet: true,
+    },
+  })
+  if (!row || !row.subnet || !row.vdc.sdnZoneName) return null
   return {
-    vdcId: row.vdc_id,
-    vnetId: row.vnet_id,
-    subnetId: row.subnet_id,
-    pveName: row.pve_name,
-    cidr: row.cidr,
-    gateway: row.gateway,
-    dnsServers: row.dns_servers ? row.dns_servers.split(',').map(s => s.trim()).filter(Boolean) : [],
-    sdnZoneName: row.sdn_zone_name,
-    pvePoolName: row.pve_pool_name,
+    vdcId: row.vdc.id,
+    vnetId: row.id,
+    subnetId: row.subnet.id,
+    pveName: row.pveName,
+    cidr: row.subnet.cidr,
+    gateway: row.subnet.gateway,
+    dnsServers: row.subnet.dnsServers
+      ? row.subnet.dnsServers.split(',').map(s => s.trim()).filter(Boolean)
+      : [],
+    sdnZoneName: row.vdc.sdnZoneName,
+    pvePoolName: row.vdc.pvePoolName,
   }
 }

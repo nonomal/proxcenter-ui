@@ -2,7 +2,7 @@ export const dynamic = "force-dynamic"
 import { NextRequest, NextResponse } from "next/server"
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
 import { updateTenant, deleteTenant, DEFAULT_TENANT_ID, requireProviderTenant } from "@/lib/tenant"
-import { getDb } from "@/lib/db/sqlite"
+import { prisma } from "@/lib/db/prisma"
 import { audit } from "@/lib/audit"
 import { getServerSession } from "next-auth"
 import { authOptions } from "@/lib/auth/config"
@@ -17,13 +17,25 @@ export async function GET(_req: NextRequest, ctx: Ctx) {
   if (denied) return denied
 
   const { id } = await ctx.params
-  const db = getDb()
-  const tenant = db.prepare(
-    "SELECT id, slug, name, description, enabled, settings, created_by as createdBy, created_at as createdAt, updated_at as updatedAt FROM tenants WHERE id = ?"
-  ).get(id)
+  const row = await prisma.tenant.findUnique({ where: { id } })
+  if (!row) return NextResponse.json({ error: "Tenant not found" }, { status: 404 })
 
-  if (!tenant) return NextResponse.json({ error: "Tenant not found" }, { status: 404 })
-  return NextResponse.json({ data: tenant })
+  // Match the legacy SQLite shape: snake_case-ish camelCase aliases the route
+  // historically returned (createdBy / createdAt / updatedAt) so consumers
+  // don't have to change after the cutover.
+  return NextResponse.json({
+    data: {
+      id: row.id,
+      slug: row.slug,
+      name: row.name,
+      description: row.description,
+      enabled: row.enabled,
+      settings: row.settings,
+      createdBy: row.createdBy,
+      createdAt: row.createdAt.toISOString(),
+      updatedAt: row.updatedAt.toISOString(),
+    },
+  })
 }
 
 // PUT /api/v1/tenants/:id
@@ -47,7 +59,7 @@ export async function PUT(req: NextRequest, ctx: Ctx) {
   }
 
   try {
-    const tenant = updateTenant(id, body)
+    const tenant = await updateTenant(id, body)
     if (!tenant) return NextResponse.json({ error: "Tenant not found" }, { status: 404 })
 
     await audit({
@@ -82,7 +94,7 @@ export async function DELETE(_req: NextRequest, ctx: Ctx) {
     return NextResponse.json({ error: "Cannot delete the default tenant" }, { status: 400 })
   }
 
-  const ok = deleteTenant(id)
+  const ok = await deleteTenant(id)
   if (!ok) return NextResponse.json({ error: "Tenant not found" }, { status: 404 })
 
   await audit({

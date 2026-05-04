@@ -1,6 +1,6 @@
 export const dynamic = "force-dynamic"
 import { NextResponse } from 'next/server'
-import { getDb } from '@/lib/db/sqlite'
+import { getSetting, setSetting } from '@/lib/db/settings'
 import { checkPermission, PERMISSIONS } from '@/lib/rbac'
 import { getCurrentTenantId } from '@/lib/tenant'
 
@@ -22,10 +22,9 @@ export async function GET() {
     const denied = await checkPermission(PERMISSIONS.ADMIN_SETTINGS)
     if (denied) return denied
 
-    const db = await getDb()
     const tenantId = await getCurrentTenantId()
-    const row = db.prepare("SELECT value FROM settings WHERE key = 'branding' AND tenant_id = ?").get(tenantId) as any
-    const settings = row ? { ...DEFAULT_BRANDING, ...JSON.parse(row.value) } : DEFAULT_BRANDING
+    const stored = await getSetting<Partial<typeof DEFAULT_BRANDING>>('branding', tenantId)
+    const settings = { ...DEFAULT_BRANDING, ...(stored ?? {}) }
 
     // Migrate old static paths to API serving paths
     const fixUrl = (url: string) =>
@@ -48,12 +47,8 @@ export async function PUT(req: Request) {
     const body = await req.json()
     const settings = { ...DEFAULT_BRANDING, ...body }
 
-    const db = await getDb()
     const tenantId = await getCurrentTenantId()
-    db.prepare(
-      `INSERT INTO settings (key, tenant_id, value, updated_at) VALUES ('branding', ?, ?, datetime('now'))
-       ON CONFLICT(key, tenant_id) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`
-    ).run(tenantId, JSON.stringify(settings))
+    await setSetting('branding', tenantId, settings)
 
     return NextResponse.json({ success: true, ...settings })
   } catch (error: any) {

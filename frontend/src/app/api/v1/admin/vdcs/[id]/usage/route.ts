@@ -20,7 +20,7 @@ export async function GET(req: NextRequest, ctx: RouteContext) {
     const denied = await checkPermission(PERMISSIONS.ADMIN_SETTINGS)
     if (denied) return denied
 
-    const vdc = getVdcById(id)
+    const vdc = await getVdcById(id)
     if (!vdc) {
       return NextResponse.json({ error: "vDC not found" }, { status: 404 })
     }

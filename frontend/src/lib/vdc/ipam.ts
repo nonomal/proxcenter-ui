@@ -5,12 +5,12 @@
 // /cluster/sdn/vnets/<vnet>/ips POST returns 200 but nothing ever surfaces
 // in /cluster/sdn/ipams/pve/status, and the GET/DELETE counterparts are
 // not implemented. We need a deterministic, queryable, multi-tenant
-// allocator anyway, so we keep it inside our SQLite next to the rest of
-// the vDC data.
+// allocator anyway, so we keep it inside Postgres next to the rest of the
+// vDC data.
 //
-// Backing table: `vdc_ipam_allocations` (see lib/db/sqlite.ts). Allocations
-// are keyed on (subnet_id, mac), so re-running allocateIp with the same MAC
-// returns the same IP — handy for VM-config replays / migrations.
+// Backing table: `vdc_ipam_allocations`. Allocations are keyed on
+// (subnet_id, mac), so re-running allocateIp with the same MAC returns
+// the same IP — handy for VM-config replays / migrations.
 //
 // The allocator skips:
 //   - the network address and the broadcast address (handled by ParsedCidr)
@@ -24,19 +24,10 @@
 // usable hosts, and we still skip the gateway.
 
 import { randomUUID } from 'crypto'
-import type Database from 'better-sqlite3'
 
-import { getDb as realGetDb } from '@/lib/db/sqlite'
+import { prisma } from '@/lib/db/prisma'
 import { parseCidr, ipToInt, intToIp, isValidIpv4 } from '@/lib/vdc/network'
 import { invalidateScanCache } from '@/lib/vdc/ipamScan'
-
-// ---------------------------------------------------------------------------
-// Test seam — mirrors the pattern used by lib/db/vdcPbsBindings.ts
-// ---------------------------------------------------------------------------
-
-let overrideDb: Database.Database | null = null
-export function __setDbForTests(db: Database.Database | null) { overrideDb = db }
-function db(): Database.Database { return overrideDb ?? realGetDb() }
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -94,33 +85,34 @@ export class IpamHintUnavailableError extends Error {
 
 interface SubnetRow {
   id: string
-  vnet_id: string
+  vnetId: string
   cidr: string
   gateway: string
 }
 
-function loadSubnet(subnetId: string): SubnetRow | null {
-  return db()
-    .prepare(
-      `SELECT id, vnet_id, cidr, gateway
-       FROM vdc_subnets WHERE id = ?`,
-    )
-    .get(subnetId) as SubnetRow | null
+async function loadSubnet(subnetId: string): Promise<SubnetRow | null> {
+  const row = await prisma.vdcSubnet.findUnique({
+    where: { id: subnetId },
+    select: { id: true, vnetId: true, cidr: true, gateway: true },
+  })
+  return row
 }
 
 function rowToAllocation(r: any): IpamAllocation {
   return {
     id: r.id,
-    vdcId: r.vdc_id,
-    subnetId: r.subnet_id,
-    vnetId: r.vnet_id,
-    connectionId: r.connection_id,
+    vdcId: r.vdcId,
+    subnetId: r.subnetId,
+    vnetId: r.vnetId,
+    connectionId: r.connectionId,
     ip: r.ip,
-    ipInt: r.ip_int,
+    // ipInt is BigInt on Postgres — coerce to plain number. IPv4 addresses
+    // are <= 2^32-1 so they fit in a JS number safely (53-bit mantissa).
+    ipInt: typeof r.ipInt === 'bigint' ? Number(r.ipInt) : r.ipInt,
     mac: r.mac,
     vmid: r.vmid ?? null,
     hostname: r.hostname ?? null,
-    createdAt: r.created_at,
+    createdAt: r.createdAt instanceof Date ? r.createdAt.toISOString() : String(r.createdAt),
   }
 }
 
@@ -161,15 +153,15 @@ function buildRangeBounds(subnet: SubnetRow): {
  *   - else if free and in range → reserved
  *   - else → IpamHintUnavailableError
  */
-export function allocateIp(input: AllocateIpInput): IpamAllocation {
+export async function allocateIp(input: AllocateIpInput): Promise<IpamAllocation> {
   const mac = normalizeMac(input.mac)
-  const subnet = loadSubnet(input.subnetId)
+  const subnet = await loadSubnet(input.subnetId)
   if (!subnet) throw new Error(`Subnet not found: ${input.subnetId}`)
 
   // Fast path: same MAC already has an IP — return it.
-  const existing = db()
-    .prepare(`SELECT * FROM vdc_ipam_allocations WHERE subnet_id = ? AND mac = ?`)
-    .get(input.subnetId, mac) as any
+  const existing = await prisma.vdcIpamAllocation.findUnique({
+    where: { subnetId_mac: { subnetId: input.subnetId, mac } },
+  })
   if (existing) {
     if (input.hint && input.hint !== existing.ip) {
       // Caller wants a specific IP that differs from what's already bound
@@ -198,94 +190,76 @@ export function allocateIp(input: AllocateIpInput): IpamAllocation {
     if (hintInt < low || hintInt > high || taken.has(hintInt)) {
       throw new IpamHintUnavailableError(input.hint)
     }
-    return insertAllocation({ ...input, mac }, subnet, input.hint, hintInt)
+    return insertAllocation({ ...input, mac }, input.hint, hintInt)
   }
 
   // Auto: load the set of IPAM-tracked IPs and pick the first free.
   // For typical /24s this is < 254 entries — a single SELECT is fine.
-  const takenRows = db()
-    .prepare(`SELECT ip_int FROM vdc_ipam_allocations WHERE subnet_id = ?`)
-    .all(input.subnetId) as Array<{ ip_int: number }>
-  for (const r of takenRows) taken.add(r.ip_int)
+  const takenRows = await prisma.vdcIpamAllocation.findMany({
+    where: { subnetId: input.subnetId },
+    select: { ipInt: true },
+  })
+  for (const r of takenRows) taken.add(typeof r.ipInt === 'bigint' ? Number(r.ipInt) : r.ipInt)
 
   for (let candidate = low; candidate <= high; candidate++) {
     if (!taken.has(candidate)) {
       const ip = intToIp(candidate)
-      return insertAllocation({ ...input, mac }, subnet, ip, candidate)
+      return insertAllocation({ ...input, mac }, ip, candidate)
     }
   }
   throw new IpamExhaustedError(input.subnetId)
 }
 
-function insertAllocation(
+async function insertAllocation(
   input: AllocateIpInput,
-  subnet: SubnetRow,
   ip: string,
   ipInt: number,
-): IpamAllocation {
+): Promise<IpamAllocation> {
   const id = randomUUID()
-  const now = new Date().toISOString()
-  db()
-    .prepare(
-      `INSERT INTO vdc_ipam_allocations
-        (id, vdc_id, subnet_id, vnet_id, connection_id, ip, ip_int, mac, vmid, hostname, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    )
-    .run(
+  const now = new Date()
+  const row = await prisma.vdcIpamAllocation.create({
+    data: {
       id,
-      input.vdcId,
-      input.subnetId,
-      input.vnetId,
-      input.connectionId,
+      vdcId: input.vdcId,
+      subnetId: input.subnetId,
+      vnetId: input.vnetId,
+      connectionId: input.connectionId,
       ip,
-      ipInt,
-      input.mac,
-      input.vmid ?? null,
-      input.hostname ?? null,
-      now,
-    )
+      ipInt: BigInt(ipInt),
+      mac: input.mac,
+      vmid: input.vmid ?? null,
+      hostname: input.hostname ?? null,
+      createdAt: now,
+    },
+  })
   // Drop the (connection, subnet) scan cache so the next allocation sees
   // this row and never picks the same IP — the cache could otherwise hand
   // out the IP we just allocated for another MAC's hint check.
   invalidateScanCache(input.connectionId, input.subnetId)
-  return {
-    id,
-    vdcId: input.vdcId,
-    subnetId: input.subnetId,
-    vnetId: input.vnetId,
-    connectionId: input.connectionId,
-    ip,
-    ipInt,
-    mac: input.mac,
-    vmid: input.vmid ?? null,
-    hostname: input.hostname ?? null,
-    createdAt: now,
-  }
+  return rowToAllocation(row)
 }
 
 /** Hard-delete an allocation by IP. Idempotent: missing rows are fine. */
-export function releaseIp(args: { subnetId: string; ip: string }): void {
+export async function releaseIp(args: { subnetId: string; ip: string }): Promise<void> {
   // Read the connection_id before deleting so we can invalidate the right
   // cache entry. Idempotent — if no row exists we just no-op.
-  const row = db()
-    .prepare(`SELECT connection_id FROM vdc_ipam_allocations WHERE subnet_id = ? AND ip = ?`)
-    .get(args.subnetId, args.ip) as { connection_id: string } | undefined
-  db()
-    .prepare(`DELETE FROM vdc_ipam_allocations WHERE subnet_id = ? AND ip = ?`)
-    .run(args.subnetId, args.ip)
-  if (row) invalidateScanCache(row.connection_id, args.subnetId)
+  const row = await prisma.vdcIpamAllocation.findUnique({
+    where: { subnetId_ip: { subnetId: args.subnetId, ip: args.ip } },
+    select: { connectionId: true },
+  })
+  await prisma.vdcIpamAllocation.deleteMany({ where: { subnetId: args.subnetId, ip: args.ip } })
+  if (row) invalidateScanCache(row.connectionId, args.subnetId)
 }
 
 /** Hard-delete an allocation by MAC. Idempotent. */
-export function releaseByMac(args: { subnetId: string; mac: string }): void {
+export async function releaseByMac(args: { subnetId: string; mac: string }): Promise<void> {
   const mac = normalizeMac(args.mac)
-  const row = db()
-    .prepare(`SELECT connection_id FROM vdc_ipam_allocations WHERE subnet_id = ? AND mac = ?`)
-    .get(args.subnetId, mac) as { connection_id: string } | undefined
-  db()
-    .prepare(`DELETE FROM vdc_ipam_allocations WHERE subnet_id = ? AND mac = ?`)
-    .run(args.subnetId, mac)
-  if (row) invalidateScanCache(row.connection_id, args.subnetId)
+  const row = await prisma.vdcIpamAllocation.findUnique({
+    where: { subnetId_mac: { subnetId: args.subnetId, mac } },
+    select: { connectionId: true },
+  })
+  await prisma.vdcIpamAllocation.deleteMany({ where: { subnetId: args.subnetId, mac } })
+  if (row) invalidateScanCache(row.connectionId, args.subnetId)
 }
 
 /**
@@ -293,33 +267,29 @@ export function releaseByMac(args: { subnetId: string; mac: string }): void {
  * Used by the VM-delete hook so we don't have to re-parse netN out of qm
  * config: the vmid is the most reliable cross-key.
  */
-export function releaseAllocationsForVm(connectionId: string, vmid: number): IpamAllocation[] {
-  const rows = db()
-    .prepare(`SELECT * FROM vdc_ipam_allocations WHERE connection_id = ? AND vmid = ?`)
-    .all(connectionId, vmid) as any[]
+export async function releaseAllocationsForVm(connectionId: string, vmid: number): Promise<IpamAllocation[]> {
+  const rows = await prisma.vdcIpamAllocation.findMany({ where: { connectionId, vmid } })
   if (rows.length === 0) return []
-  db()
-    .prepare(`DELETE FROM vdc_ipam_allocations WHERE connection_id = ? AND vmid = ?`)
-    .run(connectionId, vmid)
+  await prisma.vdcIpamAllocation.deleteMany({ where: { connectionId, vmid } })
   // Each released row may live in a different subnet (multi-NIC VM) — drop
   // the scan cache for every distinct (connection, subnet) we touched.
   const subnets = new Set<string>()
-  for (const r of rows) subnets.add(r.subnet_id)
+  for (const r of rows) subnets.add(r.subnetId)
   for (const subnetId of subnets) invalidateScanCache(connectionId, subnetId)
   return rows.map(rowToAllocation)
 }
 
-export function findAllocationByMac(subnetId: string, mac: string): IpamAllocation | null {
-  const r = db()
-    .prepare(`SELECT * FROM vdc_ipam_allocations WHERE subnet_id = ? AND mac = ?`)
-    .get(subnetId, normalizeMac(mac)) as any
+export async function findAllocationByMac(subnetId: string, mac: string): Promise<IpamAllocation | null> {
+  const r = await prisma.vdcIpamAllocation.findUnique({
+    where: { subnetId_mac: { subnetId, mac: normalizeMac(mac) } },
+  })
   return r ? rowToAllocation(r) : null
 }
 
-export function findAllocationByIp(subnetId: string, ip: string): IpamAllocation | null {
-  const r = db()
-    .prepare(`SELECT * FROM vdc_ipam_allocations WHERE subnet_id = ? AND ip = ?`)
-    .get(subnetId, ip) as any
+export async function findAllocationByIp(subnetId: string, ip: string): Promise<IpamAllocation | null> {
+  const r = await prisma.vdcIpamAllocation.findUnique({
+    where: { subnetId_ip: { subnetId, ip } },
+  })
   return r ? rowToAllocation(r) : null
 }
 
@@ -329,23 +299,21 @@ export function findAllocationByIp(subnetId: string, ip: string): IpamAllocation
  * / restore) to detect whether a VM is already IPAM-tracked before
  * deciding whether to release-and-reallocate.
  */
-export function findAllocationsForVm(connectionId: string, vmid: number): IpamAllocation[] {
-  return (db()
-    .prepare(`SELECT * FROM vdc_ipam_allocations WHERE connection_id = ? AND vmid = ?`)
-    .all(connectionId, vmid) as any[]).map(rowToAllocation)
+export async function findAllocationsForVm(connectionId: string, vmid: number): Promise<IpamAllocation[]> {
+  const rows = await prisma.vdcIpamAllocation.findMany({ where: { connectionId, vmid } })
+  return rows.map(rowToAllocation)
 }
 
-export function listAllocationsForSubnet(subnetId: string): IpamAllocation[] {
-  return (db()
-    .prepare(`SELECT * FROM vdc_ipam_allocations WHERE subnet_id = ? ORDER BY ip_int`)
-    .all(subnetId) as any[]).map(rowToAllocation)
+export async function listAllocationsForSubnet(subnetId: string): Promise<IpamAllocation[]> {
+  const rows = await prisma.vdcIpamAllocation.findMany({
+    where: { subnetId },
+    orderBy: { ipInt: 'asc' },
+  })
+  return rows.map(rowToAllocation)
 }
 
-export function countAllocationsForSubnet(subnetId: string): number {
-  const row = db()
-    .prepare(`SELECT COUNT(*) AS n FROM vdc_ipam_allocations WHERE subnet_id = ?`)
-    .get(subnetId) as { n: number } | undefined
-  return row?.n ?? 0
+export async function countAllocationsForSubnet(subnetId: string): Promise<number> {
+  return prisma.vdcIpamAllocation.count({ where: { subnetId } })
 }
 
 /**
@@ -357,8 +325,8 @@ export function countAllocationsForSubnet(subnetId: string): number {
  * Used by the VNets list endpoint to surface "used / usable" counts in the
  * dashboard without an extra round-trip per row.
  */
-export function getSubnetUsage(subnetId: string, cidr: string, gateway: string): { used: number; usable: number } {
-  const used = countAllocationsForSubnet(subnetId)
+export async function getSubnetUsage(subnetId: string, cidr: string, gateway: string): Promise<{ used: number; usable: number }> {
+  const used = await countAllocationsForSubnet(subnetId)
   const parsed = parseCidr(cidr)
   let usable = 0
   if (parsed) {
@@ -371,10 +339,12 @@ export function getSubnetUsage(subnetId: string, cidr: string, gateway: string):
   return { used, usable }
 }
 
-export function listAllocationsForVdc(vdcId: string): IpamAllocation[] {
-  return (db()
-    .prepare(`SELECT * FROM vdc_ipam_allocations WHERE vdc_id = ? ORDER BY ip_int`)
-    .all(vdcId) as any[]).map(rowToAllocation)
+export async function listAllocationsForVdc(vdcId: string): Promise<IpamAllocation[]> {
+  const rows = await prisma.vdcIpamAllocation.findMany({
+    where: { vdcId },
+    orderBy: { ipInt: 'asc' },
+  })
+  return rows.map(rowToAllocation)
 }
 
 /**
@@ -382,16 +352,16 @@ export function listAllocationsForVdc(vdcId: string): IpamAllocation[] {
  * a pre-allocated IP and we want to record it after PVE returns the vmid).
  * No-op if the allocation doesn't exist.
  */
-export function bindVmidToAllocation(args: {
+export async function bindVmidToAllocation(args: {
   subnetId: string
   ip: string
   vmid: number
   hostname?: string | null
-}): void {
-  db()
-    .prepare(
-      `UPDATE vdc_ipam_allocations SET vmid = ?, hostname = COALESCE(?, hostname)
-       WHERE subnet_id = ? AND ip = ?`,
-    )
-    .run(args.vmid, args.hostname ?? null, args.subnetId, args.ip)
+}): Promise<void> {
+  const updateData: Record<string, unknown> = { vmid: args.vmid }
+  if (args.hostname != null) updateData.hostname = args.hostname
+  await prisma.vdcIpamAllocation.updateMany({
+    where: { subnetId: args.subnetId, ip: args.ip },
+    data: updateData,
+  })
 }

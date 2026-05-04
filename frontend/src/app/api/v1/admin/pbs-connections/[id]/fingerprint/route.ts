@@ -10,7 +10,7 @@ export const runtime = 'nodejs'
 
 export async function POST(_req: Request, ctx: { params: Promise<{ id: string }> }) {
   const s = await getServerSession(authOptions)
-  if (!s?.user?.id || !isUserSuperAdmin(s.user.id)) {
+  if (!s?.user?.id || !(await isUserSuperAdmin(s.user.id))) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
   }
   const { id } = await ctx.params

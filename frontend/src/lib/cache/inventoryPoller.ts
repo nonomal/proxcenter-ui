@@ -10,7 +10,7 @@
 import { prisma } from "@/lib/db/prisma"
 import { getConnectionById } from "@/lib/connections/getConnection"
 import { pveFetch } from "@/lib/proxmox/client"
-import { getDb } from "@/lib/db/sqlite"
+import { getSetting } from "@/lib/db/settings"
 import { discoverNodeIps } from "@/lib/proxmox/discoverNodeIps"
 import { getFailureCount, getNodeIps } from "@/lib/cache/nodeIpCache"
 
@@ -352,9 +352,7 @@ async function handleAutoHaEvents(events: InventoryEvent[]) {
 
   for (const [connId, vms] of byConn) {
     try {
-      const db = getDb()
-      const row = db.prepare("SELECT value FROM settings WHERE key = ? AND tenant_id = ?").get(`auto_ha:${connId}`, "default") as any
-      const settings = row?.value ? JSON.parse(row.value) : null
+      const settings = await getSetting<any>(`auto_ha:${connId}`)
       if (!settings?.enabled) continue
 
       const conn = await getConnectionById(connId)

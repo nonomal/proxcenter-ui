@@ -16,7 +16,7 @@ async function verifyRuleBelongsToTenant(id: string): Promise<{ rule: any; allow
   // Visibility is derived from alert_rule_owners. A vDC tenant only sees
   // and edits rules they authored; the provider sees everything they own
   // plus pre-migration rules that have no recorded owner.
-  return { rule, allowed: ruleVisibleToTenant(id, tenantId) }
+  return { rule, allowed: await ruleVisibleToTenant(id, tenantId) }
 }
 
 /**
@@ -84,7 +84,7 @@ export async function PUT(
     // Re-pin node_pattern to the vDC scope on every update (a tenant
     // editing an existing rule must not be able to widen its blast radius).
     if (tenantId !== DEFAULT_TENANT_ID) {
-      injectVdcNodeScope(body, tenantId)
+      await injectVdcNodeScope(body, tenantId)
     }
 
     const result = await orchestratorFetch(`/alerts/rules/${id}`, {
@@ -131,7 +131,7 @@ export async function DELETE(
     })
 
     // Drop the owner row so the table doesn't accumulate stale entries.
-    try { deleteRuleOwner(id) } catch { /* tolerate */ }
+    try { await deleteRuleOwner(id) } catch { /* tolerate */ }
 
     return NextResponse.json(result)
   } catch (error: any) {

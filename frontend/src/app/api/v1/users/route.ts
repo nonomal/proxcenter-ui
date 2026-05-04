@@ -5,23 +5,38 @@ import { nanoid } from "nanoid"
 
 import { getServerSession } from "next-auth"
 
-import { getDb } from "@/lib/db/sqlite"
+import { prisma } from "@/lib/db/prisma"
 import { hashPassword } from "@/lib/auth/password"
 import { authOptions } from "@/lib/auth/config"
-import { checkPermission, PERMISSIONS, isUserSuperAdmin, PROTECTED_ROLE_ID_LIST_SQL } from "@/lib/rbac"
+import { checkPermission, PERMISSIONS, isUserSuperAdmin, PROTECTED_ROLE_IDS } from "@/lib/rbac"
 import { getCurrentTenantId } from "@/lib/tenant"
 
 export const runtime = "nodejs"
+
+/**
+ * Compute the set of user IDs that hold a protected (provider-tier) role
+ * still active right now. Used to filter the user list shown to non-super-admin
+ * callers — they must not enumerate provider operators.
+ */
+async function loadProtectedUserIds(): Promise<Set<string>> {
+  const rows = await prisma.rbacUserRole.findMany({
+    where: {
+      roleId: { in: [...PROTECTED_ROLE_IDS] },
+      OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+    },
+    select: { userId: true },
+    distinct: ["userId"],
+  })
+  return new Set(rows.map(r => r.userId))
+}
 
 // GET /api/v1/users - Liste des utilisateurs
 export async function GET() {
   try {
     // RBAC: Check admin.users permission
     const denied = await checkPermission(PERMISSIONS.ADMIN_USERS)
-
     if (denied) return denied
 
-    const db = getDb()
     const tenantId = await getCurrentTenantId()
 
     // Hide provider-level accounts (super_admin + provider_admin, both
@@ -29,45 +44,42 @@ export async function GET() {
     // admin.users scoped to their tenant — can't enumerate, edit, or delete
     // a provider operator.
     const session = await getServerSession(authOptions)
-    const callerIsSuperAdmin = session?.user?.id ? isUserSuperAdmin(session.user.id) : false
-    const hideSuperAdminFilter = callerIsSuperAdmin
-      ? ""
-      : `AND NOT EXISTS (
-           SELECT 1 FROM rbac_user_roles ur
-           WHERE ur.user_id = u.id AND ur.role_id IN ${PROTECTED_ROLE_ID_LIST_SQL}
-             AND (ur.expires_at IS NULL OR ur.expires_at > datetime('now'))
-         )`
+    const callerIsSuperAdmin = session?.user?.id ? await isUserSuperAdmin(session.user.id) : false
+    const protectedIds = callerIsSuperAdmin ? new Set<string>() : await loadProtectedUserIds()
 
-    const users = db
-      .prepare(
-        `SELECT u.id, u.email, u.name, u.role, u.auth_provider, u.enabled, u.last_login_at, u.created_at, u.updated_at
-         FROM users u JOIN user_tenants ut ON ut.user_id = u.id
-         WHERE ut.tenant_id = ?
-           ${hideSuperAdminFilter}
-         ORDER BY u.created_at DESC`
-      )
-      .all(tenantId)
+    const memberships = await prisma.userTenant.findMany({
+      where: {
+        tenantId,
+        ...(protectedIds.size > 0 ? { userId: { notIn: Array.from(protectedIds) } } : {}),
+      },
+      include: { user: true },
+      orderBy: { user: { createdAt: "desc" } },
+    })
 
-    // Compter les admins in this tenant
-    const adminCount = db
-      .prepare(
-        `SELECT COUNT(*) as count FROM users u JOIN user_tenants ut ON ut.user_id = u.id
-         WHERE u.role = 'admin' AND ut.tenant_id = ?
-           ${hideSuperAdminFilter}`
-      )
-      .get(tenantId) as { count: number }
+    const users = memberships.map(m => ({
+      id: m.user.id,
+      email: m.user.email,
+      name: m.user.name,
+      role: m.user.role,
+      auth_provider: m.user.authProvider,
+      enabled: m.user.enabled,
+      last_login_at: m.user.lastLoginAt?.toISOString() ?? null,
+      created_at: m.user.createdAt.toISOString(),
+      updated_at: m.user.updatedAt.toISOString(),
+    }))
+
+    const adminCount = users.filter(u => u.role === "admin").length
 
     return NextResponse.json({
       data: users,
       meta: {
         total: users.length,
-        adminCount: adminCount.count,
+        adminCount,
       },
     })
   } catch (error: any) {
     console.error("Erreur GET users:", error)
-    
-return NextResponse.json({ error: error?.message || "Erreur serveur" }, { status: 500 })
+    return NextResponse.json({ error: error?.message || "Erreur serveur" }, { status: 500 })
   }
 }
 
@@ -76,7 +88,6 @@ export async function POST(req: Request) {
   try {
     // RBAC: Check admin.users permission
     const denied = await checkPermission(PERMISSIONS.ADMIN_USERS)
-
     if (denied) return denied
 
     const body = await req.json()
@@ -88,7 +99,6 @@ export async function POST(req: Request) {
 
     // Valider l'email
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
-
     if (email.length > 254 || !emailRegex.test(email)) {
       return NextResponse.json({ error: "Format d'email invalide" }, { status: 400 })
     }
@@ -101,11 +111,13 @@ export async function POST(req: Request) {
       )
     }
 
-    const db = getDb()
+    const normalisedEmail = email.toLowerCase().trim()
 
     // Vérifier si l'email existe déjà
-    const existing = db.prepare("SELECT id FROM users WHERE email = ?").get(email.toLowerCase())
-
+    const existing = await prisma.user.findUnique({
+      where: { email: normalisedEmail },
+      select: { id: true },
+    })
     if (existing) {
       return NextResponse.json({ error: "Cet email est déjà utilisé" }, { status: 400 })
     }
@@ -113,31 +125,43 @@ export async function POST(req: Request) {
     // Hasher le mot de passe
     const hashedPassword = await hashPassword(password)
 
-    // Créer l'utilisateur (role par défaut 'user' - les permissions viennent de RBAC)
+    // Créer l'utilisateur + l'adhésion par défaut atomiquement.
     const id = nanoid()
-    const now = new Date().toISOString()
-
+    const now = new Date()
     const tenantId = await getCurrentTenantId()
 
-    db.prepare(
-      `INSERT INTO users (id, email, password, name, role, auth_provider, enabled, created_at, updated_at)
-       VALUES (?, ?, ?, ?, 'user', 'credentials', 1, ?, ?)`
-    ).run(id, email.toLowerCase().trim(), hashedPassword, name || null, now, now)
-
-    // Add user to the current tenant
-    db.prepare(
-      `INSERT INTO user_tenants (user_id, tenant_id, is_default, joined_at) VALUES (?, ?, 1, ?)`
-    ).run(id, tenantId, now)
+    await prisma.$transaction([
+      prisma.user.create({
+        data: {
+          id,
+          email: normalisedEmail,
+          password: hashedPassword,
+          name: name || null,
+          role: "user",
+          authProvider: "credentials",
+          enabled: true,
+          createdAt: now,
+          updatedAt: now,
+        },
+      }),
+      prisma.userTenant.create({
+        data: {
+          userId: id,
+          tenantId,
+          isDefault: true,
+          joinedAt: now,
+        },
+      }),
+    ])
 
     // Audit
     const { audit } = await import("@/lib/audit")
-
     await audit({
       action: "create",
       category: "users",
       resourceType: "user",
       resourceId: id,
-      resourceName: email.toLowerCase().trim(),
+      resourceName: normalisedEmail,
       details: { name: name || null },
       status: "success",
     })
@@ -146,16 +170,15 @@ export async function POST(req: Request) {
       success: true,
       data: {
         id,
-        email: email.toLowerCase().trim(),
+        email: normalisedEmail,
         name: name || null,
         auth_provider: "credentials",
         enabled: 1,
-        created_at: now,
+        created_at: now.toISOString(),
       },
     })
   } catch (error: any) {
     console.error("Erreur POST users:", error)
-    
-return NextResponse.json({ error: error?.message || "Erreur serveur" }, { status: 500 })
+    return NextResponse.json({ error: error?.message || "Erreur serveur" }, { status: 500 })
   }
 }

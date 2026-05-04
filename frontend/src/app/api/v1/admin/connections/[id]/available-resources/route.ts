@@ -3,7 +3,6 @@ import { NextResponse } from "next/server"
 import { pveFetch } from "@/lib/proxmox/client"
 import { getConnectionById } from "@/lib/connections/getConnection"
 import { prisma } from "@/lib/db/prisma"
-import { getDb } from "@/lib/db/sqlite"
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
 import { requireProviderTenant } from "@/lib/tenant"
 
@@ -65,17 +64,14 @@ export async function GET(req: Request, ctx: RouteContext) {
     // the same `pbs:` storage would expose that tenant's backups. We hide
     // them from the available-resources list so the admin modal can't
     // accidentally embed them in the new vDC.
-    const db = getDb()
-    const pbsRows = db.prepare(
-      `SELECT s.pve_storage_name, n.vdc_id
-       FROM vdc_pbs_pve_storages s
-       JOIN vdc_pbs_namespaces n ON n.id = s.vdc_pbs_namespace_id
-       WHERE s.pve_connection_id = ?`
-    ).all(id) as Array<{ pve_storage_name: string; vdc_id: string }>
+    const pbsRows = await prisma.vdcPbsPveStorage.findMany({
+      where: { pveConnectionId: id },
+      select: { pveStorageName: true, vdcPbsNamespace: { select: { vdcId: true } } },
+    })
     const hiddenPbsStorages = new Set(
       pbsRows
-        .filter((r) => !excludeForVdcId || r.vdc_id !== excludeForVdcId)
-        .map((r) => r.pve_storage_name),
+        .filter(r => !excludeForVdcId || r.vdcPbsNamespace.vdcId !== excludeForVdcId)
+        .map(r => r.pveStorageName),
     )
 
     // vDC primary storage requirements: shared (HA-capable) and able to

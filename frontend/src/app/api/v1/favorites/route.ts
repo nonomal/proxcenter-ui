@@ -4,7 +4,7 @@ import { NextResponse } from 'next/server'
 
 import { getServerSession } from 'next-auth'
 
-import { getDb } from '@/lib/db/sqlite'
+import { prisma } from '@/lib/db/prisma'
 import { authOptions } from '@/lib/auth'
 import { getCurrentTenantId } from '@/lib/tenant'
 
@@ -17,21 +17,32 @@ export async function GET() {
     const userId = session?.user?.email || 'anonymous'
     const tenantId = await getCurrentTenantId()
 
-    const db = getDb()
+    const rows = await prisma.favorite.findMany({
+      where: { userId, tenantId },
+      orderBy: { createdAt: 'desc' },
+    })
 
-    const favorites = db.prepare(`
-      SELECT * FROM favorites
-      WHERE user_id = ? AND tenant_id = ?
-      ORDER BY created_at DESC
-    `).all(userId, tenantId)
-    
-    return NextResponse.json({ 
+    // Preserve the snake_case wire shape consumed by the existing UI.
+    const favorites = rows.map(r => ({
+      id: r.id,
+      tenant_id: r.tenantId,
+      user_id: r.userId,
+      vm_key: r.vmKey,
+      connection_id: r.connectionId,
+      node: r.node,
+      vm_type: r.vmType,
+      vmid: r.vmid,
+      vm_name: r.vmName,
+      created_at: r.createdAt.toISOString(),
+    }))
+
+    return NextResponse.json({
       data: favorites,
-      count: favorites.length
+      count: favorites.length,
     })
   } catch (error: any) {
     console.error('Error fetching favorites:', error)
-    
+
 return NextResponse.json(
       { error: error?.message || 'Erreur serveur' },
       { status: 500 }
@@ -59,36 +70,45 @@ export async function POST(req: Request) {
     // Clé unique pour la VM
     const vmKey = `${connectionId}:${node}:${vmType}:${vmid}`
 
-    const db = getDb()
-
     // Vérifier si déjà en favori
-    const existing = db.prepare(`
-      SELECT id FROM favorites WHERE user_id = ? AND vm_key = ? AND tenant_id = ?
-    `).get(userId, vmKey, tenantId)
-    
-    if (existing) {
+    const existing = await prisma.favorite.findUnique({
+      where: { userId_vmKey: { userId, vmKey } },
+      select: { id: true, tenantId: true },
+    })
+
+    if (existing && existing.tenantId === tenantId) {
       return NextResponse.json(
         { error: 'Cette VM est déjà dans vos favoris' },
         { status: 409 }
       )
     }
-    
+
     const id = randomUUID()
-    const now = new Date().toISOString()
-    
-    db.prepare(`
-      INSERT INTO favorites (id, tenant_id, user_id, vm_key, connection_id, node, vm_type, vmid, vm_name, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(id, tenantId, userId, vmKey, connectionId, node, vmType, vmid, vmName || null, now)
-    
-    return NextResponse.json({ 
-      success: true, 
+    const now = new Date()
+
+    await prisma.favorite.create({
+      data: {
+        id,
+        tenantId,
+        userId,
+        vmKey,
+        connectionId,
+        node,
+        vmType,
+        vmid: String(vmid),
+        vmName: vmName || null,
+        createdAt: now,
+      },
+    })
+
+    return NextResponse.json({
+      success: true,
       data: { id, vmKey },
-      message: 'Favori ajouté'
+      message: 'Favori ajouté',
     })
   } catch (error: any) {
     console.error('Error adding favorite:', error)
-    
+
 return NextResponse.json(
       { error: error?.message || 'Erreur serveur' },
       { status: 500 }
@@ -113,26 +133,24 @@ export async function DELETE(req: Request) {
       )
     }
 
-    const db = getDb()
+    const result = await prisma.favorite.deleteMany({
+      where: { userId, vmKey, tenantId },
+    })
 
-    const result = db.prepare(`
-      DELETE FROM favorites WHERE user_id = ? AND vm_key = ? AND tenant_id = ?
-    `).run(userId, vmKey, tenantId)
-    
-    if (result.changes === 0) {
+    if (result.count === 0) {
       return NextResponse.json(
         { error: 'Favori non trouvé' },
         { status: 404 }
       )
     }
-    
-    return NextResponse.json({ 
-      success: true, 
-      message: 'Favori supprimé'
+
+    return NextResponse.json({
+      success: true,
+      message: 'Favori supprimé',
     })
   } catch (error: any) {
     console.error('Error deleting favorite:', error)
-    
+
 return NextResponse.json(
       { error: error?.message || 'Erreur serveur' },
       { status: 500 }

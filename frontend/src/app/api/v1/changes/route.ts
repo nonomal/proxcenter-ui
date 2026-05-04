@@ -26,7 +26,7 @@ export async function GET(req: Request) {
     // vDC tenant on a cluster shared with the provider (or another tenant)
     // would otherwise see every change on that cluster regardless of node
     // or pool. Pull the vDC scope and tighten on (node, pool) when present.
-    const vdcScope = getVdcScope(await getCurrentTenantId())
+    const vdcScope = await getVdcScope(await getCurrentTenantId())
 
     const query = params.toString()
     const data = await orchestratorFetch<any>(`/changes${query ? `?${query}` : ''}`)

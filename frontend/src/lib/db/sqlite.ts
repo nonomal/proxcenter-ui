@@ -648,7 +648,7 @@ export function getDb() {
     }
   }
   db.prepare(
-    'UPDATE vdc_vnets SET display_name = pve_name WHERE display_name IS NULL OR display_name = ""'
+    "UPDATE vdc_vnets SET display_name = pve_name WHERE display_name IS NULL OR display_name = ''"
   ).run()
   db.prepare(
     'CREATE UNIQUE INDEX IF NOT EXISTS idx_vdc_vnets_display_name ON vdc_vnets(vdc_id, display_name)'

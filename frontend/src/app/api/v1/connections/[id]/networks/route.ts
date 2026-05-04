@@ -97,7 +97,7 @@ export async function GET(_req: Request, ctx: RouteContext) {
     // a shared PVE cluster (cross-vDC leak). super-admin / provider tenant
     // returns null scope -> no filtering applied.
     const tenantId = await getCurrentTenantId()
-    const vdcScope = getVdcScope(tenantId)
+    const vdcScope = await getVdcScope(tenantId)
     let resources = allResources
     if (vdcScope) {
       const allowedPools = vdcScope.poolsByConnection.get(id)

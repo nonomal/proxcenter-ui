@@ -108,7 +108,7 @@ export async function DELETE(
       try {
         const numericVmid = Number(vmid)
         if (Number.isFinite(numericVmid)) {
-          releaseAllocationsForVm(id, numericVmid)
+          await releaseAllocationsForVm(id, numericVmid)
         }
       } catch (err: any) {
         console.warn(`[vm-delete] IPAM release failed for ${type}/${vmid}: ${err?.message}`)

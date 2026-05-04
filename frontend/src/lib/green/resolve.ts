@@ -62,22 +62,22 @@ function fromDatacenter(dc: DatacenterRow): ResolvedGreenConfig['datacenter'] {
  * 30 s — invalidate on any green-config write via
  * {@link invalidateGreenResolution}.
  */
-export function resolveGreenConfigForNode(
+export async function resolveGreenConfigForNode(
   connectionId: string,
   nodeName: string,
-): ResolvedGreenConfig {
+): Promise<ResolvedGreenConfig> {
   const cacheKey = `${connectionId}|${nodeName}`
   const cached = cache.get(cacheKey)
   if (cached && cached.expiry > Date.now()) return cached.data
 
-  const node = getNodeGreenConfig(connectionId, nodeName)
-  const cluster = getConnectionGreenConfig(connectionId)
+  const node = await getNodeGreenConfig(connectionId, nodeName)
+  const cluster = await getConnectionGreenConfig(connectionId)
 
   // Datacentre: most specific non-null DC ID wins; fall back to is_default DC.
   let dcRow: DatacenterRow | null = null
-  if (node?.datacenterId) dcRow = getDatacenterById(node.datacenterId)
-  if (!dcRow && cluster?.datacenterId) dcRow = getDatacenterById(cluster.datacenterId)
-  if (!dcRow) dcRow = ensureDefaultDatacenter()
+  if (node?.datacenterId) dcRow = await getDatacenterById(node.datacenterId)
+  if (!dcRow && cluster?.datacenterId) dcRow = await getDatacenterById(cluster.datacenterId)
+  if (!dcRow) dcRow = await ensureDefaultDatacenter()
 
   const datacenter: ResolvedGreenConfig['datacenter'] = dcRow
     ? fromDatacenter(dcRow)

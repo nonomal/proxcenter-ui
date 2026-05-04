@@ -38,7 +38,7 @@ export async function GET(
         connId: id,
         vmid: String(g.vmid),
       }))
-      const filtered = filterVmsByPermission(
+      const filtered = await filterVmsByPermission(
         rbacCtx.userId,
         withMeta,
         PERMISSIONS.VM_VIEW,

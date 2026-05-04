@@ -10,29 +10,27 @@
  * provider-owned (back-compat for setups that ran before this table).
  */
 
-import { getDb } from "@/lib/db/sqlite"
+import { prisma } from "@/lib/db/prisma"
 import { DEFAULT_TENANT_ID } from "@/lib/tenant"
 
-export function setRuleOwner(ruleId: string, tenantId: string): void {
-  const db = getDb()
-  db.prepare(
-    `INSERT INTO alert_rule_owners (rule_id, tenant_id)
-     VALUES (?, ?)
-     ON CONFLICT(rule_id) DO UPDATE SET tenant_id = excluded.tenant_id`
-  ).run(ruleId, tenantId)
+export async function setRuleOwner(ruleId: string, tenantId: string): Promise<void> {
+  await prisma.alertRuleOwner.upsert({
+    where: { ruleId },
+    update: { tenantId },
+    create: { ruleId, tenantId },
+  })
 }
 
-export function deleteRuleOwner(ruleId: string): void {
-  const db = getDb()
-  db.prepare(`DELETE FROM alert_rule_owners WHERE rule_id = ?`).run(ruleId)
+export async function deleteRuleOwner(ruleId: string): Promise<void> {
+  await prisma.alertRuleOwner.deleteMany({ where: { ruleId } })
 }
 
-export function getRuleOwner(ruleId: string): string | null {
-  const db = getDb()
-  const row = db.prepare(
-    `SELECT tenant_id FROM alert_rule_owners WHERE rule_id = ?`
-  ).get(ruleId) as { tenant_id: string } | undefined
-  return row?.tenant_id ?? null
+export async function getRuleOwner(ruleId: string): Promise<string | null> {
+  const row = await prisma.alertRuleOwner.findUnique({
+    where: { ruleId },
+    select: { tenantId: true },
+  })
+  return row?.tenantId ?? null
 }
 
 /**
@@ -43,8 +41,8 @@ export function getRuleOwner(ruleId: string): string | null {
  * - Provider tenant sees rules it authored AND rules with no row (legacy
  *   pre-migration entries that we treat as provider-owned by default).
  */
-export function ruleVisibleToTenant(ruleId: string, tenantId: string): boolean {
-  const owner = getRuleOwner(ruleId)
+export async function ruleVisibleToTenant(ruleId: string, tenantId: string): Promise<boolean> {
+  const owner = await getRuleOwner(ruleId)
   if (owner === null) return tenantId === DEFAULT_TENANT_ID
   return owner === tenantId
 }

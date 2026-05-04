@@ -34,8 +34,8 @@ export async function GET(_req: NextRequest, ctx: RouteContext) {
     const id = (params as any)?.id
     if (!id) return NextResponse.json({ error: 'Missing connection id' }, { status: 400 })
 
-    const cluster = getConnectionGreenConfig(id)
-    const savedNodes = listNodeGreenConfigs(id)
+    const cluster = await getConnectionGreenConfig(id)
+    const savedNodes = await listNodeGreenConfigs(id)
 
     // Live node list (with status) — best-effort; if PVE is unreachable we
     // fall back to saved rows only. The status is exposed so the assignment
@@ -86,7 +86,7 @@ export async function PUT(req: NextRequest, ctx: RouteContext) {
     if (!id) return NextResponse.json({ error: 'Missing connection id' }, { status: 400 })
 
     const body = await req.json().catch(() => ({})) as any
-    const cluster = upsertConnectionGreenConfig(id, {
+    const cluster = await upsertConnectionGreenConfig(id, {
       datacenterId: body.datacenterId ?? null,
       tdpPerCoreW: body.tdpPerCoreW ?? null,
       wattsPerGbRam: body.wattsPerGbRam ?? null,
@@ -96,7 +96,7 @@ export async function PUT(req: NextRequest, ctx: RouteContext) {
     // Optional bulk action: when applyToAllNodes is true, clear every per-node
     // DC override so all nodes inherit the cluster's DC.
     if (body.applyToAllNodes === true) {
-      clearAllNodeDatacenterOverrides(id)
+      await clearAllNodeDatacenterOverrides(id)
     }
 
     invalidateGreenResolution(id)

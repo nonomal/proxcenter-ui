@@ -166,7 +166,7 @@ export async function PUT(
     // ── vDC Quota Check (CPU/RAM increases) ──
     const tenantId = await getCurrentTenantId()
     try {
-      const vdcInfo = resolveVdcForTenant(tenantId, id, node)
+      const vdcInfo = await resolveVdcForTenant(tenantId, id, node)
 
       if (vdcInfo && (body.cores || body.sockets || body.memory)) {
         // Fetch current VM config from PVE to compute deltas
@@ -210,7 +210,7 @@ export async function PUT(
     }
 
     // Phase 4b: Enforce bridge whitelist
-    const allowedBridges = getAllowedBridgesForTenant(tenantId, id)
+    const allowedBridges = await getAllowedBridgesForTenant(tenantId, id)
     if (allowedBridges !== null) {
       for (const key of Object.keys(body || {})) {
         if (!/^net\d+$/.test(key)) continue
