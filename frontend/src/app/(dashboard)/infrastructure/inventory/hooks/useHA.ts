@@ -49,6 +49,9 @@ export function useHA({
   const [haGroup, setHaGroup] = useState<string>('')
   const [haMaxRestart, setHaMaxRestart] = useState<number>(1)
   const [haMaxRelocate, setHaMaxRelocate] = useState<number>(1)
+  // PVE 9+ per-resource flag. Default true (PVE's own default) so we don't
+  // accidentally disable failback for users coming from older clusters.
+  const [haFailback, setHaFailback] = useState<boolean>(true)
   const [haComment, setHaComment] = useState<string>('')
 
   const loadHaConfig = useCallback(async () => {
@@ -82,6 +85,8 @@ export function useHA({
           setHaGroup(configJson.data.group || '')
           setHaMaxRestart(configJson.data.max_restart ?? 1)
           setHaMaxRelocate(configJson.data.max_relocate ?? 1)
+          // PVE returns failback as 0/1; treat undefined as enabled (PVE default).
+          setHaFailback(configJson.data.failback === undefined ? true : Boolean(Number(configJson.data.failback)))
           setHaComment(configJson.data.comment || '')
         } else {
           // Reset le formulaire si pas de config
@@ -89,6 +94,7 @@ export function useHA({
           setHaGroup('')
           setHaMaxRestart(1)
           setHaMaxRelocate(1)
+          setHaFailback(true)
           setHaComment('')
         }
       }
@@ -125,6 +131,7 @@ export function useHA({
             group: haGroup || undefined,
             max_restart: haMaxRestart,
             max_relocate: haMaxRelocate,
+            failback: haFailback,
             comment: haComment || undefined,
           }),
         }
@@ -145,7 +152,7 @@ export function useHA({
     } finally {
       setHaSaving(false)
     }
-  }, [selection, haState, haGroup, haMaxRestart, haMaxRelocate, haComment, loadHaConfig])
+  }, [selection, haState, haGroup, haMaxRestart, haMaxRelocate, haFailback, haComment, loadHaConfig])
 
   const removeHaConfig = useCallback(async () => {
     if (!selection || selection.type !== 'vm') return
@@ -182,6 +189,7 @@ export function useHA({
             setHaGroup('')
             setHaMaxRestart(1)
             setHaMaxRelocate(1)
+            setHaFailback(true)
             setHaComment('')
           }
 
@@ -228,6 +236,8 @@ export function useHA({
     setHaMaxRestart,
     haMaxRelocate,
     setHaMaxRelocate,
+    haFailback,
+    setHaFailback,
     haComment,
     setHaComment,
     loadHaConfig,

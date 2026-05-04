@@ -265,6 +265,7 @@ export default function VmDetailTabs(props: any) {
     haConfig,
     haEditing,
     haError,
+    haFailback,
     haGroup,
     haGroups,
     haLoading,
@@ -355,6 +356,7 @@ export default function VmDetailTabs(props: any) {
     setExplorerFiles,
     setExplorerSearch,
     setHaComment,
+    setHaFailback,
     setHaEditing,
     setHaGroup,
     setHaMaxRelocate,
@@ -4334,17 +4336,29 @@ return (
               )}
 
               {/* ==================== ONGLET 9 - HA (seulement pour les clusters) ==================== */}
-              {detailTab === 9 && selectedVmIsCluster && (
+              {detailTab === 9 && selectedVmIsCluster && (() => {
+                const haStateColor = (s?: string): 'success' | 'warning' | 'error' | 'default' => {
+                  switch (s) {
+                    case 'started':
+                    case 'enabled': return 'success'
+                    case 'stopped': return 'warning'
+                    case 'disabled': return 'error'
+                    default: return 'default'
+                  }
+                }
+                const failbackOn = haConfig && Number(haConfig.failback ?? 1) === 1
+
+                return (
                 <Box sx={{ py: 2 }}>
                   <Card variant="outlined" sx={{ borderRadius: 2 }}>
                     <CardContent>
                       <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2 }}>
                         <Typography variant="h6" sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                          <i className="ri-shield-check-line" style={{ fontSize: 20 }} />{' '}
+                          <i className="ri-shield-check-line" style={{ fontSize: 20 }} />
                           High Availability (HA)
                         </Typography>
-                        <Box sx={{ display: 'flex', gap: 1 }}>
-                          {haConfig && !haEditing && (
+                        {haConfig && !haEditing && (
+                          <Box sx={{ display: 'flex', gap: 1 }}>
                             <Button
                               size="small"
                               variant="outlined"
@@ -4355,18 +4369,16 @@ return (
                             >
                               {t('audit.actions.disable')}
                             </Button>
-                          )}
-                          {!haEditing && (
                             <Button
                               size="small"
-                              variant="outlined"
+                              variant="contained"
                               startIcon={<i className="ri-edit-line" />}
                               onClick={() => setHaEditing(true)}
                             >
-                              {haConfig ? t('common.edit') : t('common.enabled')}
+                              {t('common.edit')}
                             </Button>
-                          )}
-                        </Box>
+                          </Box>
+                        )}
                       </Box>
 
                       {/* Loading */}
@@ -4381,35 +4393,18 @@ return (
                         <Alert severity="error" sx={{ mb: 2 }}>{haError}</Alert>
                       )}
 
-                      {/* Avertissement cluster */}
-                      {!haLoading && (
-                        <Alert severity="info" sx={{ mb: 2 }}>
-                          <Typography variant="body2">
-                            {t('inventory.haQuorumRecommendation')}
-                          </Typography>
-                        </Alert>
-                      )}
-
                       {/* Contenu HA */}
                       {!haLoading && !haError && (
                         <>
                           {haEditing ? (
                             <Box>
                               <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 2, mb: 2 }}>
-                                <Box>
-                                  <Typography variant="body2" fontWeight={600} sx={{ mb: 0.5 }}>
-                                    VM:
-                                  </Typography>
-                                  <Typography variant="body2" sx={{ opacity: 0.7 }}>
-                                    {selection?.type === 'vm' ? parseVmId(selection.id).vmid : ''}
-                                  </Typography>
-                                </Box>
                                 <FormControl fullWidth size="small">
-                                  <InputLabel>Group</InputLabel>
+                                  <InputLabel>{t('inventory.group')}</InputLabel>
                                   <Select
                                     value={haGroup}
                                     onChange={(e) => setHaGroup(e.target.value)}
-                                    label="Group"
+                                    label={t('inventory.group')}
                                   >
                                     <MenuItem value="">
                                       <em>{t('common.none')}</em>
@@ -4421,21 +4416,12 @@ return (
                                     ))}
                                   </Select>
                                 </FormControl>
-                                
-                                <TextField
-                                  label="Max. Restart"
-                                  type="number"
-                                  size="small"
-                                  value={haMaxRestart}
-                                  onChange={(e) => setHaMaxRestart(Number.parseInt(e.target.value) || 0)}
-                                  inputProps={{ min: 0, max: 10 }}
-                                />
                                 <FormControl fullWidth size="small">
-                                  <InputLabel>Request State</InputLabel>
+                                  <InputLabel>{t('inventory.haRequestState')}</InputLabel>
                                   <Select
                                     value={haState}
                                     onChange={(e) => setHaState(e.target.value)}
-                                    label="Request State"
+                                    label={t('inventory.haRequestState')}
                                   >
                                     <MenuItem value="started">started</MenuItem>
                                     <MenuItem value="stopped">stopped</MenuItem>
@@ -4444,26 +4430,63 @@ return (
                                     <MenuItem value="ignored">ignored</MenuItem>
                                   </Select>
                                 </FormControl>
-                                
+
                                 <TextField
-                                  label="Max. Relocate"
+                                  label={t('cluster.maxRestart')}
+                                  type="number"
+                                  size="small"
+                                  value={haMaxRestart}
+                                  onChange={(e) => setHaMaxRestart(Number.parseInt(e.target.value) || 0)}
+                                  inputProps={{ min: 0, max: 10 }}
+                                />
+                                <TextField
+                                  label={t('cluster.maxRelocate')}
                                   type="number"
                                   size="small"
                                   value={haMaxRelocate}
                                   onChange={(e) => setHaMaxRelocate(Number.parseInt(e.target.value) || 0)}
                                   inputProps={{ min: 0, max: 10 }}
                                 />
-                                <Box />
-                                
+
+                                <Box
+                                  sx={{
+                                    gridColumn: '1 / -1',
+                                    border: '1px solid',
+                                    borderColor: 'divider',
+                                    borderRadius: 1,
+                                    px: 2,
+                                    py: 1,
+                                  }}
+                                >
+                                  <FormControlLabel
+                                    control={
+                                      <Switch
+                                        checked={haFailback}
+                                        onChange={(e) => setHaFailback(e.target.checked)}
+                                        disabled={haSaving}
+                                      />
+                                    }
+                                    label={
+                                      <Box>
+                                        <Typography variant="body2" fontWeight={600}>{t('inventory.haFailback')}</Typography>
+                                        <Typography variant="caption" sx={{ opacity: 0.7 }}>
+                                          {t('inventory.haFailbackHelp')}
+                                        </Typography>
+                                      </Box>
+                                    }
+                                    sx={{ m: 0, alignItems: 'center' }}
+                                  />
+                                </Box>
+
                                 <TextField
-                                  label="Comment"
+                                  label={t('inventory.comment')}
                                   size="small"
                                   value={haComment}
                                   onChange={(e) => setHaComment(e.target.value)}
                                   sx={{ gridColumn: '1 / -1' }}
                                 />
                               </Box>
-                              
+
                               <Stack direction="row" spacing={1} justifyContent="flex-end">
                                 <Button
                                   variant="outlined"
@@ -4481,7 +4504,7 @@ return (
                                   disabled={haSaving}
                                   startIcon={haSaving ? <CircularProgress size={16} /> : <SaveIcon />}
                                 >
-                                  {haSaving ? t('common.saving') : (haConfig ? t('common.save') : t('common.enabled'))}
+                                  {haSaving ? t('common.saving') : (haConfig ? t('common.save') : t('inventory.haEnable'))}
                                 </Button>
                               </Stack>
                             </Box>
@@ -4489,44 +4512,68 @@ return (
                             <Box
                               sx={{
                                 display: 'grid',
-                                gridTemplateColumns: 'repeat(2, 1fr)',
-                                gap: 2,
-                                p: 2,
-                                bgcolor: 'action.hover',
-                                borderRadius: 1,
+                                gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+                                gap: 1.5,
                               }}
                             >
-                              <Box>
-                                <Typography variant="caption" sx={{ opacity: 0.7 }}>{t('inventory.state')}</Typography>
+                              <Box sx={{ p: 1.5, border: '1px solid', borderColor: 'divider', borderRadius: 1 }}>
+                                <Typography variant="caption" sx={{ opacity: 0.7, display: 'block', mb: 0.5 }}>
+                                  {t('inventory.state')}
+                                </Typography>
+                                <Chip
+                                  label={haConfig.state || 'started'}
+                                  size="small"
+                                  color={haStateColor(haConfig.state)}
+                                />
+                              </Box>
+                              <Box sx={{ p: 1.5, border: '1px solid', borderColor: 'divider', borderRadius: 1 }}>
+                                <Typography variant="caption" sx={{ opacity: 0.7, display: 'block', mb: 0.5 }}>
+                                  {t('inventory.group')}
+                                </Typography>
                                 <Typography variant="body2" fontWeight={600}>
-                                  <Chip 
-                                    label={haConfig.state || 'started'} 
-                                    size="small" 
-                                    color={haConfig.state === 'started' || haConfig.state === 'enabled' ? 'success' : 'default'}
-                                  />
+                                  {haConfig.group || <span style={{ opacity: 0.5, fontWeight: 400 }}>{t('common.none')}</span>}
                                 </Typography>
                               </Box>
-                              <Box>
-                                <Typography variant="caption" sx={{ opacity: 0.7 }}>{t('inventory.group')}</Typography>
-                                <Typography variant="body2" fontWeight={600}>
-                                  {haConfig.group || <span style={{ opacity: 0.5 }}>{t('common.none')}</span>}
+                              <Box sx={{ p: 1.5, border: '1px solid', borderColor: 'divider', borderRadius: 1 }}>
+                                <Typography variant="caption" sx={{ opacity: 0.7, display: 'block', mb: 0.5 }}>
+                                  {t('cluster.maxRestart')}
                                 </Typography>
-                              </Box>
-                              <Box>
-                                <Typography variant="caption" sx={{ opacity: 0.7 }}>Max Restart</Typography>
                                 <Typography variant="body2" fontWeight={600}>
                                   {haConfig.max_restart ?? 1}
                                 </Typography>
                               </Box>
-                              <Box>
-                                <Typography variant="caption" sx={{ opacity: 0.7 }}>Max Relocate</Typography>
+                              <Box sx={{ p: 1.5, border: '1px solid', borderColor: 'divider', borderRadius: 1 }}>
+                                <Typography variant="caption" sx={{ opacity: 0.7, display: 'block', mb: 0.5 }}>
+                                  {t('cluster.maxRelocate')}
+                                </Typography>
                                 <Typography variant="body2" fontWeight={600}>
                                   {haConfig.max_relocate ?? 1}
                                 </Typography>
                               </Box>
+                              {haConfig.failback !== undefined && (
+                                <Box sx={{ gridColumn: '1 / -1', p: 1.5, border: '1px solid', borderColor: 'divider', borderRadius: 1, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                  <Box>
+                                    <Typography variant="body2" fontWeight={600}>{t('inventory.haFailback')}</Typography>
+                                    <Typography variant="caption" sx={{ opacity: 0.7 }}>
+                                      {t('inventory.haFailbackHelp')}
+                                    </Typography>
+                                  </Box>
+                                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
+                                    <i
+                                      className={failbackOn ? 'ri-checkbox-circle-fill' : 'ri-close-circle-fill'}
+                                      style={{ fontSize: 18, color: failbackOn ? 'var(--mui-palette-success-main)' : 'var(--mui-palette-text-disabled)' }}
+                                    />
+                                    <Typography variant="body2" fontWeight={600}>
+                                      {failbackOn ? t('common.enabled') : t('common.disabled')}
+                                    </Typography>
+                                  </Box>
+                                </Box>
+                              )}
                               {haConfig.comment && (
-                                <Box sx={{ gridColumn: '1 / -1' }}>
-                                  <Typography variant="caption" sx={{ opacity: 0.7 }}>{t('inventoryPage.comment')}</Typography>
+                                <Box sx={{ gridColumn: '1 / -1', p: 1.5, border: '1px solid', borderColor: 'divider', borderRadius: 1 }}>
+                                  <Typography variant="caption" sx={{ opacity: 0.7, display: 'block', mb: 0.5 }}>
+                                    {t('inventory.comment')}
+                                  </Typography>
                                   <Typography variant="body2">
                                     {haConfig.comment}
                                   </Typography>
@@ -4536,19 +4583,29 @@ return (
                           ) : (
                             <Box
                               sx={{
-                                p: 3,
-                                bgcolor: 'action.hover',
+                                p: 4,
+                                border: '1px dashed',
+                                borderColor: 'divider',
                                 borderRadius: 1,
                                 textAlign: 'center',
                               }}
                             >
-                              <i className="ri-shield-cross-line" style={{ fontSize: 48, opacity: 0.3 }} />
-                              <Typography variant="body2" sx={{ opacity: 0.5, mt: 1 }}>
+                              <i className="ri-shield-cross-line" style={{ fontSize: 56, opacity: 0.3 }} />
+                              <Typography variant="subtitle1" fontWeight={600} sx={{ mt: 1.5 }}>
                                 {t('inventory.haNotEnabled')}
                               </Typography>
-                              <Typography variant="caption" sx={{ opacity: 0.4 }}>
-                                {t('common.noData')}
+                              <Typography variant="body2" sx={{ opacity: 0.7, mt: 0.5, maxWidth: 480, mx: 'auto' }}>
+                                {t('inventory.haEnableDescription')}
                               </Typography>
+                              <Button
+                                variant="contained"
+                                size="small"
+                                startIcon={<i className="ri-shield-check-line" />}
+                                onClick={() => setHaEditing(true)}
+                                sx={{ mt: 2 }}
+                              >
+                                {t('inventory.haEnable')}
+                              </Button>
                             </Box>
                           )}
                         </>
@@ -4556,7 +4613,8 @@ return (
                     </CardContent>
                   </Card>
                 </Box>
-              )}
+                )
+              })()}
 
               {/* ==================== ONGLET FIREWALL (10 si cluster, 9 sinon) ==================== */}
               {((selectedVmIsCluster && detailTab === 10) || (!selectedVmIsCluster && detailTab === 9)) && selection?.type === 'vm' && (

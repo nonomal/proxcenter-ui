@@ -86,6 +86,9 @@ export async function POST(
     if (body.state) params.append('state', body.state)
     if (body.max_restart !== undefined) params.append('max_restart', String(body.max_restart))
     if (body.max_relocate !== undefined) params.append('max_relocate', String(body.max_relocate))
+    // PVE 9+ per-resource failback flag (defaults to enabled). Older clusters
+    // reject unknown params, so only forward when the caller sets it.
+    if (body.failback !== undefined) params.append('failback', body.failback ? '1' : '0')
     if (body.comment) params.append('comment', body.comment)
 
     let result

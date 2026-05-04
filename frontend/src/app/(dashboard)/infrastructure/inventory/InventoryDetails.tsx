@@ -1274,6 +1274,7 @@ export default function InventoryDetails({
     haConfig, haGroups, haLoading, haSaving, haError, haLoaded, haEditing,
     setHaEditing, haState, setHaState, haGroup, setHaGroup,
     haMaxRestart, setHaMaxRestart, haMaxRelocate, setHaMaxRelocate,
+    haFailback, setHaFailback,
     haComment, setHaComment, loadHaConfig, saveHaConfig, removeHaConfig, resetHA,
   } = useHA({ selection, detailTab, t, data, setConfirmAction, setConfirmActionLoading })
 
@@ -3337,7 +3338,7 @@ return vm?.isCluster ?? false
                 error, exploreWithPveStorage, explorerArchive, explorerArchives, explorerError,
                 explorerFiles, explorerLoading, explorerMode, explorerPath, explorerSearch,
                 filteredExplorerFiles, haComment, haConfig, haEditing, haError,
-                haGroup, haGroups, haLoading, haMaxRelocate, haMaxRestart,
+                haFailback, haGroup, haGroups, haLoading, haMaxRelocate, haMaxRestart,
                 haSaving, haState, loadBackupContent, loadBackupContentViaPbs, loadHaConfig,
                 loadNotes, loadTasks, loading, localTags, memory,
                 memoryModified, navigateToBreadcrumb, navigateToFolder, navigateUp, numaEnabled, newSnapshotDesc,
@@ -3353,7 +3354,7 @@ return vm?.isCluster ?? false
                 setCpuCores, setCpuFlags, setCpuLimit, setCpuLimitEnabled, setCpuSockets, setCpuType,
                 setCreateBackupDialogOpen, setDeleteReplicationId, setDetailTab, setEditDiskDialogOpen, setEditNetworkDialogOpen,
                 setEditOptionDialog, setEditScsiControllerDialogOpen, setExplorerArchive, setExplorerArchives, setExplorerFiles,
-                setExplorerSearch, setHaComment, setHaEditing, setHaGroup, setHaMaxRelocate,
+                setExplorerSearch, setHaComment, setHaEditing, setHaFailback, setHaGroup, setHaMaxRelocate,
                 setHaMaxRestart, setHaState, setMemory, setNewSnapshotDesc, setNewSnapshotName,
                 setSwap, swap,
                 setNewSnapshotRam, setNotesEditing, setNumaEnabled, setReplicationComment, setReplicationLoaded, setReplicationRateLimit,
