@@ -277,6 +277,10 @@ export default function InventoryDetails({
   // value as `targetVmid` when set.
   const [migTargetVmid, setMigTargetVmid] = useState('')
   const [migTargetVmidStatus, setMigTargetVmidStatus] = useState<'idle' | 'checking' | 'available' | 'taken' | 'invalid'>('idle')
+  // Optional 802.1Q VLAN tag applied to the created VM's NIC. Empty string means
+  // "no tag" (access port on the bridge's native VLAN). Stored as string so the
+  // input renders cleanly when blank; coerced + validated server-side.
+  const [migVlanTag, setMigVlanTag] = useState<string>('')
   const [migBridges, setMigBridges] = useState<any[]>([])
   const [migStartAfter, setMigStartAfter] = useState(false)
   const [migDiskPaths, setMigDiskPaths] = useState('')
@@ -309,7 +313,7 @@ export default function InventoryDetails({
   const [bulkMigLogsFilter, setBulkMigLogsFilter] = useState<string | null>(null)
   const bulkMigJobsRef = useRef(bulkMigJobs)
   bulkMigJobsRef.current = bulkMigJobs
-  const bulkMigConfigRef = useRef<{ sourceConnectionId: string; targetConnectionId: string; targetStorage: string; networkBridge: string; migrationType: string; transferMode: string; startAfterMigration: boolean; sourceType: string; tempStorage?: string } | null>(null)
+  const bulkMigConfigRef = useRef<{ sourceConnectionId: string; targetConnectionId: string; targetStorage: string; networkBridge: string; vlanTag?: number; migrationType: string; transferMode: string; startAfterMigration: boolean; sourceType: string; tempStorage?: string } | null>(null)
   // Snapshot of host info when bulk dialog opens (avoids null data when selection changes)
   const [bulkMigHostInfo, setBulkMigHostInfo] = useState<any>(null)
   const [extHostMigrations, setExtHostMigrations] = useState<any[]>([])
@@ -887,6 +891,7 @@ export default function InventoryDetails({
                   targetNode: job.targetNode,
                   targetStorage: cfg.targetStorage,
                   networkBridge: cfg.networkBridge,
+                  ...(typeof cfg.vlanTag === 'number' && { vlanTag: cfg.vlanTag }),
                   migrationType: cfg.migrationType,
                   transferMode: cfg.transferMode,
                   startAfterMigration: cfg.startAfterMigration,
@@ -4253,6 +4258,8 @@ return vm?.isCluster ?? false
         setMigTargetVmidStatus={setMigTargetVmidStatus}
         migNetworkBridge={migNetworkBridge}
         setMigNetworkBridge={setMigNetworkBridge}
+        migVlanTag={migVlanTag}
+        setMigVlanTag={setMigVlanTag}
         migBridges={migBridges}
         migStartAfter={migStartAfter}
         setMigStartAfter={setMigStartAfter}

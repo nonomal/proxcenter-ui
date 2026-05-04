@@ -57,6 +57,19 @@ export async function POST(req: Request) {
       targetVmid = n
     }
 
+    // Optional 802.1Q VLAN tag (1-4094). Coerce string→number for clients that
+    // serialise the form input as a string. Reject anything outside the valid
+    // range here so misconfigured payloads don't reach the pipeline; undefined
+    // means "no tag" (access port on the bridge's native VLAN).
+    let vlanTag: number | undefined
+    if (body.vlanTag !== undefined && body.vlanTag !== null && body.vlanTag !== "") {
+      const n = typeof body.vlanTag === "number" ? body.vlanTag : parseInt(String(body.vlanTag), 10)
+      if (!Number.isInteger(n) || n < 1 || n > 4094) {
+        return NextResponse.json({ error: "vlanTag must be an integer between 1 and 4094" }, { status: 400 })
+      }
+      vlanTag = n
+    }
+
     // Verify connections exist
     const [sourceConn, pveConn] = await Promise.all([
       prisma.connection.findUnique({ where: { id: sourceConnectionId }, select: { id: true, type: true, subType: true, name: true, baseUrl: true } }),
@@ -90,7 +103,7 @@ export async function POST(req: Request) {
         // targetVmid stored in config so the pipeline can read it back; the
         // top-level `targetVmid` Prisma column gets set by the pipeline once
         // the actual VM is created (next-free fallback path).
-        config: JSON.stringify({ sourceConnectionId, sourceVmId, sourceVmName: body.sourceVmName, targetConnectionId, targetNode, targetStorage, networkBridge, startAfterMigration, migrationType, transferMode, sourceType: effectiveSourceType, ...(targetVmid !== undefined && { targetVmid }) }),
+        config: JSON.stringify({ sourceConnectionId, sourceVmId, sourceVmName: body.sourceVmName, targetConnectionId, targetNode, targetStorage, networkBridge, vlanTag, startAfterMigration, migrationType, transferMode, sourceType: effectiveSourceType, ...(targetVmid !== undefined && { targetVmid }) }),
         status: "pending",
         currentStep: "pending",
         startedAt: new Date(),
@@ -105,6 +118,7 @@ export async function POST(req: Request) {
       targetNode,
       targetStorage,
       networkBridge,
+      vlanTag,
       startAfterMigration,
       migrationType: migrationType as "cold" | "live" | "sshfs_boot",
       transferMode: transferMode as "https" | "sshfs",
@@ -128,7 +142,7 @@ export async function POST(req: Request) {
         await runV2vMigrationPipeline(job.id, {
           sourceConnectionId, sourceVmId, sourceVmName,
           sourceType: effectiveSourceType as "vcenter" | "hyperv" | "nutanix",
-          targetConnectionId, targetNode, targetStorage, networkBridge, startAfterMigration,
+          targetConnectionId, targetNode, targetStorage, networkBridge, vlanTag, startAfterMigration,
           vcenterDatacenter, vcenterCluster, vcenterHost, diskPaths, tempStorage,
           migrationType: v2vMigrationType,
           ...(targetVmid !== undefined && { targetVmid }),
@@ -195,7 +209,7 @@ export async function POST(req: Request) {
             await runV2vMigrationPipeline(job.id, {
               sourceConnectionId, sourceVmId, sourceVmName: body.sourceVmName || "",
               sourceType: "esxi-direct",
-              targetConnectionId, targetNode, targetStorage, networkBridge, startAfterMigration,
+              targetConnectionId, targetNode, targetStorage, networkBridge, vlanTag, startAfterMigration,
               tempStorage: body.tempStorage,
               migrationType: "cold",
               vmxPath: posixVmxPath,

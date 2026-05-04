@@ -65,6 +65,7 @@ export function mapEsxiToPveConfig(
   targetVmid: number,
   targetStorage: string,
   networkBridge: string = "vmbr0",
+  vlanTag?: number,
 ): PveVmCreateParams {
   const isEfi = esxiConfig.firmware === "efi"
   const isWin = isWindowsVm(esxiConfig)
@@ -73,6 +74,11 @@ export function mapEsxiToPveConfig(
   // For Linux, use virtio for best performance
   const scsihw = isWin ? "lsi" : "virtio-scsi-single"
   const nicModel = isWin ? "e1000" : mapNicModel(esxiConfig.nics[0]?.type || "Vmxnet3")
+
+  const tagSuffix =
+    typeof vlanTag === "number" && Number.isInteger(vlanTag) && vlanTag >= 1 && vlanTag <= 4094
+      ? `,tag=${vlanTag}`
+      : ""
 
   const params: PveVmCreateParams = {
     vmid: targetVmid,
@@ -87,7 +93,7 @@ export function mapEsxiToPveConfig(
     machine: "q35",
     boot: "order=scsi0",
     agent: "1",
-    net0: `${nicModel},bridge=${networkBridge}`,
+    net0: `${nicModel},bridge=${networkBridge}${tagSuffix}`,
   }
 
   if (isEfi) {

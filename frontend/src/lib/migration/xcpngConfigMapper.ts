@@ -37,6 +37,7 @@ export function mapXoToPveConfig(
   targetVmid: number,
   targetStorage: string,
   networkBridge: string = "vmbr0",
+  vlanTag?: number,
 ): PveVmCreateParams {
   const isEfi = xoConfig.firmware === "uefi"
   const isWin = isWindowsXoVm(xoConfig)
@@ -46,6 +47,11 @@ export function mapXoToPveConfig(
   // For Linux: use virtio since XO Linux VMs are usually already using PV drivers
   const scsihw = isWin ? "lsi" : "virtio-scsi-single"
   const nicModel = isWin ? "e1000" : "virtio"
+
+  const tagSuffix =
+    typeof vlanTag === "number" && Number.isInteger(vlanTag) && vlanTag >= 1 && vlanTag <= 4094
+      ? `,tag=${vlanTag}`
+      : ""
 
   const params: PveVmCreateParams = {
     vmid: targetVmid,
@@ -60,7 +66,7 @@ export function mapXoToPveConfig(
     machine: "q35",
     boot: "order=scsi0",
     agent: "1",
-    net0: `${nicModel},bridge=${networkBridge}`,
+    net0: `${nicModel},bridge=${networkBridge}${tagSuffix}`,
   }
 
   if (isEfi) {

@@ -59,6 +59,13 @@ export interface V2vMigrationConfig {
   targetNode: string
   targetStorage: string
   networkBridge: string
+  /**
+   * Optional 802.1Q VLAN tag (1-4094) appended to every NIC in the created
+   * PVE VM as `tag=N`. When unset the NIC is untagged (access on the bridge's
+   * native VLAN). Source VMware/Hyper-V/Nutanix portgroup VLAN metadata is not
+   * imported automatically: the user picks the tag in the migration dialog.
+   */
+  vlanTag?: number
   startAfterMigration: boolean
   /** vCenter datacenter name (libvirt vpx URI: vpx://VC/{datacenter}/...). Required for vcenter source. */
   vcenterDatacenter?: string
@@ -2226,9 +2233,13 @@ export async function runV2vMigrationPipeline(
         }
       }
 
-      createParams = buildPveCreateParams(vmConfig, targetVmid, config.networkBridge)
+      createParams = buildPveCreateParams(vmConfig, targetVmid, config.networkBridge, config.vlanTag)
     } else {
       // Fallback config
+      const fallbackTagSuffix =
+        typeof config.vlanTag === "number" && Number.isInteger(config.vlanTag) && config.vlanTag >= 1 && config.vlanTag <= 4094
+          ? `,tag=${config.vlanTag}`
+          : ""
       createParams = {
         vmid: targetVmid,
         name: config.sourceVmName.replace(/[^a-zA-Z0-9.\-]/g, "-").substring(0, 63) || "vm",
@@ -2242,7 +2253,7 @@ export async function runV2vMigrationPipeline(
         machine: "q35",
         boot: "order=scsi0",
         agent: "enabled=0",
-        net0: `virtio,bridge=${config.networkBridge}`,
+        net0: `virtio,bridge=${config.networkBridge}${fallbackTagSuffix}`,
       }
     }
 

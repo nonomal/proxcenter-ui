@@ -237,6 +237,8 @@ export interface InventoryDialogsProps {
   setMigTargetVmidStatus: (v: 'idle' | 'checking' | 'available' | 'taken' | 'invalid') => void
   migNetworkBridge: string
   setMigNetworkBridge: (v: string) => void
+  migVlanTag: string
+  setMigVlanTag: (v: string) => void
   migBridges: any[]
   migStartAfter: boolean
   setMigStartAfter: (v: boolean) => void
@@ -277,7 +279,7 @@ export interface InventoryDialogsProps {
   setBulkMigLogsExpanded: (v: React.SetStateAction<boolean>) => void
   bulkMigLogsFilter: string | null
   setBulkMigLogsFilter: (v: string | null) => void
-  bulkMigConfigRef: React.MutableRefObject<{ sourceConnectionId: string; targetConnectionId: string; targetStorage: string; networkBridge: string; migrationType: string; transferMode: string; startAfterMigration: boolean; sourceType: string; tempStorage?: string } | null>
+  bulkMigConfigRef: React.MutableRefObject<{ sourceConnectionId: string; targetConnectionId: string; targetStorage: string; networkBridge: string; vlanTag?: number; migrationType: string; transferMode: string; startAfterMigration: boolean; sourceType: string; tempStorage?: string } | null>
   bulkMigHostInfo: any
 
   // Upgrade dialog
@@ -388,7 +390,7 @@ export default function InventoryDialogs(props: InventoryDialogsProps) {
     esxiMigrateVm, setEsxiMigrateVm, migTargetConn, setMigTargetConn, migTargetNode, setMigTargetNode,
     migTargetStorage, setMigTargetStorage,
     migTargetVmid, setMigTargetVmid, migTargetVmidStatus, setMigTargetVmidStatus,
-    migNetworkBridge, setMigNetworkBridge, migBridges,
+    migNetworkBridge, setMigNetworkBridge, migVlanTag, setMigVlanTag, migBridges,
     migStartAfter, setMigStartAfter, migDiskPaths, setMigDiskPaths, migTempStorage, setMigTempStorage,
     migType, setMigType, migTransferMode, setMigTransferMode, migPveConnections, migNodes, migStorages,
     migSshfsAvailable, vcenterPreflight, setVcenterPreflight, migStarting, setMigStarting,
@@ -2084,36 +2086,51 @@ return
                       })}
                     </Select>
                   </FormControl>
-                  <FormControl fullWidth size="small" disabled={!migTargetNode || migBridges.length === 0}>
-                    <InputLabel>{t('inventoryPage.esxiMigration.networkBridge')}</InputLabel>
-                    <Select
-                      value={migNetworkBridge}
-                      onChange={e => setMigNetworkBridge(e.target.value)}
-                      label={t('inventoryPage.esxiMigration.networkBridge')}
-                      renderValue={(val) => {
-                        const b = migBridges.find((b: any) => b.iface === val)
-                        if (!b) return ''
-                        return (
-                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                            <i className="ri-router-line" style={{ fontSize: 14, opacity: 0.7 }} />
-                            <Typography variant="body2" fontWeight={500}>{b.iface}</Typography>
-                            {b.comments && <Typography variant="caption" sx={{ opacity: 0.5 }}>({b.comments})</Typography>}
-                          </Box>
-                        )
-                      }}
-                    >
-                      {migBridges.map((b: any) => (
-                        <MenuItem key={b.iface} value={b.iface}>
-                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, width: '100%' }}>
-                            <i className="ri-router-line" style={{ fontSize: 14, opacity: 0.7 }} />
-                            <Typography variant="body2" fontWeight={500}>{b.iface}</Typography>
-                            {b.comments && <Typography variant="caption" sx={{ opacity: 0.5 }}>({b.comments})</Typography>}
-                            {b.cidr && <Typography variant="caption" sx={{ opacity: 0.5, ml: 'auto' }}>{b.cidr}</Typography>}
-                          </Box>
-                        </MenuItem>
-                      ))}
-                    </Select>
-                  </FormControl>
+                  <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 110px', gap: 1 }}>
+                    <FormControl fullWidth size="small" disabled={!migTargetNode || migBridges.length === 0}>
+                      <InputLabel>{t('inventoryPage.esxiMigration.networkBridge')}</InputLabel>
+                      <Select
+                        value={migNetworkBridge}
+                        onChange={e => setMigNetworkBridge(e.target.value)}
+                        label={t('inventoryPage.esxiMigration.networkBridge')}
+                        renderValue={(val) => {
+                          const b = migBridges.find((b: any) => b.iface === val)
+                          if (!b) return ''
+                          return (
+                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                              <i className="ri-router-line" style={{ fontSize: 14, opacity: 0.7 }} />
+                              <Typography variant="body2" fontWeight={500}>{b.iface}</Typography>
+                              {b.comments && <Typography variant="caption" sx={{ opacity: 0.5 }}>({b.comments})</Typography>}
+                            </Box>
+                          )
+                        }}
+                      >
+                        {migBridges.map((b: any) => (
+                          <MenuItem key={b.iface} value={b.iface}>
+                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, width: '100%' }}>
+                              <i className="ri-router-line" style={{ fontSize: 14, opacity: 0.7 }} />
+                              <Typography variant="body2" fontWeight={500}>{b.iface}</Typography>
+                              {b.comments && <Typography variant="caption" sx={{ opacity: 0.5 }}>({b.comments})</Typography>}
+                              {b.cidr && <Typography variant="caption" sx={{ opacity: 0.5, ml: 'auto' }}>{b.cidr}</Typography>}
+                            </Box>
+                          </MenuItem>
+                        ))}
+                      </Select>
+                    </FormControl>
+                    <TextField
+                      size="small"
+                      type="number"
+                      label={t('inventoryPage.esxiMigration.vlanTag')}
+                      placeholder={t('inventoryPage.esxiMigration.vlanTagPlaceholder')}
+                      value={migVlanTag}
+                      onChange={e => setMigVlanTag(e.target.value.replace(/[^0-9]/g, ''))}
+                      inputProps={{ min: 1, max: 4094, inputMode: 'numeric' }}
+                      error={migVlanTag !== '' && (Number(migVlanTag) < 1 || Number(migVlanTag) > 4094)}
+                      helperText={migVlanTag !== '' && (Number(migVlanTag) < 1 || Number(migVlanTag) > 4094)
+                        ? t('inventoryPage.esxiMigration.vlanTagInvalid')
+                        : undefined}
+                    />
+                  </Box>
                   <TextField
                     fullWidth
                     size="small"
@@ -2775,6 +2792,12 @@ return
                           targetVmid: Number(migTargetVmid.trim()),
                         }),
                         networkBridge: migNetworkBridge,
+                        // 802.1Q VLAN tag (1-4094). Empty input means untagged
+                        // access port — omit from the payload so the server-side
+                        // schema treats it as undefined rather than NaN.
+                        ...(migVlanTag !== '' && Number(migVlanTag) >= 1 && Number(migVlanTag) <= 4094 && {
+                          vlanTag: Number(migVlanTag),
+                        }),
                         // vCenter supports cold + live via the v2v pipeline
                         // (NFC-on-snapshot). Hyper-V / Nutanix are still cold only.
                         migrationType: (esxiMigrateVm.hostType === 'hyperv' || esxiMigrateVm.hostType === 'nutanix') ? 'cold'
@@ -3127,36 +3150,51 @@ return
                           </Select>
                           {migTargetNode === '__auto__' && <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, ml: 1.5 }}>{t('inventoryPage.esxiMigration.sharedStorageHint')}</Typography>}
                         </FormControl>
-                        <FormControl fullWidth size="small">
-                          <InputLabel>{t('inventoryPage.esxiMigration.networkBridge')}</InputLabel>
-                          <Select
-                            value={migNetworkBridge}
-                            onChange={e => setMigNetworkBridge(e.target.value)}
-                            label={t('inventoryPage.esxiMigration.networkBridge')}
-                            renderValue={(val) => {
-                              const b = migBridges.find((b: any) => b.iface === val)
-                              if (!b) return ''
-                              return (
-                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                                  <i className="ri-router-line" style={{ fontSize: 14, opacity: 0.7 }} />
-                                  <Typography variant="body2" fontWeight={500}>{b.iface}</Typography>
-                                  {b.comments && <Typography variant="caption" sx={{ opacity: 0.5 }}>({b.comments})</Typography>}
-                                </Box>
-                              )
-                            }}
-                          >
-                            {migBridges.map((b: any) => (
-                              <MenuItem key={b.iface} value={b.iface}>
-                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, width: '100%' }}>
-                                  <i className="ri-router-line" style={{ fontSize: 14, opacity: 0.7 }} />
-                                  <Typography variant="body2" fontWeight={500}>{b.iface}</Typography>
-                                  {b.comments && <Typography variant="caption" sx={{ opacity: 0.5 }}>({b.comments})</Typography>}
-                                  {b.cidr && <Typography variant="caption" sx={{ opacity: 0.5, ml: 'auto' }}>{b.cidr}</Typography>}
-                                </Box>
-                              </MenuItem>
-                            ))}
-                          </Select>
-                        </FormControl>
+                        <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 110px', gap: 1 }}>
+                          <FormControl fullWidth size="small">
+                            <InputLabel>{t('inventoryPage.esxiMigration.networkBridge')}</InputLabel>
+                            <Select
+                              value={migNetworkBridge}
+                              onChange={e => setMigNetworkBridge(e.target.value)}
+                              label={t('inventoryPage.esxiMigration.networkBridge')}
+                              renderValue={(val) => {
+                                const b = migBridges.find((b: any) => b.iface === val)
+                                if (!b) return ''
+                                return (
+                                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                    <i className="ri-router-line" style={{ fontSize: 14, opacity: 0.7 }} />
+                                    <Typography variant="body2" fontWeight={500}>{b.iface}</Typography>
+                                    {b.comments && <Typography variant="caption" sx={{ opacity: 0.5 }}>({b.comments})</Typography>}
+                                  </Box>
+                                )
+                              }}
+                            >
+                              {migBridges.map((b: any) => (
+                                <MenuItem key={b.iface} value={b.iface}>
+                                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, width: '100%' }}>
+                                    <i className="ri-router-line" style={{ fontSize: 14, opacity: 0.7 }} />
+                                    <Typography variant="body2" fontWeight={500}>{b.iface}</Typography>
+                                    {b.comments && <Typography variant="caption" sx={{ opacity: 0.5 }}>({b.comments})</Typography>}
+                                    {b.cidr && <Typography variant="caption" sx={{ opacity: 0.5, ml: 'auto' }}>{b.cidr}</Typography>}
+                                  </Box>
+                                </MenuItem>
+                              ))}
+                            </Select>
+                          </FormControl>
+                          <TextField
+                            size="small"
+                            type="number"
+                            label={t('inventoryPage.esxiMigration.vlanTag')}
+                            placeholder={t('inventoryPage.esxiMigration.vlanTagPlaceholder')}
+                            value={migVlanTag}
+                            onChange={e => setMigVlanTag(e.target.value.replace(/[^0-9]/g, ''))}
+                            inputProps={{ min: 1, max: 4094, inputMode: 'numeric' }}
+                            error={migVlanTag !== '' && (Number(migVlanTag) < 1 || Number(migVlanTag) > 4094)}
+                            helperText={migVlanTag !== '' && (Number(migVlanTag) < 1 || Number(migVlanTag) > 4094)
+                              ? t('inventoryPage.esxiMigration.vlanTagInvalid')
+                              : undefined}
+                          />
+                        </Box>
                       </>
                     )}
                   </Stack>
@@ -3814,6 +3852,11 @@ return
                           targetNode: job.targetNode,
                           targetStorage: migTargetStorage,
                           networkBridge: migNetworkBridge,
+                          // 802.1Q VLAN tag (1-4094); applied to every VM in the
+                          // batch since they all land on the same target bridge.
+                          ...(migVlanTag !== '' && Number(migVlanTag) >= 1 && Number(migVlanTag) <= 4094 && {
+                            vlanTag: Number(migVlanTag),
+                          }),
                           // vCenter supports cold + live (NFC-on-snapshot); Hyper-V /
                           // Nutanix still force cold since their pipelines don't have a
                           // snapshot-based transfer path. sshfs_boot is ESXi-direct only.
@@ -3874,6 +3917,9 @@ return
                     targetConnectionId: migTargetConn,
                     targetStorage: migTargetStorage,
                     networkBridge: migNetworkBridge,
+                    ...(migVlanTag !== '' && Number(migVlanTag) >= 1 && Number(migVlanTag) <= 4094 && {
+                      vlanTag: Number(migVlanTag),
+                    }),
                     migrationType: (isHypervBulk || isNutanixBulk) ? 'cold'
                       : (isVcenterBulk ? (migType === 'sshfs_boot' ? 'cold' : migType) : migType),
                     transferMode: isVcenterBulk ? 'v2v' : migTransferMode,
