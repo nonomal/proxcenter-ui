@@ -487,9 +487,28 @@ return
     }
   }
 
-  // Load available templates when template storage or node changes
+  // Load available templates from EVERY node that hosts the selected storage,
+  // not just resolvedNode. `local` is per-node: a template downloaded on pve2
+  // doesn't appear on pve1's `local`. The original code queried only
+  // resolvedNode (chosen by findBestNode based on load), so users with a
+  // template on a non-default node saw an empty list.
   useEffect(() => {
-    if (!selectedConnection || !resolvedNode || !templateStorage) {
+    if (!selectedConnection || !templateStorage) {
+      setTemplates([])
+      return
+    }
+
+    // Candidate nodes = every entry in `storages` that matches this storage
+    // name. Shared storages (NFS, Ceph, ...) are aggregated with a `nodes`
+    // array; non-shared storages produce one row per node with `node`.
+    const candidateNodes = Array.from(new Set(
+      storages
+        .filter((s: any) => s.storage === templateStorage)
+        .flatMap((s: any) => Array.isArray(s.nodes) && s.nodes.length > 0 ? s.nodes : (s.node ? [s.node] : []))
+        .filter(Boolean)
+    )) as string[]
+
+    if (candidateNodes.length === 0) {
       setTemplates([])
       return
     }
@@ -497,32 +516,51 @@ return
     let cancelled = false
     setLoadingTemplates(true)
 
-    fetch(`/api/v1/connections/${encodeURIComponent(selectedConnection)}/nodes/${encodeURIComponent(resolvedNode)}/storage/${encodeURIComponent(templateStorage)}/content?content=vztmpl`)
-      .then(res => res.json())
-      .then(json => {
-        if (cancelled) return
-        const items = (json.data || []).map((item: any) => {
-          // volid is like "local:vztmpl/debian-12-standard_12.2-1_amd64.tar.zst"
+    Promise.all(candidateNodes.map(async (n) => {
+      try {
+        const res = await fetch(
+          `/api/v1/connections/${encodeURIComponent(selectedConnection)}/nodes/${encodeURIComponent(n)}/storage/${encodeURIComponent(templateStorage)}/content?content=vztmpl`
+        )
+        if (!res.ok) return { node: n, items: [] }
+        const json = await res.json()
+        return { node: n, items: Array.isArray(json.data) ? json.data : [] }
+      } catch {
+        return { node: n, items: [] }
+      }
+    })).then(results => {
+      if (cancelled) return
+      // Merge by filename. For shared storages we'd see the same volid
+      // on every node; for non-shared we see it only on the node that has
+      // it. `availableOn` carries which nodes can actually create using
+      // this template — used downstream to switch resolvedNode if the
+      // current one doesn't host the picked template.
+      const merged = new Map<string, any>()
+      for (const { node: n, items } of results) {
+        for (const item of items) {
           const volid = item.volid || ''
-          const filename = volid.includes('/') ? volid.split('/').pop() : volid
-          return {
-            volid,
-            filename,
-            size: item.size || 0,
-            format: item.format || '',
+          const filename = volid.includes('/') ? volid.split('/').pop()! : volid
+          const existing = merged.get(filename)
+          if (existing) {
+            if (!existing.availableOn.includes(n)) existing.availableOn.push(n)
+          } else {
+            merged.set(filename, {
+              volid,
+              filename,
+              size: item.size || 0,
+              format: item.format || '',
+              availableOn: [n],
+            })
           }
-        }).sort((a: any, b: any) => a.filename.localeCompare(b.filename))
-        setTemplates(items)
-      })
-      .catch(() => {
-        if (!cancelled) setTemplates([])
-      })
-      .finally(() => {
-        if (!cancelled) setLoadingTemplates(false)
-      })
+        }
+      }
+      const list = Array.from(merged.values()).sort((a, b) => a.filename.localeCompare(b.filename))
+      setTemplates(list)
+    }).finally(() => {
+      if (!cancelled) setLoadingTemplates(false)
+    })
 
     return () => { cancelled = true }
-  }, [selectedConnection, resolvedNode, templateStorage])
+  }, [selectedConnection, templateStorage, storages])
 
   const handleCreate = async () => {
     setCreating(true)
@@ -911,7 +949,21 @@ return
                   <InputLabel>{t('inventory.createLxc.template')}</InputLabel>
                   <Select
                     value={template}
-                    onChange={(e) => setTemplate(e.target.value)}
+                    onChange={(e) => {
+                      const filename = e.target.value
+                      setTemplate(filename)
+                      // For non-shared storages (e.g. `local`), the template
+                      // only exists on the nodes listed in `availableOn`. If
+                      // resolvedNode (picked earlier by findBestNode) isn't
+                      // one of them, the create call would fail with
+                      // "template doesn't exist". Auto-realign to a hosting
+                      // node so the LXC lands where the template actually is.
+                      const tmpl = templates.find((tt: any) => tt.filename === filename)
+                      if (tmpl && Array.isArray(tmpl.availableOn) && tmpl.availableOn.length > 0
+                        && !tmpl.availableOn.includes(resolvedNode)) {
+                        setResolvedNode(tmpl.availableOn[0])
+                      }
+                    }}
                     label={t('inventory.createLxc.template')}
                     disabled={loadingTemplates || templates.length === 0}
                     startAdornment={loadingTemplates ? <CircularProgress size={16} sx={{ mr: 1 }} /> : undefined}
@@ -920,11 +972,18 @@ return
                       <MenuItem key={tmpl.filename} value={tmpl.filename}>
                         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', gap: 1 }}>
                           <Typography variant="body2" sx={{ fontSize: 12 }}>{tmpl.filename}</Typography>
-                          {tmpl.size > 0 && (
-                            <Typography variant="caption" sx={{ opacity: 0.5, flexShrink: 0 }}>
-                              {(tmpl.size / 1024 / 1024).toFixed(0)} MB
-                            </Typography>
-                          )}
+                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexShrink: 0 }}>
+                            {Array.isArray(tmpl.availableOn) && tmpl.availableOn.length > 0 && (
+                              <Typography variant="caption" sx={{ opacity: 0.5 }}>
+                                {tmpl.availableOn.join(', ')}
+                              </Typography>
+                            )}
+                            {tmpl.size > 0 && (
+                              <Typography variant="caption" sx={{ opacity: 0.5 }}>
+                                {(tmpl.size / 1024 / 1024).toFixed(0)} MB
+                              </Typography>
+                            )}
+                          </Box>
                         </Box>
                       </MenuItem>
                     ))}
