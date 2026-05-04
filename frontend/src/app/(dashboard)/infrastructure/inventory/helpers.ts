@@ -1015,17 +1015,27 @@ return Number.isFinite(num) ? num.toFixed(2) : String(v)
             parts.forEach(part => {
               const [k, v] = part.split('=')
 
+              // Common to QEMU and LXC
               if (k === 'bridge') netInfoItem.bridge = v
               else if (k === 'tag') netInfoItem.tag = Number(v)
               else if (k === 'firewall') netInfoItem.firewall = v === '1'
               else if (k === 'link_down') netInfoItem.linkDown = v === '1'
               else if (k === 'rate') netInfoItem.rate = Number(v)
               else if (k === 'mtu') netInfoItem.mtu = Number(v)
+              // QEMU-only
               else if (k === 'queues') netInfoItem.queues = Number(v)
               else if (['virtio', 'e1000', 'e1000e', 'rtl8139', 'vmxnet3'].includes(k)) {
                 netInfoItem.model = k
                 netInfoItem.macaddr = v
               }
+              // LXC-only
+              else if (k === 'name') netInfoItem.name = v
+              else if (k === 'hwaddr') netInfoItem.macaddr = v
+              else if (k === 'ip') netInfoItem.ip = v
+              else if (k === 'gw') netInfoItem.gw = v
+              else if (k === 'ip6') netInfoItem.ip6 = v
+              else if (k === 'gw6') netInfoItem.gw6 = v
+              else if (k === 'host-managed') netInfoItem.hostmanaged = v === '1'
             })
 
             networkInfo.push(netInfoItem)

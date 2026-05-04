@@ -1743,13 +1743,21 @@ export default function VmDetailTabs(props: any) {
                                         model: net.model,
                                         bridge: net.bridge,
                                         mac: net.macaddr,
+                                        macaddr: net.macaddr,
                                         vlan: net.tag,
                                         firewall: net.firewall,
                                         linkDown: net.linkDown,
                                         rate: net.rate,
                                         mtu: net.mtu,
-                                      queues: net.queues
-                                    })
+                                        queues: net.queues,
+                                        // LXC-only — pre-populate when opening on a container
+                                        name: net.name,
+                                        ip: net.ip,
+                                        gw: net.gw,
+                                        ip6: net.ip6,
+                                        gw6: net.gw6,
+                                        hostmanaged: net.hostmanaged,
+                                      })
                                     setEditNetworkDialogOpen(true)
                                   }}
                                 >
@@ -1762,7 +1770,7 @@ export default function VmDetailTabs(props: any) {
                                         <Typography variant="body2" fontWeight={600} sx={{ opacity: net.linkDown ? 0.6 : 1 }}>
                                           {net.id}
                                         </Typography>
-                                        <Chip label={net.model} size="small" sx={{ height: 20, fontSize: 11 }} />
+                                        <Chip label={net.model || (net.name ? 'veth' : '—')} size="small" sx={{ height: 20, fontSize: 11 }} />
                                         {net.linkDown && (
                                           <Chip
                                             icon={<i className="ri-link-unlink" style={{ fontSize: 12 }} />}

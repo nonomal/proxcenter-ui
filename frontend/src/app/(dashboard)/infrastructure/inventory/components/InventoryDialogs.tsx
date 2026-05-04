@@ -994,6 +994,7 @@ echo "deb http://download.proxmox.com/debian/pve $(. /etc/os-release && echo $VE
               connId={connId}
               node={node}
               vmid={vmid}
+              vmType={data?.vmType}
               existingNets={existingNets}
             />
             
@@ -1031,6 +1032,7 @@ echo "deb http://download.proxmox.com/debian/pve $(. /etc/os-release && echo $VE
               onDelete={handleDeleteNetwork}
               connId={connId}
               node={node}
+              vmType={data?.vmType}
               network={selectedNetwork}
             />
 
