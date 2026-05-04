@@ -42,6 +42,12 @@ interface MigrationConfig {
   targetNode: string
   targetStorage: string
   networkBridge: string
+  /**
+   * Optional 802.1Q VLAN tag (1-4094) appended to net0 as `tag=N`. Empty/undefined
+   * means access port on the bridge's native VLAN. XCP-ng VIF VLAN is not
+   * imported automatically — the user picks the tag in the migration dialog.
+   */
+  vlanTag?: number
   startAfterMigration: boolean
   migrationType?: "cold" | "live"
   // User-selected scratch directory on the PVE node for VHD download +
@@ -315,7 +321,7 @@ export async function runXcpngMigrationPipeline(jobId: string, config: Migration
     await updateJob(jobId, "creating_vm", { targetVmid })
     await appendLog(jobId, `Allocated VMID ${targetVmid}`)
 
-    const pveParams = mapXoToPveConfig(vmConfig, targetVmid, config.targetStorage, config.networkBridge)
+    const pveParams = mapXoToPveConfig(vmConfig, targetVmid, config.targetStorage, config.networkBridge, config.vlanTag)
     await appendLog(jobId, `Creating VM: ${pveParams.name} (${pveParams.ostype}, ${pveParams.bios}, ${pveParams.scsihw})...`)
 
     const createBody = new URLSearchParams({

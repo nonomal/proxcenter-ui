@@ -35,6 +35,12 @@ interface MigrationConfig {
   targetNode: string
   targetStorage: string
   networkBridge: string
+  /**
+   * Optional 802.1Q VLAN tag (1-4094) appended to net0 as `tag=N`. Empty/undefined
+   * means access port on the bridge's native VLAN. ESXi portgroup VLAN is not
+   * imported automatically — the user picks the tag in the migration dialog.
+   */
+  vlanTag?: number
   startAfterMigration: boolean
   migrationType?: "cold" | "live" | "sshfs_boot"
   transferMode?: "https" | "sshfs" | "auto"
@@ -371,7 +377,7 @@ export async function runMigrationPipeline(jobId: string, config: MigrationConfi
     await updateJob(jobId, "creating_vm", { targetVmid })
     await appendLog(jobId, `Allocated VMID ${targetVmid}`)
 
-    const pveParams = mapEsxiToPveConfig(vmConfig, targetVmid, config.targetStorage, config.networkBridge)
+    const pveParams = mapEsxiToPveConfig(vmConfig, targetVmid, config.targetStorage, config.networkBridge, config.vlanTag)
     await appendLog(jobId, `Creating VM: ${pveParams.name} (${pveParams.ostype}, ${pveParams.bios}, ${pveParams.scsihw})...`)
 
     // Build URLSearchParams for VM creation (without disks — we import them separately)

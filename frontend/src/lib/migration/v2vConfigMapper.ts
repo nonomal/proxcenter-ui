@@ -232,11 +232,17 @@ export function parseV2vXml(xmlString: string): V2vVmConfig {
 
 /**
  * Build Proxmox VE VM creation parameters from a parsed V2vVmConfig.
+ *
+ * `vlanTag` (when set) is appended as `tag=N` to every NIC. The tag is
+ * validated by the API route (1-4094); we still treat anything outside that
+ * range as a no-op so a misconfigured caller can't produce a syntactically
+ * invalid net string that pvesh would reject at create time.
  */
 export function buildPveCreateParams(
   config: V2vVmConfig,
   vmid: number,
-  networkBridge: string
+  networkBridge: string,
+  vlanTag?: number,
 ): Record<string, any> {
   const params: Record<string, any> = {
     vmid,
@@ -253,18 +259,24 @@ export function buildPveCreateParams(
     agent: 'enabled=0',
   }
 
+  const tagSuffix =
+    typeof vlanTag === 'number' && Number.isInteger(vlanTag) && vlanTag >= 1 && vlanTag <= 4094
+      ? `,tag=${vlanTag}`
+      : ''
+
   // Network interfaces
   config.nics.forEach((nic, i) => {
     let netValue = `${nic.model},bridge=${networkBridge}`
     if (nic.mac) {
       netValue += `,macaddr=${nic.mac}`
     }
+    netValue += tagSuffix
     params[`net${i}`] = netValue
   })
 
   // If no NICs were found, add a default virtio NIC
   if (config.nics.length === 0) {
-    params.net0 = `virtio,bridge=${networkBridge}`
+    params.net0 = `virtio,bridge=${networkBridge}${tagSuffix}`
   }
 
   return params
