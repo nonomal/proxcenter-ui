@@ -137,14 +137,14 @@ return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`
 
 function parseSize(value: string, unit: string): number {
   const num = Number.parseFloat(value)
-  const unitLower = unit.toLowerCase()
+  const unitLower = (unit || '').toLowerCase()
 
-  if (unitLower === 'b') return num
-  if (unitLower === 'kib' || unitLower === 'kb') return num * 1024
-  if (unitLower === 'mib' || unitLower === 'mb') return num * 1024 * 1024
-  if (unitLower === 'gib' || unitLower === 'gb') return num * 1024 * 1024 * 1024
-  if (unitLower === 'tib' || unitLower === 'tb') return num * 1024 * 1024 * 1024 * 1024
-  
+  if (unitLower === 'b' || unitLower === '') return num
+  if (unitLower === 'k' || unitLower === 'kib' || unitLower === 'kb') return num * 1024
+  if (unitLower === 'm' || unitLower === 'mib' || unitLower === 'mb') return num * 1024 * 1024
+  if (unitLower === 'g' || unitLower === 'gib' || unitLower === 'gb') return num * 1024 * 1024 * 1024
+  if (unitLower === 't' || unitLower === 'tib' || unitLower === 'tb') return num * 1024 * 1024 * 1024 * 1024
+
 return num
 }
 
@@ -186,6 +186,18 @@ function parseMigrationProgress(logs: TaskLogEntry[]): { progress: number; messa
   const liveCompletedRegex = /migration (completed|status: completed)/i
   const mirrorReadyRegex = /all 'mirror' jobs are ready/i
   const switchingRegex = /switching mirror jobs to actively synced mode/i
+  // Offline cross-cluster (storage_migrate / ZFS replication) patterns.
+  // The online NBD path emits "drive-scsiN: transferred X of Y" lines we
+  // already match above; the offline path runs `zfs send` into a tunnel and
+  // surfaces a different log shape. PVE's pve-storage announces the
+  // estimated size up-front and confirms the destination volume id once the
+  // import settles, so we track both per-disk size and per-disk completion
+  // even when no per-second zfs send -v output is captured to the task log.
+  const zfsEstimatedRegex = /(?:full|incremental) send of \S+\/(?:vm|base|subvol)-\d+-(disk-\d+)(?:@\S+)? estimated size is\s+([\d.]+)\s*([KMGT]?)/i
+  const totalEstimatedRegex = /^total estimated size is\s+([\d.]+)\s*([KMGT]?)/i
+  const zfsTimeProgressRegex = /^\d{2}:\d{2}:\d{2}\s+([\d.]+)\s*([KMGT]?)\s+\S+\/(?:vm|base|subvol)-\d+-(disk-\d+)/i
+  const volumeImportedRegex = /volume\s+'[^']*:(?:vm|base|subvol)-\d+-(disk-\d+)'\s+is\s+'[^']+'\s+on the target/i
+  const remoteMigrateStartRegex = /starting (?:remote )?(?:storage )?migration/i
 
   let lastDiskName = ''
   let lastTransferTime = 0
@@ -318,6 +330,70 @@ function parseMigrationProgress(logs: TaskLogEntry[]): { progress: number; messa
     } else if (text.includes('stopping NBD')) {
       state.phase = 'finalizing'
       state.message = 'Cleaning up...'
+    }
+
+    // ── Offline cross-cluster (zfs send / storage_migrate) ──
+    // Per-disk total size announced before the transfer kicks off.
+    const zfsEstMatch = text.match(zfsEstimatedRegex)
+    if (zfsEstMatch) {
+      const diskName = zfsEstMatch[1]
+      const total = parseSize(zfsEstMatch[2], zfsEstMatch[3] || 'b')
+      const existing = state.disks.get(diskName)
+      state.disks.set(diskName, {
+        name: diskName,
+        totalBytes: total,
+        transferredBytes: existing?.transferredBytes || 0,
+        completed: existing?.completed || false,
+        lastUpdateTime: existing?.lastUpdateTime || 0,
+        speed: existing?.speed || 0,
+      })
+      state.phase = 'storage'
+      state.message = `${diskName}: starting (${formatSize(total)})`
+      continue
+    }
+
+    // Per-second `zfs send -v` progress lines (rare — PVE doesn't always
+    // capture stderr to the task log, but parse them when present).
+    const zfsTimeMatch = text.match(zfsTimeProgressRegex)
+    if (zfsTimeMatch) {
+      const sent = parseSize(zfsTimeMatch[1], zfsTimeMatch[2] || 'b')
+      const diskName = zfsTimeMatch[3]
+      const disk = state.disks.get(diskName)
+      if (disk && sent > disk.transferredBytes) {
+        disk.transferredBytes = sent
+        state.phase = 'storage'
+        state.message = `${diskName}: ${formatSize(sent)} / ${formatSize(disk.totalBytes)}`
+      }
+      continue
+    }
+
+    // Disk import settled on the target — mark this disk fully transferred.
+    // For ZFS we already know the total size from `estimated size`. For
+    // other storage types we may not, so synthesize a 1-byte total so the
+    // disk still contributes to "N of M completed" math (we'd otherwise
+    // ignore it because totalBytes=0).
+    const volumeImportedMatch = text.match(volumeImportedRegex)
+    if (volumeImportedMatch) {
+      const diskName = volumeImportedMatch[1]
+      const existing = state.disks.get(diskName)
+      const totalBytes = existing?.totalBytes || 1
+      state.disks.set(diskName, {
+        name: diskName,
+        totalBytes,
+        transferredBytes: totalBytes,
+        completed: true,
+        lastUpdateTime: existing?.lastUpdateTime || 0,
+        speed: existing?.speed || 0,
+      })
+      state.phase = 'storage'
+      state.message = `${diskName} imported on target`
+      continue
+    }
+
+    if (remoteMigrateStartRegex.test(text)) {
+      state.phase = 'storage'
+      if (state.message === 'Starting...') state.message = 'Storage migration...'
+      continue
     }
   }
 
