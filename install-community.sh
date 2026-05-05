@@ -203,6 +203,11 @@ setup_proxcenter() {
     # Generate secrets
     APP_SECRET=$(openssl rand -hex 32)
     NEXTAUTH_SECRET=$(openssl rand -hex 32)
+    # Postgres password is required by the compose file (it uses the
+    # `${VAR:?msg}` form); generate one here so docker compose up doesn't
+    # bail. POSTGRES_USER/DB stay defaulted via the compose ${VAR:-default}
+    # pattern, so we don't need to write them.
+    POSTGRES_PASSWORD=$(openssl rand -hex 24)
 
     # Get server IP
     SERVER_IP=$(hostname -I | awk '{print $1}' | head -1)
@@ -219,6 +224,9 @@ APP_SECRET=$APP_SECRET
 NEXTAUTH_SECRET=$NEXTAUTH_SECRET
 NEXTAUTH_URL=http://$SERVER_IP:3000
 VERSION=latest
+
+# Postgres
+POSTGRES_PASSWORD=$POSTGRES_PASSWORD
 EOF
 
     chmod 600 "$INSTALL_DIR/.env"
@@ -237,16 +245,21 @@ pull_and_init() {
     docker compose pull 2>&1 | tail -3
     log_success "Image pulled"
 
-    # Create volume
+    # Create volumes. postgres_data is declared external in the compose
+    # file, so docker compose up won't auto-create it; the absence of
+    # this line is what made fresh installs fail before.
     docker volume create proxcenter_data > /dev/null 2>&1 || true
+    docker volume create postgres_data > /dev/null 2>&1 || true
 
-    # Init data directory — bypass entrypoint
+    # Init the frontend data directory so the non-root container user
+    # (uid 1001) can write into it. The Postgres volume gets initialised
+    # by the postgres image itself on first boot — no prep needed here.
     docker run --rm --user root --entrypoint "" \
         -v proxcenter_data:/app/data \
         "$FRONTEND_IMAGE" \
         sh -c "mkdir -p /app/data && chown -R 1001:1001 /app/data" > /dev/null 2>&1
 
-    log_success "Database initialized"
+    log_success "Volumes initialized"
 }
 
 # ============================================
