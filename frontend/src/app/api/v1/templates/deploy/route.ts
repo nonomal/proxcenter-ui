@@ -94,12 +94,12 @@ export async function POST(req: Request) {
         imageSlug: body.imageSlug,
         blueprintId: body.blueprintId || null,
         blueprintName: body.blueprintName || null,
-        config: JSON.stringify({
+        config: {
           storage: body.storage,
           vmName: body.vmName,
           hardware: body.hardware,
           cloudInit: body.cloudInit,
-        }),
+        },
         status: "pending",
         currentStep: "pending",
         startedAt: new Date(),
@@ -112,8 +112,8 @@ export async function POST(req: Request) {
         data: {
           name: body.blueprintName,
           imageSlug: body.imageSlug,
-          hardware: JSON.stringify(body.hardware),
-          cloudInit: body.cloudInit ? JSON.stringify(body.cloudInit) : null,
+          hardware: body.hardware,
+          cloudInit: body.cloudInit ?? null,
           createdBy: session?.user?.id || null,
         },
       }).catch(() => {}) // Non-blocking

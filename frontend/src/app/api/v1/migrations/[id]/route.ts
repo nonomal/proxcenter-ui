@@ -30,7 +30,7 @@ export async function GET(
         ...job,
         bytesTransferred: job.bytesTransferred ? Number(job.bytesTransferred) : null,
         totalBytes: job.totalBytes ? Number(job.totalBytes) : null,
-        logs: job.logs ? JSON.parse(job.logs) : [],
+        logs: job.logs ?? [],
       },
     })
   } catch (e: any) {

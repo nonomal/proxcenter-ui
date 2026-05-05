@@ -23,6 +23,10 @@ import {
 import { CLOUD_IMAGES } from '@/lib/templates/cloudImages'
 import { useToast } from '@/contexts/ToastContext'
 
+function safeJsonParse(s: string): any {
+  try { return JSON.parse(s) } catch { return null }
+}
+
 interface Blueprint {
   id: string
   name: string
@@ -84,16 +88,20 @@ export default function CreateBlueprintDialog({ open, onClose, blueprint }: Crea
       setImageSlug(blueprint.imageSlug)
       setTags(blueprint.tags || '')
       setIsPublic(blueprint.isPublic)
-      try {
-        setHardware({ ...defaultHardware, ...JSON.parse(blueprint.hardware) })
-      } catch {
-        setHardware({ ...defaultHardware })
-      }
-      try {
-        setCloudInit(blueprint.cloudInit ? { ...defaultCloudInit, ...JSON.parse(blueprint.cloudInit) } : { ...defaultCloudInit })
-      } catch {
-        setCloudInit({ ...defaultCloudInit })
-      }
+      // hardware/cloudInit are JSONB on the API since step 2.5; the API
+      // returns them as parsed objects. Tolerate the legacy string shape
+      // for any cached client that hasn't reloaded yet.
+      const hw = typeof blueprint.hardware === 'string'
+        ? safeJsonParse(blueprint.hardware)
+        : blueprint.hardware
+      setHardware({ ...defaultHardware, ...(hw || {}) })
+
+      const ci = blueprint.cloudInit == null
+        ? null
+        : typeof blueprint.cloudInit === 'string'
+          ? safeJsonParse(blueprint.cloudInit)
+          : blueprint.cloudInit
+      setCloudInit(ci ? { ...defaultCloudInit, ...ci } : { ...defaultCloudInit })
     } else {
       setName('')
       setDescription('')

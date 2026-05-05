@@ -87,11 +87,17 @@ export default function TemplatesPage() {
     const image = deployment.imageSlug ? await resolveImage(deployment.imageSlug) : null
     setSelectedImage(image || null)
 
-    // Build a prefill object from the deployment's saved config
+    // Build a prefill object from the deployment's saved config. Since
+    // step 2.5 the API returns config as a parsed object; tolerate the
+    // legacy string shape for older cached clients.
     let config: any = null
-    try {
-      config = deployment.config ? JSON.parse(deployment.config) : null
-    } catch { /* ignore */ }
+    if (deployment.config) {
+      if (typeof deployment.config === 'string') {
+        try { config = JSON.parse(deployment.config) } catch { /* ignore */ }
+      } else {
+        config = deployment.config
+      }
+    }
 
     setSelectedBlueprint({
       imageSlug: deployment.imageSlug,

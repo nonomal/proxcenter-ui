@@ -142,9 +142,9 @@ async function updateJob(id: string, status: MigrationStatus, extra: Record<stri
 async function appendLog(id: string, msg: string, level: LogEntry["level"] = "info") {
   const prisma = getPrismaForJob(id)
   const job = await prisma.migrationJob.findUnique({ where: { id }, select: { logs: true, progress: true } })
-  const logs: LogEntry[] = job?.logs ? JSON.parse(job.logs) : []
+  const logs: LogEntry[] = (job?.logs as LogEntry[] | null) ?? []
   logs.push({ ts: new Date().toISOString(), msg, level, progress: job?.progress ?? 0 } as any)
-  await prisma.migrationJob.update({ where: { id }, data: { logs: JSON.stringify(logs) } })
+  await prisma.migrationJob.update({ where: { id }, data: { logs } })
 }
 
 function isCancelled(jobId: string): boolean {

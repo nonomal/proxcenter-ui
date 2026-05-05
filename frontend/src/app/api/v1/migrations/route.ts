@@ -103,7 +103,7 @@ export async function POST(req: Request) {
         // targetVmid stored in config so the pipeline can read it back; the
         // top-level `targetVmid` Prisma column gets set by the pipeline once
         // the actual VM is created (next-free fallback path).
-        config: JSON.stringify({ sourceConnectionId, sourceVmId, sourceVmName: body.sourceVmName, targetConnectionId, targetNode, targetStorage, networkBridge, vlanTag, startAfterMigration, migrationType, transferMode, sourceType: effectiveSourceType, ...(targetVmid !== undefined && { targetVmid }) }),
+        config: { sourceConnectionId, sourceVmId, sourceVmName: body.sourceVmName, targetConnectionId, targetNode, targetStorage, networkBridge, vlanTag, startAfterMigration, migrationType, transferMode, sourceType: effectiveSourceType, ...(targetVmid !== undefined && { targetVmid }) },
         status: "pending",
         currentStep: "pending",
         startedAt: new Date(),
@@ -253,7 +253,7 @@ export async function GET() {
         ...j,
         bytesTransferred: j.bytesTransferred ? Number(j.bytesTransferred) : null,
         totalBytes: j.totalBytes ? Number(j.totalBytes) : null,
-        logs: j.logs ? JSON.parse(j.logs) : [],
+        logs: j.logs ?? [],
       })),
     })
   } catch (e: any) {
