@@ -76,6 +76,12 @@ RUN npx esbuild prisma/seed.ts \
     --external:@prisma/client \
     --external:@prisma/adapter-pg
 
+# Strip dev dependencies from node_modules so the runner stage can adopt the
+# whole tree as-is. Production deps include the prisma CLI + its transitive
+# graph (pathe, hono, @electric-sql/pglite, …), which would otherwise need
+# dozens of selective COPY lines to assemble correctly.
+RUN npm prune --omit=dev --legacy-peer-deps --ignore-scripts
+
 # ========================================
 # Stage 3: Runner
 # ========================================
@@ -110,31 +116,24 @@ COPY --from=builder /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 
-# Copy better-sqlite3 native module — kept solely for the legacy
-# prisma/migrate-from-sqlite.ts utility (one-shot SQLite → Postgres
-# migrator). Drop after step 2.7 lands and the migrator is removed.
-COPY --from=builder /app/node_modules/better-sqlite3 ./node_modules/better-sqlite3
+# Copy the pruned production node_modules from the builder. This carries the
+# Prisma CLI (used by the entrypoint to apply migrations) along with its
+# full transitive dependency graph, the @prisma/client + adapter-pg pair,
+# the better-sqlite3 native module (still needed by the legacy
+# migrate-from-sqlite utility — slated for removal alongside step 2.7),
+# and the deps the standalone Next.js bundle expects at runtime.
+COPY --from=builder --chown=nextjs:nodejs /app/node_modules ./node_modules
 
-# Copy Prisma adapter, client, config and dependencies
-COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
-COPY --from=builder /app/node_modules/@prisma ./node_modules/@prisma
-COPY --from=builder /app/node_modules/prisma ./node_modules/prisma
-COPY --from=builder /app/prisma ./prisma
-COPY --from=builder /app/prisma.config.ts ./prisma.config.ts
+# Prisma schema, migrations and pre-bundled seed.js (built by esbuild above).
+COPY --from=builder --chown=nextjs:nodejs /app/prisma ./prisma
+COPY --from=builder --chown=nextjs:nodejs /app/prisma.config.ts ./prisma.config.ts
 
-# Copy Prisma config dependencies (required by @prisma/config at runtime)
-# Dependency chain: prisma → @prisma/config → effect → fast-check → pure-rand
-COPY --from=builder /app/node_modules/effect ./node_modules/effect
-COPY --from=builder /app/node_modules/fast-check ./node_modules/fast-check
-COPY --from=builder /app/node_modules/pure-rand ./node_modules/pure-rand
+# Unified server entry point + WebSocket proxy.
+COPY --from=builder --chown=nextjs:nodejs /app/start.js ./start.js
+COPY --from=builder --chown=nextjs:nodejs /app/ws-proxy.js ./ws-proxy.js
 
-# Copy unified server entry point, WebSocket proxy and ws dependency
-COPY --from=builder /app/start.js ./start.js
-COPY --from=builder /app/ws-proxy.js ./ws-proxy.js
-COPY --from=builder /app/node_modules/ws ./node_modules/ws
-
-# Copy package.json for version display in startup banner
-COPY --from=builder /app/package.json ./package.json
+# Package metadata (used by the startup banner for the version label).
+COPY --from=builder --chown=nextjs:nodejs /app/package.json ./package.json
 
 # No extra runtime dependencies — start.js runs as single process
 
