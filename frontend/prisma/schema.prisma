@@ -446,10 +446,7 @@ model UserTenant {
 model Setting {
   key       String
   tenantId  String   @default("default") @map("tenant_id")
-  // Stored as TEXT in SQLite (often serialised JSON). Migrating to plain TEXT
-  // on Postgres preserves call-site behaviour; future cleanup can split typed
-  // columns or move to JSONB on a per-key basis.
-  value     String
+  value     Json     @db.JsonB
   updatedAt DateTime @default(now()) @map("updated_at")
 
   @@id([key, tenantId])
