@@ -112,7 +112,7 @@ export async function generatePveVnetId(vdcId: string, displayName: string): Pro
 
 const VNI_BASE = 10000
 
-export async function allocateVni(vdcId: string): Promise<number> {
+export async function allocateVni(vdcId: string, conn?: any): Promise<number> {
   // VXLAN VNIs must be unique across the entire PVE cluster (transport is one
   // shared overlay), not just within a single vDC. Scoping by vdc_id caused
   // tenant A's first VNet (VNI 10000) to collide with tenant B's first VNet
@@ -129,9 +129,31 @@ export async function allocateVni(vdcId: string): Promise<number> {
     where: { vdc: { connectionId: ownerVdc.connectionId } },
     _max: { vxlanTag: true },
   })
+  const dbMax = aggregate._max.vxlanTag
 
-  const maxTag = aggregate._max.vxlanTag
-  return maxTag == null ? VNI_BASE : maxTag + 1
+  // Our DB only knows the VNets ProxCenter created. PVE can carry tags from
+  // legacy zones (older ProxCenter installs, manual `pvesh` work, leftover
+  // SDN config from a teardown that didn't roll back). Pull the live tag
+  // set from `/cluster/sdn/vnets` when we have a connection so we don't
+  // hand back a tag that PVE will reject with HTTP 400.
+  let pveMax: number | null = null
+  if (conn) {
+    try {
+      const vnets = await listVnetsPve(conn)
+      for (const v of vnets) {
+        if (Number.isFinite(v.tag) && (pveMax === null || v.tag > pveMax)) {
+          pveMax = v.tag
+        }
+      }
+    } catch {
+      // Best-effort: if the SDN endpoint is unreachable we still allocate
+      // from the DB-side max — better than failing every VNet creation.
+    }
+  }
+
+  const candidates = [dbMax, pveMax].filter((n): n is number => typeof n === 'number')
+  if (candidates.length === 0) return VNI_BASE
+  return Math.max(...candidates) + 1
 }
 
 // ---------------------------------------------------------------------------

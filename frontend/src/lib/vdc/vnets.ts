@@ -205,8 +205,11 @@ export async function createVnetForTenant(input: CreateVnetInput): Promise<VdcVn
   }
 
   const pveName = await generatePveVnetId(vdc.id, displayName)
-  const tag = await allocateVni(vdc.id)
   const conn = await getConn(vdc)
+  // Pass the PVE connection so allocateVni can union our DB's max VxlanTag
+  // with the live `/cluster/sdn/vnets` set — avoids handing back a tag a
+  // legacy zone already booked under our feet.
+  const tag = await allocateVni(vdc.id, conn)
   const firewall = input.firewall !== false
 
   await createVnetPve(conn, {
