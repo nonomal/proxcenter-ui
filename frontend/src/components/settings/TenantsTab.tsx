@@ -498,13 +498,17 @@ export default function TenantsTab() {
                         <ListItem
                           key={user.id}
                           secondaryAction={
-                            editingTenant.id !== 'default' ? (
-                              <Tooltip title={t('tenants.removeFromTenant')}>
-                                <IconButton edge="end" size="small" color="error" onClick={() => handleRemoveUser(user.id)}>
-                                  <i className="ri-close-line" />
-                                </IconButton>
-                              </Tooltip>
-                            ) : null
+                            // Removal is allowed everywhere, including the
+                            // provider tenant — a tenant-admin user that
+                            // belongs in OVH only has no business in DEFAULT.
+                            // The backend's LAST_TENANT guard prevents
+                            // orphaning the user (returns 409), and the
+                            // error surfaces in the alert above the list.
+                            <Tooltip title={t('tenants.removeFromTenant')}>
+                              <IconButton edge="end" size="small" color="error" onClick={() => handleRemoveUser(user.id)}>
+                                <i className="ri-close-line" />
+                              </IconButton>
+                            </Tooltip>
                           }
                         >
                           <ListItemAvatar>
