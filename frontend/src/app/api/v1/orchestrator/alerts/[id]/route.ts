@@ -37,7 +37,7 @@ export async function GET(
     const tenantConnectionIds = await getTenantConnectionIds()
     const vdcScope = await getVdcScope(tenantId)
     const vdcVmids = vdcScope ? await getVdcVmidsByConnection(tenantId) : undefined
-    if (!isAlertVisibleToTenant(alert as any, { tenantId, tenantConnectionIds, vdcScope, vdcVmids })) {
+    if (!(await isAlertVisibleToTenant(alert as any, { tenantId, tenantConnectionIds, vdcScope, vdcVmids }))) {
       return NextResponse.json({ error: 'Alert not found' }, { status: 404 })
     }
 
@@ -77,7 +77,7 @@ export async function DELETE(
     const tenantConnectionIds = await getTenantConnectionIds()
     const vdcScope = await getVdcScope(tenantId)
     const vdcVmids = vdcScope ? await getVdcVmidsByConnection(tenantId) : undefined
-    if (!isAlertVisibleToTenant(alertRes.data as any, { tenantId, tenantConnectionIds, vdcScope, vdcVmids })) {
+    if (!(await isAlertVisibleToTenant(alertRes.data as any, { tenantId, tenantConnectionIds, vdcScope, vdcVmids }))) {
       return NextResponse.json({ error: 'Alert not found' }, { status: 404 })
     }
 

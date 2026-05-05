@@ -35,9 +35,18 @@ export async function GET(req: Request) {
     const resData = response.data as any
     const alerts = Array.isArray(resData) ? resData : (resData?.data || [])
     const visibilityCtx = { tenantId, tenantConnectionIds, vdcScope, vdcVmids }
-    const filtered = Array.isArray(alerts)
-      ? alerts.filter((a: any) => isAlertVisibleToTenant(a, visibilityCtx))
-      : alerts
+    // isAlertVisibleToTenant is async (Postgres cutover made the rule
+    // ownership lookup a Prisma query). Array.filter doesn't await its
+    // predicate — it'd see a Promise, which is truthy, and let every
+    // alert through. Resolve visibility for each alert up-front, then
+    // filter on the boolean array.
+    let filtered = alerts
+    if (Array.isArray(alerts)) {
+      const visible = await Promise.all(
+        alerts.map((a: any) => isAlertVisibleToTenant(a, visibilityCtx)),
+      )
+      filtered = alerts.filter((_: any, i: number) => visible[i])
+    }
 
     return NextResponse.json(filtered)
   } catch (error: any) {

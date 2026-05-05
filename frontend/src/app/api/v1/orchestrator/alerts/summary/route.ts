@@ -49,9 +49,16 @@ export async function GET(req: Request) {
     const allAlerts = response.data?.data || response.data || []
     const vdcVmids = vdcScope ? await getVdcVmidsByConnection(tenantId) : undefined
     const visibilityCtx = { tenantId, tenantConnectionIds, vdcScope, vdcVmids }
-    const filtered = Array.isArray(allAlerts)
-      ? allAlerts.filter((a: any) => isAlertVisibleToTenant(a, visibilityCtx))
-      : []
+    // isAlertVisibleToTenant became async in the Postgres cutover; resolve
+    // each alert's visibility up-front before filtering, otherwise the
+    // filter sees a Promise (truthy) and lets every alert through.
+    let filtered: any[] = []
+    if (Array.isArray(allAlerts)) {
+      const visible = await Promise.all(
+        allAlerts.map((a: any) => isAlertVisibleToTenant(a, visibilityCtx)),
+      )
+      filtered = allAlerts.filter((_: any, i: number) => visible[i])
+    }
 
     // Exclude silenced alerts from counts
     let silencedFingerprints = new Set<string>()
