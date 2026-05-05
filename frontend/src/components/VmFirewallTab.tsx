@@ -32,7 +32,6 @@ import {
   alpha,
   useTheme,
 } from '@mui/material'
-import { useLicense } from '@/contexts/LicenseContext'
 import * as firewallAPI from '@/lib/api/firewall'
 
 import { useFirewallState } from './firewall/useFirewallState'
@@ -60,7 +59,6 @@ interface Props {
 export default function VmFirewallTab({ connectionId, node, vmType, vmid, vmName }: Props) {
   const theme = useTheme()
   const t = useTranslations()
-  const { isEnterprise } = useLicense()
 
   // VM-specific API adapter
   const api = useMemo<FirewallAPIAdapter>(() => ({
@@ -168,11 +166,9 @@ export default function VmFirewallTab({ connectionId, node, vmType, vmid, vmName
   }, [connectionId, node, vmType, vmid])
 
   useEffect(() => {
-    if (!isEnterprise) return
-
     fw.loadFirewallData()
     loadVmData()
-  }, [fw.loadFirewallData, loadVmData, isEnterprise])
+  }, [fw.loadFirewallData, loadVmData])
 
   // Auto-refresh logs every 5s when log dialog is open
   useEffect(() => {
@@ -234,19 +230,6 @@ export default function VmFirewallTab({ connectionId, node, vmType, vmid, vmName
     }
 
     fw.handleUpdateRule(payload)
-  }
-
-  // Enterprise guard
-  if (!isEnterprise) {
-    return (
-      <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', py: 8, textAlign: 'center' }}>
-        <i className='ri-vip-crown-fill' style={{ fontSize: 48, color: 'var(--mui-palette-warning-main)', marginBottom: 16 }} />
-        <Typography variant='h6' sx={{ mb: 1 }}>Enterprise Feature</Typography>
-        <Typography variant='body2' sx={{ opacity: 0.6 }}>
-          VM Firewall management requires an Enterprise license.
-        </Typography>
-      </Box>
-    )
   }
 
   if (fw.loading) {

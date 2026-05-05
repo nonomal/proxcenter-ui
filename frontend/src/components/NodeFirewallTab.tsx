@@ -19,7 +19,6 @@ import {
   alpha,
   useTheme,
 } from '@mui/material'
-import { useLicense } from '@/contexts/LicenseContext'
 
 import { useFirewallState } from './firewall/useFirewallState'
 import { PolicyChip } from './firewall/shared'
@@ -43,7 +42,6 @@ interface Props {
 export default function NodeFirewallTab({ connectionId, node }: Props) {
   const theme = useTheme()
   const t = useTranslations()
-  const { isEnterprise } = useLicense()
 
   // Node-specific API adapter
   const api = useMemo<FirewallAPIAdapter>(() => {
@@ -86,23 +84,8 @@ export default function NodeFirewallTab({ connectionId, node }: Props) {
   const fw = useFirewallState(api)
 
   useEffect(() => {
-    if (!isEnterprise) return
-
     fw.loadFirewallData()
-  }, [fw.loadFirewallData, isEnterprise])
-
-  // Enterprise guard
-  if (!isEnterprise) {
-    return (
-      <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', py: 8, textAlign: 'center' }}>
-        <i className='ri-vip-crown-fill' style={{ fontSize: 48, color: 'var(--mui-palette-warning-main)', marginBottom: 16 }} />
-        <Typography variant='h6' sx={{ mb: 1 }}>Enterprise Feature</Typography>
-        <Typography variant='body2' sx={{ opacity: 0.6 }}>
-          Node Firewall management requires an Enterprise license.
-        </Typography>
-      </Box>
-    )
-  }
+  }, [fw.loadFirewallData])
 
   if (fw.loading) {
     return (

@@ -446,76 +446,31 @@ export default function NodeTabs(props: any) {
                 />}
                 {/* Onglet CVE — admin only */}
                 {isAdmin && <Tab
-                  disabled={!cveAvailable}
+                  sx={!cveAvailable ? { display: 'none' } : undefined}
                   label={
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, opacity: cveAvailable ? 1 : 0.4 }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
                       <i className="ri-shield-cross-line" style={{ fontSize: 16 }} />
                       CVE
-                      {!cveAvailable && (
-                        <Chip
-                          size="small"
-                          label="Enterprise"
-                          sx={{
-                            height: 18,
-                            fontSize: '0.6rem',
-                            fontWeight: 600,
-                            bgcolor: 'primary.main',
-                            color: 'primary.contrastText',
-                            ml: 0.5,
-                            '& .MuiChip-label': { px: 0.75 }
-                          }}
-                        />
-                      )}
                     </Box>
                   }
                 />}
                 {/* Onglet Change Tracking — admin only */}
                 {isAdmin && <Tab
-                  disabled={!changeTrackingAvailable}
+                  sx={!changeTrackingAvailable ? { display: 'none' } : undefined}
                   label={
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, opacity: changeTrackingAvailable ? 1 : 0.4 }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
                       <i className="ri-git-commit-line" style={{ fontSize: 16 }} />
                       {t('inventory.tabChangeTracking')}
-                      {!changeTrackingAvailable && (
-                        <Chip
-                          size="small"
-                          label="Enterprise"
-                          sx={{
-                            height: 18,
-                            fontSize: '0.6rem',
-                            fontWeight: 600,
-                            bgcolor: 'primary.main',
-                            color: 'primary.contrastText',
-                            ml: 0.5,
-                            '& .MuiChip-label': { px: 0.75 }
-                          }}
-                        />
-                      )}
                     </Box>
                   }
                 />}
                 {/* Onglet Compliance — admin only */}
                 {isAdmin && <Tab
-                  disabled={!complianceAvailable}
+                  sx={!complianceAvailable ? { display: 'none' } : undefined}
                   label={
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, opacity: complianceAvailable ? 1 : 0.4 }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
                       <i className="ri-shield-check-line" style={{ fontSize: 16 }} />
                       {t('inventory.tabCompliance')}
-                      {!complianceAvailable && (
-                        <Chip
-                          size="small"
-                          label="Enterprise"
-                          sx={{
-                            height: 18,
-                            fontSize: '0.6rem',
-                            fontWeight: 600,
-                            bgcolor: 'primary.main',
-                            color: 'primary.contrastText',
-                            ml: 0.5,
-                            '& .MuiChip-label': { px: 0.75 }
-                          }}
-                        />
-                      )}
                     </Box>
                   }
                 />}
