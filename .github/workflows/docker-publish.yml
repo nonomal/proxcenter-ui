@@ -30,6 +30,22 @@ jobs:
     defaults:
       run:
         working-directory: ./frontend
+    # The vDC test suite (step 2.7) talks to a real Postgres via the
+    # vitest globalSetup at src/__tests__/setup/postgres.ts.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: proxcenter
+          POSTGRES_PASSWORD: test-pass
+          POSTGRES_DB: proxcenter
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U proxcenter -d proxcenter"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -44,7 +60,14 @@ jobs:
       - name: Install dependencies
         run: npm ci --legacy-peer-deps --ignore-scripts
 
+      - name: Install psql client
+        # The test globalSetup shells out to psql to create / drop the
+        # per-run schema; ubuntu-latest images ship without it.
+        run: sudo apt-get install -y --no-install-recommends postgresql-client
+
       - name: Run tests
+        env:
+          POSTGRES_TEST_URL_BASE: postgresql://proxcenter:test-pass@localhost:5432/proxcenter
         run: npx vitest run
 
   # ========================================
