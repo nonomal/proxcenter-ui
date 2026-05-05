@@ -37,6 +37,107 @@ function activeGrantFilter() {
 }
 
 /**
+ * The user's full set of grants for a tenant, loaded in two Prisma queries
+ * regardless of how many resources we need to check against. Replaces the
+ * previous per-element `hasPermission` round trips that put `filterVmsBy*`
+ * at O(N) DB calls — now O(1) per call, with the matching done in memory.
+ *
+ * `byScope` groups all grants by (scopeType, scopeTarget) so a single
+ * (e.g.) "node:src:n1" entry carries every permission the user has at that
+ * scope, regardless of whether it came from a role or a direct grant.
+ */
+type LoadedGrants = {
+  superAdmin: boolean
+  byScope: Array<{
+    scopeType: string
+    scopeTarget: string | null
+    permissions: Set<string>
+  }>
+}
+
+async function loadUserGrants(userId: string, tenantId: string): Promise<LoadedGrants> {
+  // Super admins short-circuit: the role grants global, cross-tenant access
+  // and we never need to enumerate scopes for them.
+  if (await isUserSuperAdmin(userId)) {
+    return { superAdmin: true, byScope: [] }
+  }
+
+  // One round trip for role-derived grants (with the role's permissions
+  // joined in), one for direct grants. Both are tenant-scoped + active.
+  const [roleGrants, directGrants] = await Promise.all([
+    prisma.rbacUserRole.findMany({
+      where: { userId, tenantId, ...activeGrantFilter() },
+      select: {
+        scopeType: true,
+        scopeTarget: true,
+        role: {
+          select: {
+            permissions: { select: { permission: { select: { name: true } } } },
+          },
+        },
+      },
+    }),
+    prisma.rbacUserPermission.findMany({
+      where: { userId, tenantId, ...activeGrantFilter() },
+      select: {
+        scopeType: true,
+        scopeTarget: true,
+        permission: { select: { name: true } },
+      },
+    }),
+  ])
+
+  // Group every grant by its (scopeType, scopeTarget) key. A null target
+  // (typical for global / tenant-wide scopes) is folded into the same key
+  // namespace using the empty string sentinel.
+  const map = new Map<string, { scopeType: string; scopeTarget: string | null; permissions: Set<string> }>()
+  const keyOf = (st: string, tgt: string | null) => `${st}:${tgt ?? ""}`
+  const upsert = (scopeType: string, scopeTarget: string | null) => {
+    const k = keyOf(scopeType, scopeTarget)
+    let entry = map.get(k)
+    if (!entry) {
+      entry = { scopeType, scopeTarget, permissions: new Set<string>() }
+      map.set(k, entry)
+    }
+    return entry
+  }
+
+  for (const r of roleGrants) {
+    const entry = upsert(r.scopeType, r.scopeTarget)
+    for (const rp of r.role.permissions) {
+      entry.permissions.add(rp.permission.name)
+    }
+  }
+  for (const d of directGrants) {
+    upsert(d.scopeType, d.scopeTarget).permissions.add(d.permission.name)
+  }
+
+  return { superAdmin: false, byScope: Array.from(map.values()) }
+}
+
+/**
+ * Sync predicate over preloaded grants. Equivalent to one `hasPermission`
+ * check but with zero DB calls — meant to be invoked in a tight loop after
+ * a single `loadUserGrants` call.
+ */
+function checkGrants(
+  grants: LoadedGrants,
+  permission: string,
+  resourceType?: string,
+  resourceId?: string,
+  resourceMeta?: { tags?: string[]; pool?: string },
+): boolean {
+  if (grants.superAdmin) return true
+  for (const g of grants.byScope) {
+    if (!g.permissions.has(permission)) continue
+    if (scopeMatches(g.scopeType, g.scopeTarget, resourceType, resourceId, resourceMeta)) {
+      return true
+    }
+  }
+  return false
+}
+
+/**
  * Check if a user has role_super_admin on ANY tenant.
  * role_super_admin is a global, cross-tenant privilege: a single assignment
  * (typically on the provider tenant) grants full access to all tenants.
@@ -83,52 +184,8 @@ export async function isUserProtected(userId: string): Promise<boolean> {
 export async function hasPermission(check: PermissionCheck): Promise<boolean> {
   const { userId, permission, resourceType, resourceId, resourceMeta, tenantId } = check
   const tid = tenantId || DEFAULT_TENANT_ID
-
-  // Super admins have full access across all tenants
-  if (await isUserSuperAdmin(userId)) return true
-
-  // Get all user's active roles for this tenant + the permissions each role grants
-  const userRoles = await prisma.rbacUserRole.findMany({
-    where: { userId, tenantId: tid, ...activeGrantFilter() },
-    select: {
-      scopeType: true,
-      scopeTarget: true,
-      role: {
-        select: {
-          permissions: {
-            where: { permission: { name: permission } },
-            select: { roleId: true },
-          },
-        },
-      },
-    },
-  })
-
-  for (const role of userRoles) {
-    if (role.role.permissions.length === 0) continue
-    if (scopeMatches(role.scopeType, role.scopeTarget, resourceType, resourceId, resourceMeta)) {
-      return true
-    }
-  }
-
-  // Check direct permissions (scoped by tenant)
-  const directPerm = await prisma.rbacUserPermission.findMany({
-    where: {
-      userId,
-      tenantId: tid,
-      permission: { name: permission },
-      ...activeGrantFilter(),
-    },
-    select: { scopeType: true, scopeTarget: true },
-  })
-
-  for (const perm of directPerm) {
-    if (scopeMatches(perm.scopeType, perm.scopeTarget, resourceType, resourceId, resourceMeta)) {
-      return true
-    }
-  }
-
-  return false
+  const grants = await loadUserGrants(userId, tid)
+  return checkGrants(grants, permission, resourceType, resourceId, resourceMeta)
 }
 
 /**
@@ -141,52 +198,21 @@ export async function getEffectivePermissions(
   tenantId?: string,
 ): Promise<string[]> {
   const tid = tenantId || DEFAULT_TENANT_ID
-  const permissions = new Set<string>()
+  const grants = await loadUserGrants(userId, tid)
 
-  // Super admins get all defined permissions across any tenant
-  if (await isUserSuperAdmin(userId)) {
+  // Super admins implicitly hold every defined permission. Return the full
+  // catalogue rather than a hardcoded list so newly added permissions are
+  // picked up automatically.
+  if (grants.superAdmin) {
     const allPerms = await prisma.rbacPermission.findMany({ select: { name: true } })
     return allPerms.map(p => p.name)
   }
 
-  // Get permissions from roles (scoped by tenant)
-  const userRoles = await prisma.rbacUserRole.findMany({
-    where: { userId, tenantId: tid, ...activeGrantFilter() },
-    select: {
-      scopeType: true,
-      scopeTarget: true,
-      role: {
-        select: {
-          permissions: { select: { permission: { select: { name: true } } } },
-        },
-      },
-    },
-  })
-
-  for (const ur of userRoles) {
-    if (scopeMatches(ur.scopeType, ur.scopeTarget, resourceType, resourceId)) {
-      for (const rp of ur.role.permissions) {
-        permissions.add(rp.permission.name)
-      }
-    }
+  const permissions = new Set<string>()
+  for (const g of grants.byScope) {
+    if (!scopeMatches(g.scopeType, g.scopeTarget, resourceType, resourceId)) continue
+    for (const p of g.permissions) permissions.add(p)
   }
-
-  // Get direct permissions (scoped by tenant)
-  const directPerms = await prisma.rbacUserPermission.findMany({
-    where: { userId, tenantId: tid, ...activeGrantFilter() },
-    select: {
-      scopeType: true,
-      scopeTarget: true,
-      permission: { select: { name: true } },
-    },
-  })
-
-  for (const perm of directPerms) {
-    if (scopeMatches(perm.scopeType, perm.scopeTarget, resourceType, resourceId)) {
-      permissions.add(perm.permission.name)
-    }
-  }
-
   return Array.from(permissions)
 }
 
@@ -200,12 +226,9 @@ export async function hasAllPermissions(
   resourceId?: string,
   tenantId?: string,
 ): Promise<boolean> {
-  for (const perm of permissions) {
-    if (!(await hasPermission({ userId, permission: perm, resourceType: resourceType as any, resourceId, tenantId }))) {
-      return false
-    }
-  }
-  return true
+  const tid = tenantId || DEFAULT_TENANT_ID
+  const grants = await loadUserGrants(userId, tid)
+  return permissions.every(p => checkGrants(grants, p, resourceType, resourceId))
 }
 
 /**
@@ -218,12 +241,9 @@ export async function hasAnyPermission(
   resourceId?: string,
   tenantId?: string,
 ): Promise<boolean> {
-  for (const perm of permissions) {
-    if (await hasPermission({ userId, permission: perm, resourceType: resourceType as any, resourceId, tenantId })) {
-      return true
-    }
-  }
-  return false
+  const tid = tenantId || DEFAULT_TENANT_ID
+  const grants = await loadUserGrants(userId, tid)
+  return permissions.some(p => checkGrants(grants, p, resourceType, resourceId))
 }
 
 /**
@@ -235,45 +255,17 @@ export async function getAccessibleResources(
   tenantId?: string,
 ): Promise<{ scope_type: string; scope_target: string | null }[]> {
   const tid = tenantId || DEFAULT_TENANT_ID
-  const resources: { scope_type: string; scope_target: string | null }[] = []
+  const grants = await loadUserGrants(userId, tid)
 
-  // Super admins implicitly have global scope for every permission
-  if (await isUserSuperAdmin(userId)) {
+  if (grants.superAdmin) {
     return [{ scope_type: "global", scope_target: null }]
   }
 
-  // Get from roles (scoped by tenant)
-  const fromRoles = await prisma.rbacUserRole.findMany({
-    where: {
-      userId,
-      tenantId: tid,
-      role: { permissions: { some: { permission: { name: permission } } } },
-      ...activeGrantFilter(),
-    },
-    select: { scopeType: true, scopeTarget: true },
-    distinct: ["scopeType", "scopeTarget"],
-  })
-
-  for (const r of fromRoles) {
-    resources.push({ scope_type: r.scopeType, scope_target: r.scopeTarget })
-  }
-
-  // Get direct permissions (scoped by tenant)
-  const direct = await prisma.rbacUserPermission.findMany({
-    where: {
-      userId,
-      tenantId: tid,
-      permission: { name: permission },
-      ...activeGrantFilter(),
-    },
-    select: { scopeType: true, scopeTarget: true },
-  })
-
-  for (const r of direct) {
-    resources.push({ scope_type: r.scopeType, scope_target: r.scopeTarget })
-  }
-
-  return resources
+  // Already deduped by (scopeType, scopeTarget) inside the loader; just keep
+  // entries that grant the requested permission.
+  return grants.byScope
+    .filter(g => g.permissions.has(permission))
+    .map(g => ({ scope_type: g.scopeType, scope_target: g.scopeTarget }))
 }
 
 // Helper function to check if a scope matches
@@ -448,27 +440,12 @@ export async function getRBACContext(): Promise<{ userId: string; isAdmin: boole
  */
 export async function hasTagOrPoolScopes(userId: string, tenantId?: string): Promise<boolean> {
   const tid = tenantId || DEFAULT_TENANT_ID
-  const roleHit = await prisma.rbacUserRole.findFirst({
-    where: {
-      userId,
-      tenantId: tid,
-      scopeType: { in: ["tag", "pool"] },
-      ...activeGrantFilter(),
-    },
-    select: { id: true },
-  })
-  if (roleHit) return true
-
-  const permHit = await prisma.rbacUserPermission.findFirst({
-    where: {
-      userId,
-      tenantId: tid,
-      scopeType: { in: ["tag", "pool"] },
-      ...activeGrantFilter(),
-    },
-    select: { id: true },
-  })
-  return !!permHit
+  const grants = await loadUserGrants(userId, tid)
+  // Super admins don't carry tag/pool scopes — they short-circuit at the
+  // top of every permission check, so the second-pass logic that uses this
+  // helper has no work to do for them.
+  if (grants.superAdmin) return false
+  return grants.byScope.some(g => g.scopeType === "tag" || g.scopeType === "pool")
 }
 
 /**
@@ -533,23 +510,25 @@ export async function filterVmsByPermission<T extends { id?: string; connId?: st
   permission: string = PERMISSIONS.VM_VIEW,
   tenantId?: string,
 ): Promise<T[]> {
-  // Get accessible resources for this permission
-  const resources = await getAccessibleResources(userId, permission, tenantId)
+  // Load every grant for this user/tenant in one shot, then filter the list
+  // with a sync predicate. Was O(N) Prisma calls per filter; now O(1).
+  const tid = tenantId || DEFAULT_TENANT_ID
+  const grants = await loadUserGrants(userId, tid)
 
-  // Check for global access
-  if (resources.some(r => r.scope_type === "global")) {
+  // Super admin or any global-scope grant for this permission → return as-is.
+  if (grants.superAdmin) return vms
+  if (grants.byScope.some(g => g.scopeType === "global" && g.permissions.has(permission))) {
     return vms
   }
 
   const result: T[] = []
   for (const vm of vms) {
-    // Build resource ID from VM
     let resourceId: string
-
     if (vm.id && vm.id.includes(":")) {
-      // Format: "connId:type:node:vmid"
+      // Wire format coming from the inventory route is "connId:type:node:vmid"
+      // (type and node swapped vs the canonical RBAC form). Reorder before
+      // matching so node-scoped grants line up.
       const parts = vm.id.split(":")
-
       resourceId = `${parts[0]}:${parts[2]}:${parts[1]}:${parts[3]}`
     } else if (vm.connId && vm.node && vm.type && vm.vmid) {
       resourceId = buildVmResourceId(vm.connId, vm.node, vm.type, vm.vmid)
@@ -557,7 +536,8 @@ export async function filterVmsByPermission<T extends { id?: string; connId?: st
       continue
     }
 
-    // Extract tags/pool from VM object for tag/pool scope matching
+    // Tags/pool come from the VM payload itself — needed so tag/pool scopes
+    // can match on the second pass inside scopeMatches.
     const vmAny = vm as any
     const tags = Array.isArray(vmAny.tags)
       ? vmAny.tags
@@ -568,16 +548,7 @@ export async function filterVmsByPermission<T extends { id?: string; connId?: st
             .filter(Boolean)
         : []
 
-    if (
-      await hasPermission({
-        userId,
-        permission,
-        resourceType: "vm",
-        resourceId,
-        resourceMeta: { tags, pool: vmAny.pool || undefined },
-        tenantId,
-      })
-    ) {
+    if (checkGrants(grants, permission, "vm", resourceId, { tags, pool: vmAny.pool || undefined })) {
       result.push(vm)
     }
   }
@@ -593,26 +564,18 @@ export async function filterNodesByPermission<T extends { connId: string; node: 
   permission: string = PERMISSIONS.NODE_VIEW,
   tenantId?: string,
 ): Promise<T[]> {
-  // Get accessible resources
-  const resources = await getAccessibleResources(userId, permission, tenantId)
+  const tid = tenantId || DEFAULT_TENANT_ID
+  const grants = await loadUserGrants(userId, tid)
 
-  if (resources.some(r => r.scope_type === "global")) {
+  if (grants.superAdmin) return nodes
+  if (grants.byScope.some(g => g.scopeType === "global" && g.permissions.has(permission))) {
     return nodes
   }
 
   const result: T[] = []
   for (const node of nodes) {
     const resourceId = buildNodeResourceId(node.connId, node.node)
-
-    if (
-      await hasPermission({
-        userId,
-        permission,
-        resourceType: "node",
-        resourceId,
-        tenantId,
-      })
-    ) {
+    if (checkGrants(grants, permission, "node", resourceId)) {
       result.push(node)
     }
   }
