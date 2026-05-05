@@ -7,13 +7,12 @@ FROM node:22-alpine AS deps
 
 WORKDIR /app
 
-# Install build dependencies for better-sqlite3
-RUN apk add --no-cache python3 make g++ sqlite-dev
-
 # Copy package files (including lock file for reproducible builds)
 COPY package.json package-lock.json ./
 
-# Install dependencies WITHOUT running postinstall (source files not yet available)
+# Install dependencies WITHOUT running postinstall (source files not yet
+# available). No native modules left to compile since better-sqlite3 was
+# dropped (post-step-2.7 cleanup), so we skip python/make/g++ entirely.
 RUN npm ci --legacy-peer-deps --ignore-scripts
 
 # ========================================
@@ -23,17 +22,11 @@ FROM node:22-alpine AS builder
 
 WORKDIR /app
 
-# Install build dependencies for better-sqlite3
-RUN apk add --no-cache python3 make g++ sqlite-dev
-
 # Copy dependencies from deps stage
 COPY --from=deps /app/node_modules ./node_modules
 
 # Copy source code
 COPY . .
-
-# Rebuild better-sqlite3 native module for this platform
-RUN npm rebuild better-sqlite3
 
 # Generate icon CSS bundle
 RUN npm run build:icons
@@ -107,9 +100,6 @@ ENV GIT_SHA=${GIT_SHA}
 ARG DEMO_MODE=""
 ENV DEMO_MODE=${DEMO_MODE}
 
-# Install runtime dependencies
-RUN apk add --no-cache sqlite-dev
-
 # Create non-root user
 RUN addgroup --system --gid 1001 nodejs && \
     adduser --system --uid 1001 nextjs
@@ -122,9 +112,7 @@ COPY --from=builder /app/public ./public
 
 # Pruned production node_modules from the builder (already trimmed of
 # next/@next/@swc — see the prune step above). Carries the Prisma CLI +
-# its full transitive graph, @prisma/client, adapter-pg, pg, and the
-# better-sqlite3 native module (still needed by the legacy
-# migrate-from-sqlite utility — slated for removal alongside step 2.7).
+# its full transitive graph, @prisma/client, adapter-pg, pg.
 COPY --from=builder --chown=nextjs:nodejs /app/node_modules ./node_modules
 
 # Standalone Next.js bundle: server.js, lean traced node_modules

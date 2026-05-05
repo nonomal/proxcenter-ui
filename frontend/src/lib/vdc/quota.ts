@@ -1,9 +1,8 @@
 // src/lib/vdc/quota.ts
 // vDC Quota Check Library
 //
-// Provides quota enforcement for tenant vDC operations. Both helpers are now
-// async after the Postgres cutover (Prisma queries replaced the synchronous
-// better-sqlite3 reads).
+// Provides quota enforcement for tenant vDC operations. Both helpers are
+// async — Prisma queries against the Postgres-backed vDC schema.
 
 import { DEFAULT_TENANT_ID } from '@/lib/tenant'
 import { pveFetch } from '@/lib/proxmox/client'

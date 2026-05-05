@@ -1,19 +1,16 @@
 /**
  * Idempotent seed for ProxCenter on Postgres.
  *
- * Mirrors the boot-time inserts that lib/db/sqlite.ts used to do on every
- * `getDb()` call: default tenant, singleton security_policies row, RBAC
- * permission catalogue, and the nine system roles with their permission
- * mappings.
+ * Bootstraps the rows the app needs out of the box: the default tenant,
+ * the singleton security_policies row, the RBAC permission catalogue and
+ * the nine system roles with their permission mappings.
  *
- * The seed deliberately does NOT create any user account: super-admin user
- * provisioning is handled by the setup wizard (first-run flow) or by the
- * legacy migration that promoted users with role IN ('admin','super_admin')
- * to role_super_admin during the SQLite era. Users are out of scope here.
+ * The seed deliberately does NOT create any user account: super-admin
+ * user provisioning is handled by the setup wizard on first launch.
  *
- * Keep the permissions / roles lists in sync with src/lib/db/sqlite.ts until
- * step 2 of the migration removes the duplicate boot-time payload from
- * sqlite.ts altogether.
+ * Re-running the seed is safe — every step uses upsert semantics, so
+ * tweaking the catalogue above and shipping a new image will reconcile
+ * existing rows on the next container boot rather than duplicate them.
  */
 
 import { PrismaClient } from "@prisma/client"
