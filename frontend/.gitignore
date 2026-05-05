@@ -7,6 +7,9 @@
 
 # testing
 /coverage
+# Runtime DSN handed by vitest globalSetup to test workers — recreated
+# at every `npm test` run, never useful in source.
+/.test-dsn
 
 # next.js
 /.next/

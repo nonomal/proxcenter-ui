@@ -1,47 +1,73 @@
-import { describe, it, expect, beforeEach } from 'vitest'
-import Database from 'better-sqlite3'
+import { beforeEach, describe, expect, it } from 'vitest'
+
+import { prismaTest, truncate } from '../../__tests__/setup/prisma-test'
 
 import {
-  listBindingsForVdc,
+  deleteBinding,
+  findBindingByTuple,
   insertBinding,
   insertPveStorage,
-  deleteBinding,
+  listBindingsForVdc,
   listPveStoragesForBinding,
-  findBindingByTuple,
-  __setDbForTests,
 } from './vdcPbsBindings'
 
-function freshDb() {
-  const db = new Database(':memory:')
-  db.exec(`
-    CREATE TABLE vdcs (id TEXT PRIMARY KEY, tenant_id TEXT, connection_id TEXT, name TEXT, slug TEXT, pve_pool_name TEXT, enabled INTEGER);
-    CREATE TABLE vdc_pbs_namespaces (
-      id TEXT PRIMARY KEY, vdc_id TEXT, pbs_connection_id TEXT,
-      datastore TEXT, namespace TEXT,
-      mode TEXT NOT NULL DEFAULT 'auto',
-      pbs_token_id TEXT, pbs_token_secret TEXT,
-      created_at TEXT DEFAULT (datetime('now')),
-      UNIQUE (pbs_connection_id, datastore, namespace)
-    );
-    CREATE TABLE vdc_pbs_pve_storages (
-      id TEXT PRIMARY KEY, vdc_pbs_namespace_id TEXT,
-      pve_connection_id TEXT, pve_storage_name TEXT,
-      managed INTEGER NOT NULL DEFAULT 1,
-      created_at TEXT DEFAULT (datetime('now'))
-    );
-  `)
-  db.prepare(`INSERT INTO vdcs VALUES ('v1','t1','c1','VDC1','vdc1','pool-vdc1',1)`).run()
-  __setDbForTests(db)
-  return db
-}
+const TABLES = [
+  'vdc_pbs_pve_storages',
+  'vdc_pbs_namespaces',
+  'vdcs',
+  'Connection',
+  'tenants',
+]
+
+beforeEach(async () => {
+  await truncate(TABLES)
+
+  const now = new Date()
+  await prismaTest.tenant.create({
+    data: {
+      id: 'tenant-1',
+      slug: 'tenant-1',
+      name: 'Test Tenant',
+      createdAt: now,
+      updatedAt: now,
+    },
+  })
+  await prismaTest.connection.create({
+    data: {
+      id: 'pve-conn',
+      tenantId: 'tenant-1',
+      name: 'pve-test',
+      baseUrl: 'https://pve.test',
+      apiTokenEnc: 'enc',
+    },
+  })
+  await prismaTest.connection.create({
+    data: {
+      id: 'pbs-conn',
+      tenantId: 'tenant-1',
+      type: 'pbs',
+      name: 'pbs-test',
+      baseUrl: 'https://pbs.test',
+      apiTokenEnc: 'enc',
+    },
+  })
+  await prismaTest.vdc.create({
+    data: {
+      id: 'v1',
+      tenantId: 'tenant-1',
+      connectionId: 'pve-conn',
+      name: 'VDC1',
+      slug: 'vdc1',
+      pvePoolName: 'pool-vdc1',
+    },
+  })
+})
 
 describe('vdcPbsBindings', () => {
-  beforeEach(() => freshDb())
-
-  it('inserts and reads a binding', () => {
-    const row = insertBinding({
+  it('inserts and reads a binding', async () => {
+    const row = await insertBinding({
       vdcId: 'v1',
-      pbsConnectionId: 'pbs1',
+      pbsConnectionId: 'pbs-conn',
       datastore: 'store1',
       namespace: 'tenant-x/vdc-y',
       mode: 'auto',
@@ -49,29 +75,45 @@ describe('vdcPbsBindings', () => {
       pbsTokenSecret: 'sekret',
     })
     expect(row.id).toMatch(/^[a-f0-9-]{36}$/)
-    const found = findBindingByTuple('pbs1', 'store1', 'tenant-x/vdc-y')
+    const found = await findBindingByTuple('pbs-conn', 'store1', 'tenant-x/vdc-y')
     expect(found?.id).toBe(row.id)
   })
 
-  it('enforces uniqueness on (pbs, ds, ns)', () => {
-    insertBinding({ vdcId: 'v1', pbsConnectionId: 'p', datastore: 'd', namespace: 'n', mode: 'auto', pbsTokenId: 't', pbsTokenSecret: 's' })
-    expect(() =>
-      insertBinding({ vdcId: 'v1', pbsConnectionId: 'p', datastore: 'd', namespace: 'n', mode: 'auto', pbsTokenId: 't', pbsTokenSecret: 's' }),
-    ).toThrow()
+  it('enforces uniqueness on (pbs, ds, ns)', async () => {
+    await insertBinding({
+      vdcId: 'v1', pbsConnectionId: 'pbs-conn', datastore: 'd', namespace: 'n',
+      mode: 'auto', pbsTokenId: 't', pbsTokenSecret: 's',
+    })
+    await expect(
+      insertBinding({
+        vdcId: 'v1', pbsConnectionId: 'pbs-conn', datastore: 'd', namespace: 'n',
+        mode: 'auto', pbsTokenId: 't', pbsTokenSecret: 's',
+      }),
+    ).rejects.toThrow()
   })
 
-  it('lists bindings for a vdc', () => {
-    insertBinding({ vdcId: 'v1', pbsConnectionId: 'p', datastore: 'd', namespace: 'n1', mode: 'auto', pbsTokenId: 't', pbsTokenSecret: 's' })
-    insertBinding({ vdcId: 'v1', pbsConnectionId: 'p', datastore: 'd', namespace: 'n2', mode: 'auto', pbsTokenId: 't', pbsTokenSecret: 's' })
-    expect(listBindingsForVdc('v1')).toHaveLength(2)
+  it('lists bindings for a vdc', async () => {
+    await insertBinding({
+      vdcId: 'v1', pbsConnectionId: 'pbs-conn', datastore: 'd', namespace: 'n1',
+      mode: 'auto', pbsTokenId: 't', pbsTokenSecret: 's',
+    })
+    await insertBinding({
+      vdcId: 'v1', pbsConnectionId: 'pbs-conn', datastore: 'd', namespace: 'n2',
+      mode: 'auto', pbsTokenId: 't', pbsTokenSecret: 's',
+    })
+    expect(await listBindingsForVdc('v1')).toHaveLength(2)
   })
 
-  it('cascades PVE storages when binding is deleted', () => {
-    const b = insertBinding({ vdcId: 'v1', pbsConnectionId: 'p', datastore: 'd', namespace: 'n', mode: 'auto', pbsTokenId: 't', pbsTokenSecret: 's' })
-    insertPveStorage({ bindingId: b.id, pveConnectionId: 'c1', pveStorageName: 'pbs-acme-prod', managed: true })
-    expect(listPveStoragesForBinding(b.id)).toHaveLength(1)
-    deleteBinding(b.id)
-    expect(listBindingsForVdc('v1')).toHaveLength(0)
-    // FK cascade isn't enabled in in-memory tests; the orchestrator deletes children first.
+  it('cascades PVE storages when binding is deleted', async () => {
+    const b = await insertBinding({
+      vdcId: 'v1', pbsConnectionId: 'pbs-conn', datastore: 'd', namespace: 'n',
+      mode: 'auto', pbsTokenId: 't', pbsTokenSecret: 's',
+    })
+    await insertPveStorage({
+      bindingId: b.id, pveConnectionId: 'pve-conn', pveStorageName: 'pbs-acme-prod', managed: true,
+    })
+    expect(await listPveStoragesForBinding(b.id)).toHaveLength(1)
+    await deleteBinding(b.id)
+    expect(await listBindingsForVdc('v1')).toHaveLength(0)
   })
 })

@@ -80,7 +80,15 @@ RUN npx esbuild prisma/seed.ts \
 # whole tree as-is. Production deps include the prisma CLI + its transitive
 # graph (pathe, hono, @electric-sql/pglite, …), which would otherwise need
 # dozens of selective COPY lines to assemble correctly.
-RUN npm prune --omit=dev --legacy-peer-deps --ignore-scripts
+#
+# The `rm -rf` strips packages that .next/standalone bundles its own (lean,
+# trace-driven) copy of, so the final image doesn't carry both. @swc is a
+# build-time compiler and is never imported at runtime — also dropped.
+# Doing this here, in the same RUN layer, means the runner-stage COPY of
+# /app/node_modules pulls the slim tree directly (~480 MB saved versus
+# pruning in the runner where Docker layers preserve the heavier original).
+RUN npm prune --omit=dev --legacy-peer-deps --ignore-scripts && \
+    rm -rf node_modules/next node_modules/@next node_modules/@swc
 
 # ========================================
 # Stage 3: Runner
@@ -112,17 +120,18 @@ RUN mkdir -p /app/data && chown nextjs:nodejs /app/data
 # Copy public assets
 COPY --from=builder /app/public ./public
 
-# Copy standalone build
+# Pruned production node_modules from the builder (already trimmed of
+# next/@next/@swc — see the prune step above). Carries the Prisma CLI +
+# its full transitive graph, @prisma/client, adapter-pg, pg, and the
+# better-sqlite3 native module (still needed by the legacy
+# migrate-from-sqlite utility — slated for removal alongside step 2.7).
+COPY --from=builder --chown=nextjs:nodejs /app/node_modules ./node_modules
+
+# Standalone Next.js bundle: server.js, lean traced node_modules
+# (re-adds next + @next entries the prune dropped) and the compiled
+# .next/ tree.
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
-
-# Copy the pruned production node_modules from the builder. This carries the
-# Prisma CLI (used by the entrypoint to apply migrations) along with its
-# full transitive dependency graph, the @prisma/client + adapter-pg pair,
-# the better-sqlite3 native module (still needed by the legacy
-# migrate-from-sqlite utility — slated for removal alongside step 2.7),
-# and the deps the standalone Next.js bundle expects at runtime.
-COPY --from=builder --chown=nextjs:nodejs /app/node_modules ./node_modules
 
 # Prisma schema, migrations and pre-bundled seed.js (built by esbuild above).
 COPY --from=builder --chown=nextjs:nodejs /app/prisma ./prisma
