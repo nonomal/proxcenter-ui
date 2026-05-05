@@ -2505,14 +2505,6 @@ export default function SettingsPage() {
     return () => setPageInfo('', '', '')
   }, [setPageInfo, t, isOnboarding])
 
-  // Check if a tab's required feature is available
-  const isTabAvailable = (tab) => {
-    if (tab.providerOnly && !(isSuperAdmin && isProviderTenant)) return false
-    if (licenseLoading) return true
-    if (!tab.requiredFeature) return true
-    return hasFeature(tab.requiredFeature)
-  }
-
   const allTabNames = ['connections', 'appearance', 'alert-thresholds', 'notifications', 'ldap', 'oidc', 'license', 'ai', 'green', 'white-label', 'vdc', 'tenants', 'ssh-commands']
 
   const allTabs = [
@@ -2531,9 +2523,16 @@ export default function SettingsPage() {
     { label: t('settings.sshCommands.tabLabel'), icon: 'ri-terminal-line', component: SshCommandsTab, providerOnly: true },
   ]
 
-  // Hide provider-only tabs (Tenants, vDC) unless super admin AND currently in provider tenant
+  // Hide provider-only tabs (Tenants, vDC) unless super admin AND currently
+  // in provider tenant. License-gated tabs are also filtered out entirely
+  // when the feature is missing — same UX as the inventory detail tabs:
+  // the user only sees what they can actually use, no greyed-out chips.
+  // While the license is still loading we keep gated tabs visible to avoid
+  // a visible→hidden flicker once the response lands.
   const visibleIndices = allTabs.reduce((acc, tab, idx) => {
-    if (!tab.providerOnly || (isSuperAdmin && isProviderTenant)) acc.push(idx)
+    if (tab.providerOnly && !(isSuperAdmin && isProviderTenant)) return acc
+    if (!licenseLoading && tab.requiredFeature && !hasFeature(tab.requiredFeature)) return acc
+    acc.push(idx)
     return acc
   }, [])
 
@@ -2606,36 +2605,17 @@ export default function SettingsPage() {
                 }
               }}
             >
-              {tabs.map((tab, idx) => {
-                const available = isTabAvailable(tab)
-                return (
-                  <Tab
-                    key={idx}
-                    disabled={!available}
-                    label={
-                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, opacity: available ? 1 : 0.4 }}>
-                        <i className={tab.icon} style={{ fontSize: 18 }} />
-                        <span>{tab.label}</span>
-                        {!available && (
-                          <Chip
-                            size="small"
-                            label="Enterprise"
-                            sx={{
-                              height: 18,
-                              fontSize: '0.6rem',
-                              fontWeight: 600,
-                              bgcolor: 'primary.main',
-                              color: 'primary.contrastText',
-                              ml: 0.5,
-                              '& .MuiChip-label': { px: 0.75 }
-                            }}
-                          />
-                        )}
-                      </Box>
-                    }
-                  />
-                )
-              })}
+              {tabs.map((tab, idx) => (
+                <Tab
+                  key={idx}
+                  label={
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      <i className={tab.icon} style={{ fontSize: 18 }} />
+                      <span>{tab.label}</span>
+                    </Box>
+                  }
+                />
+              ))}
             </Tabs>
           </Box>
 
