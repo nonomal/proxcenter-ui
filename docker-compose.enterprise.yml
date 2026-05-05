@@ -40,10 +40,13 @@ services:
     networks:
       - proxcenter
     depends_on:
-      orchestrator:
-        condition: service_healthy
       postgres:
         condition: service_healthy
+      # The orchestrator no longer blocks the frontend: the frontend has to
+      # apply Prisma migrations before the orchestrator's GORM auto-migrate
+      # touches the schema, otherwise Prisma sees a pre-populated database
+      # without its migration history and bails with P3005 on first boot.
+      # See `orchestrator.depends_on.frontend` below for the inverse order.
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:3000/api/health"]
       interval: 30s
@@ -119,6 +122,11 @@ services:
       - proxcenter
     depends_on:
       postgres:
+        condition: service_healthy
+      # Wait for the frontend to finish applying Prisma migrations before
+      # GORM auto-migrate adds the orchestrator-side tables, so Prisma's
+      # migration history goes down on a clean slate (avoids P3005).
+      frontend:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:8080/api/v1/health"]
