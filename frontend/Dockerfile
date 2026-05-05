@@ -58,10 +58,23 @@ ARG DEMO_MODE=""
 ENV DEMO_MODE=${DEMO_MODE}
 ENV NEXT_PUBLIC_DEMO_MODE=${DEMO_MODE}
 
-# Create data directory for SQLite (needed during build for page data collection)
+# Create data directory (used at runtime for branding logo uploads, etc.)
 RUN mkdir -p /app/data
 
 RUN npm run build
+
+# Bundle the Prisma seed script to a self-contained CommonJS file so the
+# runner stage can execute it via plain `node` (no tsx / esbuild at runtime).
+# @prisma/client and @prisma/adapter-pg stay external — they are copied into
+# the runner stage from node_modules below.
+RUN npx esbuild prisma/seed.ts \
+    --bundle \
+    --platform=node \
+    --target=node22 \
+    --format=cjs \
+    --outfile=prisma/seed.js \
+    --external:@prisma/client \
+    --external:@prisma/adapter-pg
 
 # ========================================
 # Stage 3: Runner
@@ -87,7 +100,7 @@ RUN apk add --no-cache sqlite-dev
 RUN addgroup --system --gid 1001 nodejs && \
     adduser --system --uid 1001 nextjs
 
-# Create data directory for SQLite
+# Create data directory (used by the app for branding logo uploads, etc.)
 RUN mkdir -p /app/data && chown nextjs:nodejs /app/data
 
 # Copy public assets
@@ -97,7 +110,9 @@ COPY --from=builder /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 
-# Copy better-sqlite3 native module (required for Prisma with SQLite)
+# Copy better-sqlite3 native module — kept solely for the legacy
+# prisma/migrate-from-sqlite.ts utility (one-shot SQLite → Postgres
+# migrator). Drop after step 2.7 lands and the migrator is removed.
 COPY --from=builder /app/node_modules/better-sqlite3 ./node_modules/better-sqlite3
 
 # Copy Prisma adapter, client, config and dependencies
@@ -132,15 +147,16 @@ EXPOSE 3000
 # Environment variables (can be overridden)
 ENV PORT=3000
 ENV HOSTNAME="0.0.0.0"
-ENV DATABASE_URL="file:/app/data/proxcenter.db"
+# DATABASE_URL has no default on purpose — the entrypoint refuses to boot
+# without it. The bundled docker-compose stack injects the right Postgres
+# connection string.
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
     CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:3000/api/health || exit 1
 
-# Copy entrypoint and migration scripts
+# Copy entrypoint
 COPY --from=builder --chown=nextjs:nodejs /app/docker-entrypoint.sh ./docker-entrypoint.sh
-COPY --from=builder --chown=nextjs:nodejs /app/db-migrate.js ./db-migrate.js
 
 # Start: entrypoint inits DB, CMD starts unified server
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
