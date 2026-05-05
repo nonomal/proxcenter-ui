@@ -15,12 +15,9 @@ services:
       - "3000:3000"  # Unified HTTP + WebSocket
     environment:
       - NODE_ENV=production
-      # The application still ships SQLite by default. The Postgres provider
-      # is bundled below and takes over once the migration sprint flips
-      # `provider = "postgresql"` in prisma/schema.prisma. Uncomment the
-      # Postgres URL (and comment the SQLite one) when you opt in.
-      - DATABASE_URL=file:/app/data/proxcenter.db
-      # - DATABASE_URL=postgresql://${POSTGRES_USER:-proxcenter}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-proxcenter}?schema=public
+      # ProxCenter speaks Postgres only since the SQLite cutover. The
+      # bundled `postgres` service below holds every table.
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-proxcenter}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-proxcenter}?schema=public
       - APP_SECRET=${APP_SECRET}
       - NEXTAUTH_SECRET=${NEXTAUTH_SECRET}
       - NEXTAUTH_URL=${NEXTAUTH_URL:-http://localhost:3000}
@@ -51,9 +48,9 @@ services:
   # ========================================
   # Postgres (application database)
   # ========================================
-  # Single source of truth for ProxCenter data after the SQLite → Postgres
-  # migration sprint. Until the application code flips its DATABASE_URL,
-  # this service runs alongside SQLite and stays unused, which is harmless.
+  # Single source of truth for ProxCenter data. The frontend (and the
+  # enterprise orchestrator, if running) connect to this instance over
+  # the internal network.
   postgres:
     image: postgres:16-alpine
     container_name: proxcenter-postgres

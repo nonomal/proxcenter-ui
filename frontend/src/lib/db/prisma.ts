@@ -1,33 +1,23 @@
 import { PrismaClient } from "@prisma/client"
-import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3"
 import { PrismaPg } from "@prisma/adapter-pg"
 
 const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient }
 
 function getDatabaseUrl() {
-  // Default to local path for build time, overridden at runtime by env var
-  return process.env.DATABASE_URL || "file:./data/proxcenter.db"
-}
-
-/**
- * Pick the driver adapter based on the DATABASE_URL scheme. During the
- * SQLite → Postgres migration the codebase ships with both providers wired
- * up so a developer can run against either backend by flipping the env var,
- * with no code changes. Once the migration is complete and the boot-time
- * payload in lib/db/sqlite.ts is removed, the SQLite branch can go too.
- */
-function buildAdapter(url: string) {
-  if (url.startsWith("postgres://") || url.startsWith("postgresql://")) {
-    return new PrismaPg({ connectionString: url })
+  const url = process.env.DATABASE_URL
+  if (!url) {
+    // Build-time placeholder. The runtime instance gets the real URL from env.
+    // An empty / unset URL would have crashed PrismaPg with a confusing
+    // libpq parse error, so surface a clearer build-time fallback.
+    return "postgres://placeholder@localhost:5432/placeholder?sslmode=disable"
   }
-  // file:./..., file:/abs/path, or anything we don't recognise → SQLite path.
-  return new PrismaBetterSqlite3({ url })
+  return url
 }
 
 export const prisma =
   globalForPrisma.prisma ??
   new PrismaClient({
-    adapter: buildAdapter(getDatabaseUrl()),
+    adapter: new PrismaPg({ connectionString: getDatabaseUrl() }),
     log: ["error", "warn"],
   })
 
