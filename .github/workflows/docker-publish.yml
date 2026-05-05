@@ -196,6 +196,23 @@ jobs:
   test-backend:
     if: github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
+    # Replication tests open a per-run schema on this Postgres via
+    # POSTGRES_TEST_URL (mirrors the vitest globalSetup pattern). Tests
+    # t.Skip when the env is absent so default `go test` works locally.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: proxcenter
+          POSTGRES_PASSWORD: test-pass
+          POSTGRES_DB: proxcenter
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U proxcenter -d proxcenter"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -231,6 +248,8 @@ jobs:
 
       - name: Run backend tests
         working-directory: ./backend
+        env:
+          POSTGRES_TEST_URL: postgres://proxcenter:test-pass@localhost:5432/proxcenter?sslmode=disable
         run: go test ./internal/...
 
   # ========================================
