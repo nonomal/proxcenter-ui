@@ -27,6 +27,11 @@ CLAUDE.md
 # Next.js build
 .next/
 
+# Root-level caches from dev tooling that runs at the repo root rather
+# than under frontend/ (vitest's vite cache landed here once via a stray
+# install).
+/node_modules/
+
 # Lock files
 package-lock.json
 
