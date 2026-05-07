@@ -15,9 +15,16 @@ export async function GET() {
 
     const prisma = await getSessionPrisma()
 
-    // Use raw SQL to avoid Prisma client cache issues with new columns
-    const connRows = await prisma.$queryRawUnsafe<any[]>('SELECT tags FROM "Connection" WHERE tags IS NOT NULL')
-    const hostRows = await prisma.$queryRawUnsafe<any[]>('SELECT tags FROM "ManagedHost" WHERE tags IS NOT NULL')
+    const [connRows, hostRows] = await Promise.all([
+      prisma.connection.findMany({
+        where: { tags: { not: null } },
+        select: { tags: true },
+      }),
+      prisma.managedHost.findMany({
+        where: { tags: { not: null } },
+        select: { tags: true },
+      }),
+    ])
 
     const tagSet = new Set<string>()
 

@@ -49,22 +49,12 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
     if (!ownsConnection && !allowedByVdc) {
       return NextResponse.json({ error: "Connection not found" }, { status: 404 })
     }
-    const prisma = globalPrisma
-
-    // Retourner sans les secrets mais avec un indicateur
-    // Read tags via raw SQL (in case Prisma client doesn't know the column yet)
-    let tags: string | null = null
-    try {
-      const rows = await prisma.$queryRawUnsafe<any[]>('SELECT tags FROM "Connection" WHERE id = ?', id)
-      tags = rows?.[0]?.tags ?? null
-    } catch {}
 
     const { sshKeyEnc, sshPassEnc, apiTokenEnc, ...rest } = connection as any
 
     return NextResponse.json({
       data: {
         ...rest,
-        tags,
         sshKeyConfigured: !!sshKeyEnc,
         sshPassConfigured: !!sshPassEnc,
         sshConfigured: !!(sshKeyEnc || sshPassEnc)
@@ -114,8 +104,7 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
     if (body.longitude !== undefined) data.longitude = body.longitude
     if (body.locationLabel !== undefined) data.locationLabel = body.locationLabel || null
     if (body.country !== undefined) data.country = body.country ? String(body.country).toUpperCase() : null
-    // Tags are handled separately via raw SQL to avoid Prisma client cache issues
-    const tagsUpdate = body.tags !== undefined ? body.tags || null : undefined
+    if (body.tags !== undefined) data.tags = body.tags || null
 
     if (body.subType !== undefined) data.subType = body.subType
     if (body.vmwareDatacenter !== undefined) data.vmwareDatacenter = body.vmwareDatacenter || null
@@ -238,11 +227,6 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
       data,
     })
 
-    // Update tags via raw SQL (avoids Prisma client cache issues with new columns)
-    if (tagsUpdate !== undefined) {
-      await prisma.$executeRawUnsafe('UPDATE "Connection" SET tags = ? WHERE id = ?', tagsUpdate, id)
-    }
-
     // Invalidate caches after update
     invalidateConnectionCache(id)
     invalidateInventoryCache()
@@ -280,20 +264,12 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
     // Notify orchestrator to reload connections immediately
     orchestratorFetch('/connections/reload', { method: 'POST' }).catch(() => {})
 
-    // Read tags from raw SQL (in case Prisma client doesn't know the column yet)
-    let tags: string | null = null
-    try {
-      const rows = await prisma.$queryRawUnsafe<any[]>('SELECT tags FROM "Connection" WHERE id = ?', id)
-      tags = rows?.[0]?.tags ?? null
-    } catch {}
-
     // Retourner sans les secrets
     const { sshKeyEnc, sshPassEnc, apiTokenEnc, ...rest } = updated as any
 
     return NextResponse.json({
       data: {
         ...rest,
-        tags,
         sshKeyConfigured: !!sshKeyEnc,
         sshPassConfigured: !!sshPassEnc,
         sshConfigured: !!(sshKeyEnc || sshPassEnc)
