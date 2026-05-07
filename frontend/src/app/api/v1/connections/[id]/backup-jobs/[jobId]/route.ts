@@ -42,7 +42,7 @@ type RouteContext = {
 
 /**
  * GET /api/v1/connections/[id]/backup-jobs/[jobId]
- * 
+ *
  * Récupère les détails d'un backup job
  */
 export async function GET(_req: Request, ctx: RouteContext) {
@@ -65,14 +65,14 @@ export async function GET(_req: Request, ctx: RouteContext) {
     return NextResponse.json({ data: owned.job })
   } catch (e: any) {
     console.error("[backup-jobs] GET Error:", e)
-    
+
 return NextResponse.json({ error: e?.message || String(e) }, { status: 500 })
   }
 }
 
 /**
  * PUT /api/v1/connections/[id]/backup-jobs/[jobId]
- * 
+ *
  * Modifie un backup job existant
  */
 export async function PUT(req: Request, ctx: RouteContext) {
@@ -111,12 +111,12 @@ export async function PUT(req: Request, ctx: RouteContext) {
     if (body.storage) {
       params.set('storage', body.storage)
     }
-    
+
     // Schedule
     if (body.schedule !== undefined) {
       params.set('schedule', body.schedule)
     }
-    
+
     // Node
     if (body.node !== undefined) {
       if (body.node) {
@@ -125,17 +125,17 @@ export async function PUT(req: Request, ctx: RouteContext) {
         params.set('delete', 'node')
       }
     }
-    
+
     // Mode
     if (body.mode) {
       params.set('mode', body.mode)
     }
-    
+
     // Compression
     if (body.compress) {
       params.set('compress', body.compress)
     }
-    
+
     // Sélection des VMs
     if (body.selectionMode === 'all') {
       params.set('all', '1')
@@ -166,12 +166,12 @@ export async function PUT(req: Request, ctx: RouteContext) {
         params.set('pool', body.pool)
       }
     }
-    
+
     // Enabled
     if (body.enabled !== undefined) {
       params.set('enabled', body.enabled ? '1' : '0')
     }
-    
+
     // Commentaire
     if (body.comment !== undefined) {
       if (body.comment) {
@@ -180,7 +180,7 @@ export async function PUT(req: Request, ctx: RouteContext) {
         params.append('delete', 'comment')
       }
     }
-    
+
     // Mail
     if (body.mailto !== undefined) {
       if (body.mailto) {
@@ -248,20 +248,20 @@ export async function PUT(req: Request, ctx: RouteContext) {
       body: params.toString()
     })
 
-    return NextResponse.json({ 
+    return NextResponse.json({
       data: result,
       message: 'Backup job updated successfully'
     })
   } catch (e: any) {
     console.error("[backup-jobs] PUT Error:", e)
-    
+
 return NextResponse.json({ error: e?.message || String(e) }, { status: 500 })
   }
 }
 
 /**
  * DELETE /api/v1/connections/[id]/backup-jobs/[jobId]
- * 
+ *
  * Supprime un backup job
  */
 export async function DELETE(_req: Request, ctx: RouteContext) {
@@ -291,14 +291,14 @@ export async function DELETE(_req: Request, ctx: RouteContext) {
     })
   } catch (e: any) {
     console.error("[backup-jobs] DELETE Error:", e)
-    
+
 return NextResponse.json({ error: e?.message || String(e) }, { status: 500 })
   }
 }
 
 /**
  * POST /api/v1/connections/[id]/backup-jobs/[jobId]
- * 
+ *
  * Exécute immédiatement un backup job
  * Action: run
  */
@@ -318,7 +318,7 @@ export async function POST(req: Request, ctx: RouteContext) {
     if (denied) return denied
 
     const conn = await getConnectionById(id)
-    
+
     if (action === 'run') {
       // Exécuter le job immédiatement
       // Note: Proxmox n'a pas d'endpoint direct pour ça, on doit utiliser vzdump
@@ -333,7 +333,7 @@ export async function POST(req: Request, ctx: RouteContext) {
       params.set('storage', job.storage)
       if (job.mode) params.set('mode', job.mode)
       if (job.compress) params.set('compress', job.compress)
-      
+
       // VMs à sauvegarder
       if (job.all) {
         params.set('all', '1')
@@ -343,21 +343,21 @@ export async function POST(req: Request, ctx: RouteContext) {
       } else if (job.pool) {
         params.set('pool', job.pool)
       }
-      
+
       // Déterminer le node (si spécifié ou premier node disponible)
       const targetNode = job.node || (await pveFetch<any[]>(conn, `/nodes`))?.[0]?.node
-      
+
       if (!targetNode) {
         return NextResponse.json({ error: "No node available" }, { status: 400 })
       }
-      
+
       const result = await pveFetch<any>(conn, `/nodes/${encodeURIComponent(targetNode)}/vzdump`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: params.toString()
       })
-      
-      return NextResponse.json({ 
+
+      return NextResponse.json({
         data: result,
         message: 'Backup job started'
       })
@@ -366,7 +366,7 @@ export async function POST(req: Request, ctx: RouteContext) {
     return NextResponse.json({ error: "Invalid action" }, { status: 400 })
   } catch (e: any) {
     console.error("[backup-jobs] POST Error:", e)
-    
+
 return NextResponse.json({ error: e?.message || String(e) }, { status: 500 })
   }
 }

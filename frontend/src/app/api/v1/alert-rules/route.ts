@@ -71,7 +71,7 @@ export async function GET() {
       updatedAt: rule.updatedAt.toISOString(),
     }))
 
-    return NextResponse.json({ 
+    return NextResponse.json({
       data: formattedRules,
       meta: {
         metrics: METRIC_TYPES,
@@ -82,7 +82,7 @@ export async function GET() {
     })
   } catch (error: any) {
     console.error('Erreur GET alert-rules:', error)
-    
+
 return NextResponse.json(
       { error: error?.message || 'Erreur serveur' },
       { status: 500 }
@@ -143,13 +143,13 @@ export async function POST(req: Request) {
       },
     })
 
-    return NextResponse.json({ 
+    return NextResponse.json({
       data: { id },
       message: 'Règle créée avec succès'
     }, { status: 201 })
   } catch (error: any) {
     console.error('Erreur POST alert-rules:', error)
-    
+
 return NextResponse.json(
       { error: error?.message || 'Erreur serveur' },
       { status: 500 }

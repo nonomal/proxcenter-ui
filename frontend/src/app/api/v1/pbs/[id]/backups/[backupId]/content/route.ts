@@ -24,7 +24,7 @@ export async function GET(
     const params = await Promise.resolve(ctx.params)
     const id = (params as any)?.id
     const backupId = (params as any)?.backupId
-    
+
     if (!id) return NextResponse.json({ error: "Missing params.id" }, { status: 400 })
     if (!backupId) return NextResponse.json({ error: "Missing params.backupId" }, { status: 400 })
 
@@ -91,7 +91,7 @@ export async function GET(
       )
 
       const snapshot = snapshots?.find(s => String(s['backup-time']) === timestamp)
-      
+
       if (!snapshot) {
         return NextResponse.json({ error: "Snapshot not found" }, { status: 404 })
       }
@@ -101,7 +101,7 @@ export async function GET(
         const filename = typeof file === 'string' ? file : file.filename
         const isArchive = filename?.endsWith('.pxar.didx') || filename?.endsWith('.img.fidx')
         const isPxar = filename?.endsWith('.pxar.didx')
-        
+
         return {
           name: filename,
           type: isArchive ? 'archive' : 'file',
@@ -130,7 +130,7 @@ export async function GET(
     // L'API PBS pour explorer le contenu d'une archive pxar
     try {
       const catalogPath = `/admin/datastore/${encodeURIComponent(datastore)}/catalog`
-      
+
       const catalogParams = new URLSearchParams({
         'backup-type': backupType,
         'backup-id': vmid,
@@ -164,7 +164,7 @@ export async function GET(
       entries.sort((a: any, b: any) => {
         if (a.type === 'directory' && b.type !== 'directory') return -1
         if (a.type !== 'directory' && b.type === 'directory') return 1
-        
+
 return (a.name || '').localeCompare(b.name || '')
       })
 
@@ -184,7 +184,7 @@ return (a.name || '').localeCompare(b.name || '')
       })
     } catch (catalogError: any) {
       console.error("Catalog error:", catalogError)
-      
+
 return NextResponse.json({
         error: `Cannot browse archive: ${catalogError.message}`,
         data: {
@@ -204,7 +204,7 @@ return NextResponse.json({
 
   } catch (e: any) {
     console.error("PBS backup content error:", e)
-    
+
 return NextResponse.json({ error: e?.message || String(e) }, { status: 500 })
   }
 }
