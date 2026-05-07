@@ -85,4 +85,3 @@ export function ipInCidrUsable(ip: string, cidr: string): boolean {
 export function gatewayValidForCidr(gateway: string, cidr: string): boolean {
   return ipInCidrUsable(gateway, cidr)
 }
-

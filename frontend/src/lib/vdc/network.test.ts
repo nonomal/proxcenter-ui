@@ -120,4 +120,3 @@ describe('gatewayValidForCidr', () => {
     expect(gatewayValidForCidr('192.168.0.1', '10.42.0.0/24')).toBe(false)
   })
 })
-

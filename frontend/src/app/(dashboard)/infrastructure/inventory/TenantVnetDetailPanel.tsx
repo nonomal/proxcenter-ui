@@ -415,4 +415,3 @@ export default function TenantVnetDetailPanel({ selectionId }: Props) {
     </Stack>
   )
 }
-
