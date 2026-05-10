@@ -2,6 +2,11 @@
 
 import { createContext, useContext, useEffect, useState, useCallback, type ReactNode } from 'react'
 
+export interface BrandingHighlight {
+  icon: string
+  text: string
+}
+
 export interface BrandingConfig {
   enabled: boolean
   appName: string
@@ -16,6 +21,12 @@ export interface BrandingConfig {
   showWhatsNew: boolean
   showAbout: boolean
   showSubscription: boolean
+  loginTagline: string
+  loginHighlights: BrandingHighlight[]
+  docsUrl: string
+  supportUrl: string
+  changelogUrl: string
+  hideVersion: boolean
 }
 
 const DEFAULT_BRANDING: BrandingConfig = {
@@ -32,6 +43,12 @@ const DEFAULT_BRANDING: BrandingConfig = {
   showWhatsNew: true,
   showAbout: true,
   showSubscription: true,
+  loginTagline: '',
+  loginHighlights: [],
+  docsUrl: '',
+  supportUrl: '',
+  changelogUrl: '',
+  hideVersion: false,
 }
 
 interface BrandingContextValue {

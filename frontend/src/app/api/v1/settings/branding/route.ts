@@ -6,15 +6,21 @@ import { getCurrentTenantId } from '@/lib/tenant'
 
 
 const DEFAULT_BRANDING = {
-  enabled: false,        // white label master switch
+  enabled: false,
   appName: 'ProxCenter',
-  logoUrl: '',           // empty = use default SVG logo
-  faviconUrl: '',        // empty = use default favicon
-  loginLogoUrl: '',      // empty = use default
-  primaryColor: '',      // empty = use theme default
-  footerText: '',        // empty = use default "© {year} ProxCenter"
-  browserTitle: '',      // empty = use default "PROXCENTER"
-  poweredByVisible: true, // show "Powered by ProxCenter" in footer
+  logoUrl: '',
+  faviconUrl: '',
+  loginLogoUrl: '',
+  primaryColor: '',
+  footerText: '',
+  browserTitle: '',
+  poweredByVisible: true,
+  loginTagline: '',
+  loginHighlights: [] as Array<{ icon: string; text: string }>,
+  docsUrl: '',
+  supportUrl: '',
+  changelogUrl: '',
+  hideVersion: false,
 }
 
 export async function GET() {

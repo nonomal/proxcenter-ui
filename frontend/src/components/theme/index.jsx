@@ -137,6 +137,8 @@ const getGlobalThemeStyles = (globalTheme, mode, customBorderRadius, blurIntensi
     ? Math.max(customBorderRadius - 2, 0)
     : themeStyles.button.borderRadius
 
+  const badgeRadius = Math.max(buttonRadius * 2, 12)
+
   const inputRadius = customBorderRadius !== null && customBorderRadius !== undefined
     ? Math.max(customBorderRadius - 2, 0)
     : themeStyles.input.borderRadius
@@ -191,6 +193,7 @@ const getGlobalThemeStyles = (globalTheme, mode, customBorderRadius, blurIntensi
 
       // Button styles
       '--proxcenter-button-radius': `${buttonRadius}px`,
+      '--proxcenter-badge-radius': `${badgeRadius}px`,
 
       // Input styles
       '--proxcenter-input-radius': `${inputRadius}px`,
@@ -302,8 +305,12 @@ const getGlobalThemeStyles = (globalTheme, mode, customBorderRadius, blurIntensi
 
     // Chip styles
     '.MuiChip-root': {
-      borderRadius: `calc(var(--proxcenter-button-radius) * 2) !important`,
+      borderRadius: 'var(--proxcenter-badge-radius) !important',
       transition: `all var(--proxcenter-transition-duration) var(--proxcenter-transition-easing) !important`
+    },
+
+    '.MuiBadge-badge': {
+      borderRadius: 'var(--proxcenter-badge-radius) !important'
     },
 
     // Dialog styles
@@ -642,7 +649,7 @@ const getGlobalThemeStyles = (globalTheme, mode, customBorderRadius, blurIntensi
       // ============================================================
       '.MuiChip-root': {
         fontFamily: '"JetBrains Mono", monospace !important',
-        borderRadius: '0 !important',
+        borderRadius: 'var(--proxcenter-badge-radius) !important',
         backgroundColor: '#161b22 !important',
         color: '#00ff00 !important',
         border: '1px solid #30363d !important'

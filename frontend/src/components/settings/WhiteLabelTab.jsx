@@ -30,6 +30,16 @@ export default function WhiteLabelTab() {
     showWhatsNew: true,
     showAbout: true,
     showSubscription: true,
+    loginTagline: '',
+    loginHighlights: [
+      { icon: '', text: '' },
+      { icon: '', text: '' },
+      { icon: '', text: '' },
+    ],
+    docsUrl: '',
+    supportUrl: '',
+    changelogUrl: '',
+    hideVersion: false,
   })
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -57,10 +67,14 @@ export default function WhiteLabelTab() {
     setError('')
     setSuccess('')
     try {
+      const cleanedHighlights = (config.loginHighlights || [])
+        .filter(h => h && h.icon && h.text && h.icon.trim() !== '' && h.text.trim() !== '')
+        .slice(0, 3)
+      const payload = { ...config, loginHighlights: cleanedHighlights }
       const res = await fetch('/api/v1/settings/branding', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(config),
+        body: JSON.stringify(payload),
       })
       const data = await res.json()
       if (data.error) throw new Error(data.error)
@@ -129,6 +143,16 @@ export default function WhiteLabelTab() {
       footerText: '',
       browserTitle: '',
       poweredByVisible: true,
+      loginTagline: '',
+      loginHighlights: [
+        { icon: '', text: '' },
+        { icon: '', text: '' },
+        { icon: '', text: '' },
+      ],
+      docsUrl: '',
+      supportUrl: '',
+      changelogUrl: '',
+      hideVersion: false,
     })
   }, [])
 
@@ -456,6 +480,66 @@ export default function WhiteLabelTab() {
               )}
             </Typography>
           </Box>
+        </CardContent>
+      </Card>
+
+      {/* Login page customization */}
+      <Card variant='outlined' sx={{ mb: 2 }}>
+        <CardContent>
+          <Typography variant='subtitle2' sx={{ mb: 2, fontWeight: 600 }}>
+            <i className='ri-login-circle-line' style={{ marginRight: 8, opacity: 0.7 }} />{' '}
+            Login page
+          </Typography>
+          <Typography variant='caption' sx={{ display: 'block', mb: 2, opacity: 0.6 }}>
+            Customize the brand panel of the login page. Leave fields empty to fall back to defaults.
+          </Typography>
+
+          <TextField
+            fullWidth
+            size='small'
+            label='Tagline'
+            value={config.loginTagline}
+            onChange={e => setConfig(prev => ({ ...prev, loginTagline: e.target.value }))}
+            helperText='One short sentence shown next to the logo on the login page.'
+            sx={{ mb: 2 }}
+          />
+
+          <Divider sx={{ my: 2 }} />
+
+          <TextField
+            fullWidth size='small' label='Docs URL'
+            placeholder='https://docs.example.com'
+            value={config.docsUrl}
+            onChange={e => setConfig(prev => ({ ...prev, docsUrl: e.target.value }))}
+            sx={{ mb: 2 }}
+            helperText='Shown in the login footer. Hidden if empty.'
+          />
+          <TextField
+            fullWidth size='small' label='Support URL'
+            placeholder='https://support.example.com or mailto:support@example.com'
+            value={config.supportUrl}
+            onChange={e => setConfig(prev => ({ ...prev, supportUrl: e.target.value }))}
+            sx={{ mb: 2 }}
+            helperText='Shown in the login footer. Hidden if empty.'
+          />
+          <TextField
+            fullWidth size='small' label='Changelog URL'
+            placeholder='https://example.com/changelog'
+            value={config.changelogUrl}
+            onChange={e => setConfig(prev => ({ ...prev, changelogUrl: e.target.value }))}
+            sx={{ mb: 2 }}
+            helperText='Makes the version label clickable in the footer. Hidden if empty.'
+          />
+
+          <FormControlLabel
+            control={
+              <Switch
+                checked={config.hideVersion}
+                onChange={e => setConfig(prev => ({ ...prev, hideVersion: e.target.checked }))}
+              />
+            }
+            label='Hide version label in the login footer'
+          />
         </CardContent>
       </Card>
 

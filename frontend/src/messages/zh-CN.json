@@ -157,7 +157,19 @@
     "appSubtitle": "Proxmox 集中管理",
     "usernamePlaceholder": "用户名或 user@domain.com",
     "or": "或",
-    "signInWithSso": "使用 {provider} 登录"
+    "signInWithSso": "使用 {provider} 登录",
+    "welcomeBack": "欢迎回来",
+    "signInTo": "登录到 {appName}",
+    "continueWith": "使用 {provider} 继续",
+    "useLocalAccount": "使用本地账户",
+    "useLdap": "使用 LDAP / Active Directory",
+    "docs": "文档",
+    "support": "支持",
+    "languageLabel": "语言",
+    "defaultTagline": "Proxmox 数据中心管理平台",
+    "defaultHighlightMultiTenant": "多租户 vDC",
+    "defaultHighlightBackup": "备份编排",
+    "defaultHighlightWhiteLabel": "MSP 白标"
   },
   "navigation": {
     "dashboard": "仪表盘",

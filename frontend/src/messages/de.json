@@ -154,7 +154,19 @@
     "appSubtitle": "Zentrales Proxmox-Management",
     "usernamePlaceholder": "Benutzername or user@domain.com",
     "or": "oder",
-    "signInWithSso": "Anmelden mit {provider}"
+    "signInWithSso": "Anmelden mit {provider}",
+    "welcomeBack": "Willkommen zurück",
+    "signInTo": "Bei {appName} anmelden",
+    "continueWith": "Weiter mit {provider}",
+    "useLocalAccount": "Lokales Konto verwenden",
+    "useLdap": "LDAP / Active Directory verwenden",
+    "docs": "Dokumentation",
+    "support": "Support",
+    "languageLabel": "Sprache",
+    "defaultTagline": "Die Proxmox Datacenter-Management-Plattform",
+    "defaultHighlightMultiTenant": "Mandantenfähige vDC",
+    "defaultHighlightBackup": "Backup-Orchestrierung",
+    "defaultHighlightWhiteLabel": "MSP White-Label"
   },
   "navigation": {
     "dashboard": "Dashboard",
