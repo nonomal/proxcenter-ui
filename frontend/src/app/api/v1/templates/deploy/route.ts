@@ -10,7 +10,7 @@ import { getConnectionById } from "@/lib/connections/getConnection"
 import { pveFetch } from "@/lib/proxmox/client"
 import { getImageBySlug, customImageToCloudImage } from "@/lib/templates/cloudImages"
 import { isFileBasedStorage, supportsVmDisks } from "@/lib/proxmox/storage"
-import { resolveVdcForTenant } from "@/lib/vdc/quota"
+import { resolveVdcForTenant, checkVdcQuota } from "@/lib/vdc/quota"
 import { getAllowedBridgesForTenant, resolveSubnetForBridge } from "@/lib/vdc/vnets"
 import { generatePveMacAddress } from "@/lib/vdc/sdn"
 import { allocateIp, releaseIp, IpamExhaustedError } from "@/lib/vdc/ipam"
@@ -98,6 +98,40 @@ export async function POST(req: Request) {
     }
     if (isTenant && !vdcInfo) {
       return NextResponse.json({ error: 'No vDC on this connection — deploy not allowed' }, { status: 403 })
+    }
+
+    // vDC quota enforcement. Mirrors the create-VM route on
+    // /connections/[id]/guests/[type]/[node] so a tenant can't bypass
+    // their CPU / RAM / storage / VM-count limits by going through the
+    // template wizard instead. Provider (vdcInfo === null) is not
+    // capped. The disk size we account for is body.hardware.diskSize
+    // (GB), since both the URL and ISO branches end up importing /
+    // creating a disk of that size; the ephemeral cloudinit drive is
+    // negligible and not metered.
+    if (vdcInfo) {
+      const hw = body.hardware || ({} as any)
+      const cores = parseInt(String(hw.cores ?? '1'))
+      const sockets = parseInt(String(hw.sockets ?? '1'))
+      const vcpus = (Number.isFinite(cores) ? cores : 1) * (Number.isFinite(sockets) ? sockets : 1)
+      const ramMb = parseInt(String(hw.memory ?? '512'))
+      const diskGb = parseInt(String(hw.diskSize ?? '0').replace(/G$/i, ''))
+      const storageMb = (Number.isFinite(diskGb) && diskGb > 0) ? diskGb * 1024 : 0
+
+      const quotaCheck = await checkVdcQuota(body.connectionId, vdcInfo.poolName, vdcInfo.quota, {
+        type: 'create',
+        addVcpus: vcpus,
+        addRamMb: Number.isFinite(ramMb) ? ramMb : 0,
+        addStorageMb: storageMb,
+        addVms: 1,
+      })
+
+      if (!quotaCheck.allowed) {
+        return NextResponse.json({
+          error: 'Quota exceeded',
+          violations: quotaCheck.violations,
+          currentUsage: quotaCheck.currentUsage,
+        }, { status: 409 })
+      }
     }
 
     // Storage / bridge / ISO storage allow-lists from the tenant's vDC
