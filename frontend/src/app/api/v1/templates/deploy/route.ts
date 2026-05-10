@@ -11,12 +11,14 @@ import { pveFetch } from "@/lib/proxmox/client"
 import { getImageBySlug, customImageToCloudImage } from "@/lib/templates/cloudImages"
 import { isFileBasedStorage, supportsVmDisks } from "@/lib/proxmox/storage"
 import { resolveVdcForTenant } from "@/lib/vdc/quota"
-import { resolveSubnetForBridge } from "@/lib/vdc/vnets"
+import { getAllowedBridgesForTenant, resolveSubnetForBridge } from "@/lib/vdc/vnets"
 import { generatePveMacAddress } from "@/lib/vdc/sdn"
 import { allocateIp, releaseIp, IpamExhaustedError } from "@/lib/vdc/ipam"
 import { scanUsedIpsForSubnet, scannedToIntSet } from "@/lib/vdc/ipamScan"
 import { parseCidr } from "@/lib/vdc/network"
 import { waitForTask } from "@/lib/proxmox/tasks"
+import { getVdcScope } from "@/lib/vdc/scope"
+import { DEFAULT_TENANT_ID } from "@/lib/tenant"
 
 export const runtime = "nodejs"
 
@@ -73,14 +75,63 @@ export async function POST(req: Request) {
       volumeId = customRow.volumeId
     }
 
-    // Resolve the tenant's vDC for this connection+node so we can pin the
-    // VM to its PVE pool. Without this, the inventory filter (which lists
-    // VMs by `pool === vdc.pvePoolName`) wouldn't surface the deployed VM
-    // and the tenant would think the deploy failed.
-    const vdcInfo = await (async () => {
-      try { return await resolveVdcForTenant(tenantId, body.connectionId, body.node) }
-      catch { return null }
-    })()
+    // Resolve the tenant's vDC for this connection+node so we can pin
+    // the VM to its PVE pool. Without this the inventory filter (which
+    // lists VMs by `pool === vdc.pvePoolName`) wouldn't surface the
+    // deployed VM and the tenant would think the deploy failed.
+    //
+    // Errors are NOT swallowed here — a NODE_NOT_AUTHORIZED throw means
+    // the tenant tried to deploy on a node outside its vDC and must be
+    // refused; any other error must surface so the deploy stops before
+    // we forge a PVE call. For non-provider tenants, vdcInfo MUST be
+    // non-null afterwards: a tenant with no vDC on the connection has
+    // no business creating a VM here.
+    const isTenant = tenantId !== DEFAULT_TENANT_ID
+    let vdcInfo: Awaited<ReturnType<typeof resolveVdcForTenant>> = null
+    try {
+      vdcInfo = await resolveVdcForTenant(tenantId, body.connectionId, body.node)
+    } catch (e: any) {
+      if (e?.message === 'NODE_NOT_AUTHORIZED') {
+        return NextResponse.json({ error: 'This node is not authorized for your vDC' }, { status: 403 })
+      }
+      throw e
+    }
+    if (isTenant && !vdcInfo) {
+      return NextResponse.json({ error: 'No vDC on this connection — deploy not allowed' }, { status: 403 })
+    }
+
+    // Storage / bridge / ISO storage allow-lists from the tenant's vDC
+    // scope. Tenants must pick infra they actually own; the wizard
+    // already enforces this client-side, but the API contract has to
+    // hold against forged payloads too.
+    if (isTenant) {
+      const scope = await getVdcScope(tenantId)
+      if (!scope) {
+        return NextResponse.json({ error: 'Tenant vDC scope not resolved' }, { status: 403 })
+      }
+      const allowedStorages = scope.storagesByConnection.get(body.connectionId) ?? new Set<string>()
+      if (!allowedStorages.has(body.storage)) {
+        return NextResponse.json(
+          { error: `Storage "${body.storage}" is not authorised for this tenant.` },
+          { status: 403 },
+        )
+      }
+      if (body.isoStorage && !allowedStorages.has(body.isoStorage)) {
+        return NextResponse.json(
+          { error: `ISO storage "${body.isoStorage}" is not authorised for this tenant.` },
+          { status: 403 },
+        )
+      }
+
+      const allowedBridges = await getAllowedBridgesForTenant(tenantId, body.connectionId)
+      const bridge = body.hardware?.networkBridge
+      if (allowedBridges !== null && bridge && !allowedBridges.has(bridge)) {
+        return NextResponse.json(
+          { error: `Bridge "${bridge}" is not authorised for this vDC. Allowed: ${Array.from(allowedBridges).join(', ')}` },
+          { status: 403 },
+        )
+      }
+    }
 
     const conn = await getConnectionById(body.connectionId)
 
