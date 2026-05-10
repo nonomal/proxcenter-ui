@@ -6,8 +6,9 @@ import { getServerSession } from "next-auth"
 import { authOptions } from "@/lib/auth/config"
 import { prisma } from "@/lib/db/prisma"
 import { hashPassword } from "@/lib/auth/password"
-import { checkPermission, PERMISSIONS, isUserSuperAdmin, isUserProtected } from "@/lib/rbac"
-import { getCurrentTenantId } from "@/lib/tenant"
+import { checkPermission, PERMISSIONS, isUserSuperAdmin, isUserProtected, PROTECTED_ROLE_IDS } from "@/lib/rbac"
+import { nanoid } from "nanoid"
+import { DEFAULT_TENANT_ID, addUserToTenant, removeUserFromTenant, TenantMembershipError, getCurrentTenantId } from "@/lib/tenant"
 
 /**
  * Hide provider-level accounts (super_admin + provider_admin) from
@@ -83,7 +84,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     const session = await getServerSession(authOptions)
     const { id } = await params
     const body = await req.json()
-    const { name, enabled, password } = body
+    const { name, enabled, password, tenantIds, roleId } = body
 
     const isSelf = session?.user?.id === id
     const selfServiceFields = new Set(["name", "password"])
@@ -109,7 +110,14 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     if (superAdminBlock) return superAdminBlock
 
     const tenantId = await getCurrentTenantId()
-    const user = await findUserInTenant(id, tenantId)
+    const isProviderView = tenantId === DEFAULT_TENANT_ID
+
+    // Provider view (default tenant) can edit any user, including those
+    // with no membership in `default`. Non-provider views stay scoped to
+    // their own memberships, matching the historical behaviour.
+    const user = isProviderView
+      ? await prisma.user.findUnique({ where: { id } })
+      : await findUserInTenant(id, tenantId)
     if (!user) {
       return NextResponse.json({ error: "Utilisateur non trouvé" }, { status: 404 })
     }
@@ -128,16 +136,122 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
       data.password = await hashPassword(password)
     }
 
-    if (Object.keys(data).length === 0) {
+    // Tenant assignments reconciliation. Only honored from the provider
+    // view (default tenant) — a tenant-admin scoped to OVH must never be
+    // able to grant a user access to a foreign tenant via this endpoint.
+    // Uses the shared addUserToTenant / removeUserFromTenant helpers so
+    // the SUPER_ADMIN_PROTECTED and LAST_TENANT guards still apply.
+    let tenantsChanged: { added: string[]; removed: string[] } | null = null
+    if (Array.isArray(tenantIds)) {
+      if (!isProviderView) {
+        return NextResponse.json(
+          { error: "Tenant assignments can only be edited from the provider tenant" },
+          { status: 403 }
+        )
+      }
+      const requested = new Set(tenantIds.filter((x: unknown) => typeof x === "string" && x.length > 0) as string[])
+      const current = new Set(
+        (await prisma.userTenant.findMany({ where: { userId: id }, select: { tenantId: true } })).map(r => r.tenantId)
+      )
+      const toAdd = [...requested].filter(t => !current.has(t))
+      const toRemove = [...current].filter(t => !requested.has(t))
+
+      try {
+        for (const t of toAdd) await addUserToTenant(id, t, false)
+        for (const t of toRemove) await removeUserFromTenant(id, t)
+      } catch (e) {
+        if (e instanceof TenantMembershipError) {
+          const status = e.code === "LAST_TENANT" ? 409 : e.code === "SUPER_ADMIN_PROTECTED" ? 403 : 404
+          return NextResponse.json({ error: e.message, code: e.code }, { status })
+        }
+        throw e
+      }
+      tenantsChanged = { added: toAdd, removed: toRemove }
+    }
+
+    // RBAC role propagation. From the provider view, choosing a role in
+    // the global user dialog applies it across every tenant the user is
+    // a member of (after the tenantIds reconciliation above). This
+    // mirrors the most common MSP intent — same role everywhere — while
+    // still allowing per-tenant divergence through Settings → Tenants
+    // → tenant-X → users (which posts to /tenants/:id/users with a
+    // specific roleId).
+    //
+    // - roleId === undefined  → no change (backward compat)
+    // - roleId === null | ''  → drop every non-protected role grant of this user
+    // - otherwise             → drop existing non-protected grants, create the
+    //                            new role on every membership (skip protected
+    //                            role IDs entirely; they're managed via
+    //                            /api/v1/rbac/assignments only)
+    let rolesChanged: { applied: string | null; tenantCount: number } | null = null
+    if (roleId !== undefined) {
+      if (!isProviderView) {
+        return NextResponse.json(
+          { error: "Cross-tenant role propagation is only available from the provider tenant" },
+          { status: 403 }
+        )
+      }
+      if (typeof roleId === "string" && roleId.length > 0 && (PROTECTED_ROLE_IDS as readonly string[]).includes(roleId)) {
+        return NextResponse.json(
+          { error: "Protected roles can't be assigned through this endpoint" },
+          { status: 403 }
+        )
+      }
+      if (typeof roleId === "string" && roleId.length > 0) {
+        const exists = await prisma.rbacRole.findUnique({ where: { id: roleId }, select: { id: true } })
+        if (!exists) {
+          return NextResponse.json({ error: `Unknown role: ${roleId}` }, { status: 400 })
+        }
+      }
+
+      const memberships = await prisma.userTenant.findMany({
+        where: { userId: id },
+        select: { tenantId: true },
+      })
+      const grantedById = session?.user?.id || null
+      const now = new Date()
+
+      await prisma.$transaction(async tx => {
+        // Drop every non-protected grant — protected ones (super_admin,
+        // provider_admin) stay untouched so we don't accidentally demote
+        // a super-admin via the user dialog.
+        await tx.rbacUserRole.deleteMany({
+          where: {
+            userId: id,
+            roleId: { notIn: [...PROTECTED_ROLE_IDS] },
+          },
+        })
+        if (typeof roleId === "string" && roleId.length > 0) {
+          for (const m of memberships) {
+            await tx.rbacUserRole.create({
+              data: {
+                id: `tenant_role_${m.tenantId}_${id}_${nanoid(6)}`,
+                userId: id,
+                roleId,
+                scopeType: "global",
+                tenantId: m.tenantId,
+                grantedById,
+                grantedAt: now,
+              },
+            })
+          }
+        }
+      })
+      rolesChanged = {
+        applied: typeof roleId === "string" && roleId.length > 0 ? roleId : null,
+        tenantCount: memberships.length,
+      }
+    }
+
+    if (Object.keys(data).length === 0 && !tenantsChanged && !rolesChanged) {
       return NextResponse.json({ error: "Aucune modification fournie" }, { status: 400 })
     }
 
-    data.updatedAt = new Date()
+    if (Object.keys(data).length > 0) data.updatedAt = new Date()
 
-    const updated = await prisma.user.update({
-      where: { id },
-      data,
-    })
+    const updated = Object.keys(data).length > 0
+      ? await prisma.user.update({ where: { id }, data })
+      : user
 
     // Audit
     const { audit } = await import("@/lib/audit")
@@ -145,6 +259,12 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     if (name !== undefined) changes.name = name
     if (enabled !== undefined) changes.enabled = enabled
     if (password) changes.passwordChanged = true
+    if (tenantsChanged && (tenantsChanged.added.length > 0 || tenantsChanged.removed.length > 0)) {
+      changes.tenants = tenantsChanged
+    }
+    if (rolesChanged) {
+      changes.role = rolesChanged
+    }
 
     await audit({
       action: "update",

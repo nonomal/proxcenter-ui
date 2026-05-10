@@ -10,7 +10,7 @@ import { authOptions } from "@/lib/auth/config"
 import { prisma } from "@/lib/db/prisma"
 import { audit } from "@/lib/audit"
 import { hasPermission, isUserSuperAdmin, isUserProtected, PROTECTED_ROLE_IDS } from "@/lib/rbac"
-import { getCurrentTenantId } from "@/lib/tenant"
+import { DEFAULT_TENANT_ID, getCurrentTenantId } from "@/lib/tenant"
 import { demoResponse } from "@/lib/demo/demo-api"
 
 // GET /api/v1/rbac/assignments - Liste toutes les assignations
@@ -50,7 +50,13 @@ export async function GET(req: NextRequest) {
           ).map(r => r.userId),
         )
 
-    const where: any = { tenantId }
+    // Provider view (default tenant) returns assignments across every
+    // tenant so /security/users can render the per-tenant role
+    // breakdown for users with memberships outside `default`. Without
+    // this, a tenant_admin role on tenant-1 would be invisible from the
+    // provider screen even though the user is listed there.
+    const isProviderView = tenantId === DEFAULT_TENANT_ID
+    const where: any = isProviderView ? {} : { tenantId }
     if (userIdFilter) where.userId = userIdFilter
     if (roleIdFilter) where.roleId = roleIdFilter
     if (!callerIsSuperAdmin) {
@@ -72,10 +78,25 @@ export async function GET(req: NextRequest) {
       orderBy: { grantedAt: "desc" },
     })
 
+    // RbacUserRole.tenantId is a plain string column (no Prisma relation),
+    // so we resolve tenant names via a separate batch query keyed on the
+    // distinct tenant ids we've collected. The Map lookup keeps the
+    // mapping O(1) when projecting the response.
+    const tenantIdsInRows = Array.from(new Set(rows.map(r => r.tenantId).filter(Boolean)))
+    const tenantsForRows = tenantIdsInRows.length > 0
+      ? await prisma.tenant.findMany({
+          where: { id: { in: tenantIdsInRows } },
+          select: { id: true, name: true },
+        })
+      : []
+    const tenantNameById = new Map(tenantsForRows.map(t => [t.id, t.name]))
+
     const assignments = rows.map(r => ({
       id: r.id,
       user_id: r.userId,
       role_id: r.roleId,
+      tenant_id: r.tenantId,
+      tenant_name: tenantNameById.get(r.tenantId) ?? null,
       scope_type: r.scopeType,
       scope_target: r.scopeTarget,
       granted_at: r.grantedAt.toISOString(),
@@ -93,7 +114,9 @@ export async function GET(req: NextRequest) {
     // /security/users of any non-default tenant — their assignment lives on
     // the provider tenant only. Visible to super-admin callers only (the hide
     // filter above already strips protected roles for everyone else).
-    if (callerIsSuperAdmin) {
+    // Skipped in provider view: the where:{} clause already returns every
+    // tenant's assignment.
+    if (callerIsSuperAdmin && !isProviderView) {
       const crossTenantRows = await prisma.rbacUserRole.findMany({
         where: {
           roleId: "role_super_admin",
@@ -111,6 +134,16 @@ export async function GET(req: NextRequest) {
         },
       })
 
+      // Pull names for any tenant ids we haven't already resolved above.
+      const extraTenantIds = Array.from(new Set(crossTenantRows.map(r => r.tenantId).filter(t => t && !tenantNameById.has(t))))
+      if (extraTenantIds.length > 0) {
+        const extras = await prisma.tenant.findMany({
+          where: { id: { in: extraTenantIds } },
+          select: { id: true, name: true },
+        })
+        for (const t of extras) tenantNameById.set(t.id, t.name)
+      }
+
       const seen = new Set(assignments.map(a => a.id))
       for (const r of crossTenantRows) {
         if (seen.has(r.id)) continue
@@ -119,6 +152,8 @@ export async function GET(req: NextRequest) {
           id: r.id,
           user_id: r.userId,
           role_id: r.roleId,
+          tenant_id: r.tenantId,
+          tenant_name: tenantNameById.get(r.tenantId) ?? null,
           scope_type: r.scopeType,
           scope_target: r.scopeTarget,
           granted_at: r.grantedAt.toISOString(),
