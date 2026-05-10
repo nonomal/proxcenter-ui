@@ -55,12 +55,17 @@ const CACHE_TTL_MS = 5_000
 /**
  * Resolves the vDC scope for a tenant.
  *
- * Returns `null` if no filtering should be applied:
- * - The default tenant always sees everything (provider view).
- * - Tenants with no enabled vDCs see everything (backwards compatible).
+ * Contract:
+ * - Returns `null` ONLY for the default tenant (provider view, no filtering).
+ * - Returns a `VdcScope` for every other tenant. When the tenant has zero
+ *   enabled vDCs, the returned scope has empty Sets/Maps, which makes every
+ *   downstream filter deny by construction (no allowed connection, node,
+ *   storage, pool, vnet, bridge, or PBS namespace).
  *
- * When a non-null VdcScope is returned, the caller should use it to restrict
- * which nodes, storages, and VMs the tenant can see.
+ * Callers that gate behaviour on `scope === null` therefore treat that as
+ * "I am the provider", not as "no restrictions". A tenant without vDCs ends
+ * up with a non-null empty scope and is denied access through the existing
+ * Set lookups.
  */
 export async function getVdcScope(tenantId: string): Promise<VdcScope | null> {
   // Default tenant = provider, no filtering
@@ -87,7 +92,7 @@ export async function getVdcScope(tenantId: string): Promise<VdcScope | null> {
 // buildVdcScope (internal)
 // ---------------------------------------------------------------------------
 
-async function buildVdcScope(tenantId: string): Promise<VdcScope | null> {
+async function buildVdcScope(tenantId: string): Promise<VdcScope> {
   // 1. Find all enabled vDCs for this tenant + their child rows in a single
   //    Prisma query (replaces the SQLite N+1 prepared-statement loop).
   const vdcRows = await prisma.vdc.findMany({
@@ -105,10 +110,11 @@ async function buildVdcScope(tenantId: string): Promise<VdcScope | null> {
     },
   })
 
-  // No vDCs for this tenant - backwards compatible, no restrictions
-  if (vdcRows.length === 0) return null
-
-  // 2. Build the scope
+  // 2. Build the scope. When vdcRows is empty (tenant has no vDC), every
+  // collection stays empty and the caller's Set/Map lookups return
+  // undefined, which existing filters interpret as "deny". This is the
+  // safe default for a non-provider tenant: only DEFAULT_TENANT_ID gets
+  // unfiltered access (returned as `null` by getVdcScope).
   const connectionIds = new Set<string>()
   const nodesByConnection = new Map<string, Set<string>>()
   const storagesByConnection = new Map<string, Set<string>>()
