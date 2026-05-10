@@ -120,8 +120,6 @@ export async function bindPbsToVdc(args: BindAutoArgs): Promise<{ binding: PbsBi
 
     const steps: StepStatus = { namespace: 'skipped', token: 'skipped', acl: 'skipped', pveStorages: [] }
 
-    console.log(`[pbs-orchestrator] bind vdc=${args.vdcId} pbs=${args.pbsConnectionId} store=${args.datastore} ns=${namespace} base=${pbs.conn.baseUrl} rootUser=${pbs.rootUser}`)
-
     // Pre-check: if a binding on this tuple already exists, fail BEFORE touching
     // PBS. Otherwise ensureSubToken would rotate the PBS secret and leave the DB
     // with the stale one, breaking future auth.
@@ -131,16 +129,13 @@ export async function bindPbsToVdc(args: BindAutoArgs): Promise<{ binding: PbsBi
     }
 
     await ensureNamespacePath(pbs.conn, args.datastore, namespace)
-    console.log(`[pbs-orchestrator] namespace ensured: ${namespace}`)
     steps.namespace = 'ok'
 
     const tokenShortId = `vdc-${args.vdcId.slice(0, 8)}`
     let tokenResult = await ensureSubToken(pbs.conn, pbs.rootUser, tokenShortId)
-    console.log(`[pbs-orchestrator] ensureSubToken first call → tokenId=${tokenResult.tokenId} secret=${tokenResult.secret ? 'yes' : 'no'}`)
     if (!tokenResult.secret) {
       await deleteSubToken(pbs.conn, pbs.rootUser, tokenShortId)
       tokenResult = await ensureSubToken(pbs.conn, pbs.rootUser, tokenShortId)
-      console.log(`[pbs-orchestrator] ensureSubToken after rotate → tokenId=${tokenResult.tokenId} secret=${tokenResult.secret ? 'yes' : 'no'}`)
       if (!tokenResult.secret) throw new Error('Failed to mint sub-token (no secret)')
     }
     steps.token = 'ok'
@@ -149,7 +144,6 @@ export async function bindPbsToVdc(args: BindAutoArgs): Promise<{ binding: PbsBi
 
     await setNamespaceAcl(pbs.conn, args.datastore, namespace, effectiveTokenId)
     await setDatastoreAuditAcl(pbs.conn, args.datastore, effectiveTokenId)
-    console.log(`[pbs-orchestrator] ACLs set on ${args.datastore} for ${effectiveTokenId}`)
     steps.acl = 'ok'
 
     // Wait for PBS to propagate the just-set ACLs to the point where the

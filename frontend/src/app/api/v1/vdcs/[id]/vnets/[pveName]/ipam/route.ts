@@ -65,9 +65,7 @@ export async function GET(_req: Request, ctx: RouteContext) {
         where: { id: row.connection_id },
         select: { tenantId: true },
       })
-      if (!connMeta) {
-        console.warn(`[ipam-list] connection ${row.connection_id} not found via prisma`)
-      } else {
+      if (connMeta) {
         const conn = await getConnectionById(row.connection_id, connMeta.tenantId)
         const resources = await pveFetch<any[]>(conn, '/cluster/resources?type=vm')
         for (const r of resources ?? []) {
@@ -84,10 +82,10 @@ export async function GET(_req: Request, ctx: RouteContext) {
             type: String(r.type ?? 'qemu'),
           })
         }
-        console.log(`[ipam-list] enriched ${vmIndex.size} VMs from /cluster/resources for connection ${row.connection_id}`)
       }
-    } catch (err) {
-      console.warn(`[ipam-list] /cluster/resources lookup failed: ${(err as any)?.message ?? err}`)
+    } catch {
+      // Live PVE state is best-effort enrichment; the IPAM rows themselves
+      // are still useful (IP/MAC/vmid/hostname) when the cluster lookup fails.
     }
 
     // Usable = CIDR usable hosts minus the gateway. The IPAM allocates the
