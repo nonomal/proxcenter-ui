@@ -9,6 +9,9 @@
 //     on the target connection
 //   - tenants can only create/edit/delete/run jobs that target one of
 //     their pools — `selectionMode='pool'` with a pool they own
+//   - and the chosen `storage`, optional `node`, optional fleecing
+//     storage and PBS `namespace` must all live inside the same vDC
+//     (validateTenantJobInfra)
 //
 // Provider (default tenant) gets the unfiltered cluster-wide view, same
 // as before. The function returns `null` to signal "no filter applies"
@@ -21,7 +24,7 @@
 // silently keep backing up a foreign VM. The pool-based contract makes
 // drift impossible.
 
-import { getVdcScope } from './scope'
+import { getVdcScope, type VdcScope } from './scope'
 
 /**
  * Returns the set of PVE pool names a tenant is allowed to target via
@@ -70,5 +73,64 @@ export function validateTenantJobBody(
   if (!allowedPools.has(body.pool)) {
     return `Pool "${body.pool}" is not authorised for this tenant.`
   }
+  return null
+}
+
+/**
+ * Validate the infrastructure fields of a backup-job payload (storage,
+ * node, fleecingStorage, namespace) against a tenant's vDC scope on the
+ * target connection. Returns an error message when the body references
+ * a resource the tenant is not authorised to use, otherwise null.
+ *
+ * Call this in addition to `validateTenantJobBody` whenever any of these
+ * fields are present in the request body — both POST (create) and PUT
+ * (edit). For a PUT, only validate the fields the body actually carries
+ * (the route forwards `undefined` fields as no-ops to PVE).
+ */
+export function validateTenantJobInfra(
+  body: {
+    storage?: string
+    node?: string | null
+    fleecing?: unknown
+    fleecingStorage?: string
+    namespace?: string
+  },
+  scope: VdcScope,
+  connectionId: string,
+): string | null {
+  const allowedNodes = scope.nodesByConnection.get(connectionId) ?? new Set<string>()
+  const allowedStorages = scope.storagesByConnection.get(connectionId) ?? new Set<string>()
+  const allowedNamespaces = scope.pbsNamespacesByConnection.get(connectionId) ?? []
+
+  if (typeof body.storage === 'string' && body.storage.length > 0) {
+    if (!allowedStorages.has(body.storage)) {
+      return `Storage "${body.storage}" is not authorised for this tenant.`
+    }
+  }
+
+  // PVE accepts `node` either unset (run on every node) or pointing at a
+  // specific cluster member. Tenants must pin to a node inside their
+  // vDC; running cluster-wide would let a job target nodes outside the
+  // scope on the next vDC reshape.
+  if (typeof body.node === 'string' && body.node.length > 0) {
+    if (!allowedNodes.has(body.node)) {
+      return `Node "${body.node}" is not authorised for this tenant.`
+    }
+  }
+
+  if (body.fleecing && typeof body.fleecingStorage === 'string' && body.fleecingStorage.length > 0) {
+    if (!allowedStorages.has(body.fleecingStorage)) {
+      return `Fleecing storage "${body.fleecingStorage}" is not authorised for this tenant.`
+    }
+  }
+
+  if (typeof body.namespace === 'string' && body.namespace.length > 0) {
+    const ns = body.namespace
+    const matches = allowedNamespaces.some((n) => n.namespace === ns)
+    if (!matches) {
+      return `PBS namespace "${ns}" is not authorised for this tenant on this connection.`
+    }
+  }
+
   return null
 }
