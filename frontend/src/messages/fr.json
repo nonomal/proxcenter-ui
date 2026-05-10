@@ -157,7 +157,19 @@
     "appSubtitle": "Gestion centralisée Proxmox",
     "usernamePlaceholder": "username ou user@domain.com",
     "or": "ou",
-    "signInWithSso": "Se connecter avec {provider}"
+    "signInWithSso": "Se connecter avec {provider}",
+    "welcomeBack": "Bon retour",
+    "signInTo": "Connectez-vous à {appName}",
+    "continueWith": "Continuer avec {provider}",
+    "useLocalAccount": "Utiliser un compte local",
+    "useLdap": "Utiliser LDAP / Active Directory",
+    "docs": "Documentation",
+    "support": "Support",
+    "languageLabel": "Langue",
+    "defaultTagline": "La plateforme de gestion datacenter Proxmox",
+    "defaultHighlightMultiTenant": "vDC multi-tenants",
+    "defaultHighlightBackup": "Orchestration des sauvegardes",
+    "defaultHighlightWhiteLabel": "White-label MSP"
   },
   "navigation": {
     "dashboard": "Tableau de bord",
@@ -5064,7 +5076,17 @@
     "localAuth": "Local",
     "emailLabel": "Email",
     "emailHeader": "Email",
-    "authHeader": "Auth"
+    "authHeader": "Auth",
+    "tenantsHeader": "Tenants",
+    "tenantsNone": "Aucun tenant",
+    "tenantsAll": "Tous",
+    "tenantsAllTooltip": "Super admin — accès à tous les tenants",
+    "tenantsLabel": "Tenants",
+    "tenantsPlaceholder": "Sélectionner des tenants...",
+    "tenantsHelper": "L'utilisateur sera membre de chaque tenant sélectionné",
+    "tenantsRequired": "Sélectionner au moins un tenant",
+    "rolesMixed": "{count} rôles",
+    "rolesDivergentWarning": "Les rôles diffèrent entre les tenants de cet utilisateur. Enregistrer un rôle ici écrasera chaque affectation per-tenant."
   },
   "networkPage": {
     "devNoticeTitle": "Fonctionnalité en cours de développement",
@@ -6332,6 +6354,7 @@
     "searchUser": "Rechercher par nom ou email...",
     "noUsers": "Aucun utilisateur assigné à ce tenant.",
     "removeFromTenant": "Retirer du tenant",
+    "superAdminPinned": "Super admin, attaché à tous les tenants par défaut",
     "tenantUpdated": "Tenant mis à jour",
     "tenantCreated": "Tenant créé",
     "tenantDeleted": "Tenant supprimé",

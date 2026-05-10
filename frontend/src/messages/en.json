@@ -157,7 +157,19 @@
     "appSubtitle": "Centralized Proxmox management",
     "usernamePlaceholder": "username or user@domain.com",
     "or": "or",
-    "signInWithSso": "Sign in with {provider}"
+    "signInWithSso": "Sign in with {provider}",
+    "welcomeBack": "Welcome back",
+    "signInTo": "Sign in to {appName}",
+    "continueWith": "Continue with {provider}",
+    "useLocalAccount": "Use a local account",
+    "useLdap": "Use LDAP / Active Directory",
+    "docs": "Docs",
+    "support": "Support",
+    "languageLabel": "Language",
+    "defaultTagline": "The Proxmox Datacenter Management Platform",
+    "defaultHighlightMultiTenant": "Multi-tenant vDC",
+    "defaultHighlightBackup": "Backup orchestration",
+    "defaultHighlightWhiteLabel": "MSP white-label"
   },
   "navigation": {
     "dashboard": "Dashboard",
@@ -5064,7 +5076,17 @@
     "localAuth": "Local",
     "emailLabel": "Email",
     "emailHeader": "Email",
-    "authHeader": "Auth"
+    "authHeader": "Auth",
+    "tenantsHeader": "Tenants",
+    "tenantsNone": "No tenant",
+    "tenantsAll": "All",
+    "tenantsAllTooltip": "Super admin — access to every tenant",
+    "tenantsLabel": "Tenants",
+    "tenantsPlaceholder": "Select tenants...",
+    "tenantsHelper": "The user will be a member of every selected tenant",
+    "tenantsRequired": "Select at least one tenant",
+    "rolesMixed": "{count} roles",
+    "rolesDivergentWarning": "Roles differ across this user's tenants. Saving a role here will overwrite every per-tenant assignment."
   },
   "networkPage": {
     "devNoticeTitle": "Feature under active development",
@@ -6331,6 +6353,7 @@
     "searchUser": "Search by name or email...",
     "noUsers": "No users assigned to this tenant.",
     "removeFromTenant": "Remove from tenant",
+    "superAdminPinned": "Super admin, pinned to every tenant by design",
     "tenantUpdated": "Tenant updated",
     "tenantCreated": "Tenant created",
     "tenantDeleted": "Tenant deleted",

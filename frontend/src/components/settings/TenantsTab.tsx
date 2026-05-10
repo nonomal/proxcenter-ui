@@ -50,6 +50,7 @@ interface TenantUser {
   role: string
   enabled: number
   is_default: number
+  is_super_admin: boolean
   joined_at: string
 }
 
@@ -498,17 +499,25 @@ export default function TenantsTab() {
                         <ListItem
                           key={user.id}
                           secondaryAction={
-                            // Removal is allowed everywhere, including the
-                            // provider tenant — a tenant-admin user that
-                            // belongs in OVH only has no business in DEFAULT.
-                            // The backend's LAST_TENANT guard prevents
-                            // orphaning the user (returns 409), and the
-                            // error surfaces in the alert above the list.
-                            <Tooltip title={t('tenants.removeFromTenant')}>
-                              <IconButton edge="end" size="small" color="error" onClick={() => handleRemoveUser(user.id)}>
-                                <i className="ri-close-line" />
-                              </IconButton>
-                            </Tooltip>
+                            // Super admins are pinned to every tenant by
+                            // design (createTenant attaches them and the
+                            // backend refuses removeUserFromTenant with
+                            // SUPER_ADMIN_PROTECTED). Hide the X for them
+                            // so the affordance matches the rule. Anyone
+                            // else can be removed; the backend's
+                            // LAST_TENANT guard still prevents orphaning
+                            // (409) and surfaces in the alert above.
+                            user.is_super_admin ? (
+                              <Tooltip title={t('tenants.superAdminPinned')}>
+                                <i className="ri-shield-keyhole-line" style={{ opacity: 0.6 }} />
+                              </Tooltip>
+                            ) : (
+                              <Tooltip title={t('tenants.removeFromTenant')}>
+                                <IconButton edge="end" size="small" color="error" onClick={() => handleRemoveUser(user.id)}>
+                                  <i className="ri-close-line" />
+                                </IconButton>
+                              </Tooltip>
+                            )
                           }
                         >
                           <ListItemAvatar>

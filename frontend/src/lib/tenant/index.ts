@@ -387,6 +387,34 @@ export async function createTenant(data: {
       updatedAt: now,
     },
   })
+
+  // Super admins always have access to every tenant. Attach them on
+  // create so the new tenant doesn't need a manual provisioning step,
+  // and pair with the SUPER_ADMIN_PROTECTED guard in
+  // removeUserFromTenant so a super-admin can never be stripped out.
+  // The first super-admin landing in a fresh tenant gets isDefault=true
+  // only if they don't already have a default elsewhere; this preserves
+  // the existing landing-tenant behaviour on login.
+  const superAdminRows = await prisma.rbacUserRole.findMany({
+    where: {
+      roleId: "role_super_admin",
+      OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+    },
+    select: { userId: true },
+    distinct: ["userId"],
+  })
+  if (superAdminRows.length > 0) {
+    await prisma.userTenant.createMany({
+      data: superAdminRows.map(r => ({
+        userId: r.userId,
+        tenantId: id,
+        isDefault: false,
+        joinedAt: now,
+      })),
+      skipDuplicates: true,
+    })
+  }
+
   return rowToTenant(row)
 }
 
@@ -475,7 +503,10 @@ export async function addUserToTenant(userId: string, tenantId: string, isDefaul
 }
 
 export class TenantMembershipError extends Error {
-  constructor(message: string, public readonly code: "LAST_TENANT" | "NOT_A_MEMBER") {
+  constructor(
+    message: string,
+    public readonly code: "LAST_TENANT" | "NOT_A_MEMBER" | "SUPER_ADMIN_PROTECTED",
+  ) {
     super(message)
     this.name = "TenantMembershipError"
   }
@@ -484,6 +515,8 @@ export class TenantMembershipError extends Error {
 /**
  * Remove a user from a tenant.
  * Refuses to strip the user's last membership (would orphan them).
+ * Refuses to strip a super-admin from any tenant: super_admins have
+ * cross-tenant access by design and createTenant always attaches them.
  * Cleans up role and direct-permission assignments scoped to the removed tenant.
  * If the removed membership was the user's default, transfers the default flag
  * to another of their memberships (oldest join first).
@@ -495,6 +528,25 @@ export async function removeUserFromTenant(userId: string, tenantId: string): Pr
   })
   if (!existing) {
     throw new TenantMembershipError("User is not a member of this tenant", "NOT_A_MEMBER")
+  }
+
+  // Super admins are pinned to every tenant by design (createTenant
+  // attaches them automatically). Removing them would either re-orphan
+  // them on the next createTenant cycle, or create a UI inconsistency
+  // where a super-admin appears partially attached.
+  const isSuperAdmin = await prisma.rbacUserRole.findFirst({
+    where: {
+      userId,
+      roleId: "role_super_admin",
+      OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+    },
+    select: { id: true },
+  })
+  if (isSuperAdmin) {
+    throw new TenantMembershipError(
+      "Super admins are members of every tenant by design and cannot be removed",
+      "SUPER_ADMIN_PROTECTED",
+    )
   }
 
   const replacement = await prisma.userTenant.findFirst({
@@ -527,7 +579,10 @@ export async function removeUserFromTenant(userId: string, tenantId: string): Pr
 
 /**
  * Get users in a tenant. Returns the legacy snake_case shape so existing
- * frontend code consuming `is_default` / `joined_at` keeps working.
+ * frontend code consuming `is_default` / `joined_at` keeps working. The
+ * `is_super_admin` flag is derived from rbac_user_roles (source of truth)
+ * and the UI uses it to hide the "remove from tenant" affordance — a
+ * super-admin can't be stripped out (cf. removeUserFromTenant guard).
  */
 export async function getTenantUsers(tenantId: string): Promise<
   Array<{
@@ -537,6 +592,7 @@ export async function getTenantUsers(tenantId: string): Promise<
     role: string
     enabled: boolean
     is_default: boolean
+    is_super_admin: boolean
     joined_at: string
   }>
 > {
@@ -545,6 +601,21 @@ export async function getTenantUsers(tenantId: string): Promise<
     include: { user: true },
     orderBy: { user: { name: "asc" } },
   })
+
+  const userIds = memberships.map(m => m.userId)
+  const superAdminRows = userIds.length > 0
+    ? await prisma.rbacUserRole.findMany({
+        where: {
+          userId: { in: userIds },
+          roleId: "role_super_admin",
+          OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+        },
+        select: { userId: true },
+        distinct: ["userId"],
+      })
+    : []
+  const superAdminIds = new Set(superAdminRows.map(r => r.userId))
+
   return memberships.map(m => ({
     id: m.user.id,
     email: m.user.email,
@@ -552,6 +623,7 @@ export async function getTenantUsers(tenantId: string): Promise<
     role: m.user.role,
     enabled: m.user.enabled,
     is_default: m.isDefault,
+    is_super_admin: superAdminIds.has(m.user.id),
     joined_at: m.joinedAt.toISOString(),
   }))
 }

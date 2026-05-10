@@ -98,7 +98,7 @@ export async function DELETE(req: NextRequest, ctx: Ctx) {
     await removeUserFromTenant(body.userId, id)
   } catch (e) {
     if (e instanceof TenantMembershipError) {
-      const status = e.code === "LAST_TENANT" ? 409 : 404
+      const status = e.code === "LAST_TENANT" ? 409 : e.code === "SUPER_ADMIN_PROTECTED" ? 403 : 404
       return NextResponse.json({ error: e.message, code: e.code }, { status })
     }
     throw e
