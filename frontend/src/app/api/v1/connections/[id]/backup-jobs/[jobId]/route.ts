@@ -4,7 +4,8 @@ import { pveFetch } from "@/lib/proxmox/client"
 import { getConnectionById } from "@/lib/connections/getConnection"
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
 import { getCurrentTenantId } from "@/lib/tenant"
-import { getAllowedJobPools, isJobOwnedByTenantPools, validateTenantJobBody } from "@/lib/vdc/backupJobs"
+import { getAllowedJobPools, isJobOwnedByTenantPools, validateTenantJobBody, validateTenantJobInfra } from "@/lib/vdc/backupJobs"
+import { getVdcScope } from "@/lib/vdc/scope"
 
 /**
  * Tenant ownership check used by every per-job endpoint. Loads the job
@@ -15,6 +16,7 @@ import { getAllowedJobPools, isJobOwnedByTenantPools, validateTenantJobBody } fr
  */
 async function loadJobForTenant(conn: any, connectionId: string, jobId: string) {
   const tenantId = await getCurrentTenantId()
+  const scope = await getVdcScope(tenantId)
   const allowedPools = await getAllowedJobPools(tenantId, connectionId)
   let job: any
   try {
@@ -31,7 +33,7 @@ async function loadJobForTenant(conn: any, connectionId: string, jobId: string) 
     // truly missing job so probing is no more useful than guessing.
     return { error: NextResponse.json({ error: 'Job not found' }, { status: 404 }) }
   }
-  return { job, allowedPools }
+  return { job, allowedPools, scope }
 }
 
 export const runtime = "nodejs"
@@ -101,6 +103,15 @@ export async function PUT(req: Request, ctx: RouteContext) {
       const validationError = validateTenantJobBody(body, owned.allowedPools)
       if (validationError) {
         return NextResponse.json({ error: validationError }, { status: 403 })
+      }
+    }
+    // Same guard on infra fields: storage / node / fleecingStorage /
+    // namespace can each move the job out of the tenant's vDC if not
+    // pinned, so re-validate any field the body actually carries.
+    if (owned.allowedPools !== null && owned.scope !== null) {
+      const infraError = validateTenantJobInfra(body, owned.scope, id)
+      if (infraError) {
+        return NextResponse.json({ error: infraError }, { status: 403 })
       }
     }
 

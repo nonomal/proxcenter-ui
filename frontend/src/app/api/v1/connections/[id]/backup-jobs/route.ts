@@ -4,7 +4,8 @@ import { pveFetch } from "@/lib/proxmox/client"
 import { getConnectionById } from "@/lib/connections/getConnection"
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
 import { getCurrentTenantId } from "@/lib/tenant"
-import { getAllowedJobPools, isJobOwnedByTenantPools, validateTenantJobBody } from "@/lib/vdc/backupJobs"
+import { getAllowedJobPools, isJobOwnedByTenantPools, validateTenantJobBody, validateTenantJobInfra } from "@/lib/vdc/backupJobs"
+import { getVdcScope } from "@/lib/vdc/scope"
 
 export const runtime = "nodejs"
 
@@ -34,10 +35,12 @@ export async function GET(_req: Request, ctx: RouteContext) {
     const conn = await getConnectionById(id)
 
     // PVE has no per-tenant namespace for /cluster/backup — every job is
-    // returned cluster-wide. Resolve the caller's tenant pool whitelist;
-    // null means provider (full view), empty set means tenant with no
-    // vDC on this connection (nothing visible).
+    // returned cluster-wide. Resolve the caller's tenant scope; null
+    // means provider (full view), a scope with empty Sets on this
+    // connection means tenant with no vDC on this connection (nothing
+    // visible).
     const tenantId = await getCurrentTenantId()
+    const scope = await getVdcScope(tenantId)
     const allowedPools = await getAllowedJobPools(tenantId, id)
 
     // Récupérer les backup jobs
@@ -182,12 +185,26 @@ return job.namespace || ''
       }
     })
 
-    return NextResponse.json({ 
+    // Tenants must only see infra they're allowed to USE in a job, even
+    // for picker rendering: leaking the full cluster's storage/node list
+    // to a vDC tenant gives them auto-complete of names they could
+    // copy-paste into a forged POST. Provider keeps the full view.
+    const tenantStorageFilter = (storage: string) => {
+      if (!scope) return true
+      const allowed = scope.storagesByConnection.get(id) ?? new Set<string>()
+      return allowed.has(storage)
+    }
+    const visibleStorages = allBackupStorages.filter((s: any) => tenantStorageFilter(s.storage))
+    const visibleNodes = scope
+      ? (nodes || []).filter((n: any) => (scope.nodesByConnection.get(id) ?? new Set()).has(n.node))
+      : (nodes || [])
+
+    return NextResponse.json({
       data: {
         jobs: formattedJobs,
 
         // Tous les storages qui supportent les backups
-        storages: allBackupStorages.map(s => {
+        storages: visibleStorages.map(s => {
           const status = storageStatus.find((ss: any) => ss.storage === s.storage)
           return {
             id: s.storage,
@@ -204,7 +221,7 @@ return job.namespace || ''
         }),
 
         // Tous les storages qui supportent les backups
-        allBackupStorages: allBackupStorages.map(s => ({
+        allBackupStorages: visibleStorages.map(s => ({
           id: s.storage,
           name: s.storage,
           type: s.type,
@@ -213,7 +230,7 @@ return job.namespace || ''
           shared: s.shared === 1,
           isPbs: s.type === 'pbs'
         })),
-        nodes: (nodes || []).map((n: any) => ({
+        nodes: visibleNodes.map((n: any) => ({
           node: n.node,
           status: n.status,
           online: n.status === 'online'
@@ -250,14 +267,21 @@ export async function POST(req: Request, ctx: RouteContext) {
     const conn = await getConnectionById(id)
 
     // Tenant guard: enforce pool-only selection bound to one of the
-    // tenant's vDC pools on this connection. Provider can use any
-    // selectionMode the original payload offers.
+    // tenant's vDC pools on this connection AND keep the targeted
+    // storage / node / fleecing storage / PBS namespace inside the
+    // same vDC. Provider can use any selectionMode the original payload
+    // offers.
     const tenantId = await getCurrentTenantId()
+    const scope = await getVdcScope(tenantId)
     const allowedPools = await getAllowedJobPools(tenantId, id)
-    if (allowedPools !== null) {
-      const validationError = validateTenantJobBody(body, allowedPools)
-      if (validationError) {
-        return NextResponse.json({ error: validationError }, { status: 403 })
+    if (allowedPools !== null && scope !== null) {
+      const poolError = validateTenantJobBody(body, allowedPools)
+      if (poolError) {
+        return NextResponse.json({ error: poolError }, { status: 403 })
+      }
+      const infraError = validateTenantJobInfra(body, scope, id)
+      if (infraError) {
+        return NextResponse.json({ error: infraError }, { status: 403 })
       }
     }
 
