@@ -1,5 +1,35 @@
 [
   {
+    "version": "1.4.0",
+    "title": "MSP / IaaS — vDC, IPAM, PBS multi-tenant & Postgres",
+    "items": [
+      { "type": "new", "text": "vDC tenant cockpit (My vDC) with live consumption: hosts, VMs metrics, donut quotas (CPU, RAM, Storage, Snapshots, Backups), datacenter map and green KPIs" },
+      { "type": "new", "text": "Cloud-style tenant deploy flow with quota enforcement on every step (template, ISO, clone, restore)" },
+      { "type": "new", "text": "Native IPAM at the vDC level: SDN VNet/subnet management, automatic IP/MAC reservation on deploy, clone, qmrestore and config edit, plus PVE pool scan to merge externally created VMs" },
+      { "type": "new", "text": "Per-vDC PBS bindings with auto-provisioning of namespace, sub-token, ACL and PVE storage; manual mode also supported" },
+      { "type": "new", "text": "Tenant restore from PBS: overwrite source VM or restore as a new VM into the tenant vDC pool, with simple-mode dialog" },
+      { "type": "new", "text": "PVE backup jobs scoped to tenant pools, with structured schedule picker (frequency, time, weekdays) and Verify / Delete actions" },
+      { "type": "new", "text": "Datacenters, country and Green IT configuration: per-datacenter assignments tree, country flags on tenants and clusters, green factors per node" },
+      { "type": "new", "text": "Tenant-scoped alerts, tasks, events and reports on shared-node clusters, with vDC report type gated to super-admin" },
+      { "type": "new", "text": "Per-resource Failback toggle in the HA tab and refreshed HA UI" },
+      { "type": "new", "text": "LXC network edit with IP, gateway and IPv6 fields; templates listed from any node hosting the storage" },
+      { "type": "new", "text": "Cross-cluster offline migration shows real progress; choose target VMID for external migrations; VLAN tag applied on migrated VM NIC" },
+      { "type": "new", "text": "WeasyPrint sidecar for scheduled report PDF rendering" },
+      { "type": "improved", "text": "Tenants 'Disabled' state renamed to 'Locked' with explicit semantics" },
+      { "type": "improved", "text": "RBAC grants are preloaded once per request, removing the N+1 in scoping helpers" },
+      { "type": "improved", "text": "Settings tabs are now scrollable on narrow screens; enterprise-only tabs are hidden in Community instead of greyed out" },
+      { "type": "fix", "text": "Alerts visibility for tenants is awaited consistently across every callsite (regression test added)" },
+      { "type": "fix", "text": "Tags persistence drops raw SQL placeholders and restores tenant scoping" },
+      { "type": "fix", "text": "vDC tenants can SSH on provider connections; restored VMs land in the tenant pool" },
+      { "type": "fix", "text": "Shared storages are no longer hidden from the tenant scope" },
+      { "type": "fix", "text": "VxlanTag is now allocated against the live PVE state (not just the local DB)" },
+      { "type": "fix", "text": "PBS timestamps drop milliseconds before being sent to PVE; backupId is parsed correctly when the namespace contains slashes" },
+      { "type": "fix", "text": "Network inventory: IP usage column, click-to-detail modal, no flicker" },
+      { "type": "fix", "text": "Cross-tenant isolation hardened on inventory, PBS backups and PVE backup jobs (tenant with zero vDCs is no longer treated as provider)" },
+      { "type": "breaking", "text": "Database backend is now Postgres only. SQLite is no longer shipped or supported. Existing installations re-bootstrap their configuration via the UI on first boot. See UPGRADE_NOTES.md." }
+    ]
+  },
+  {
     "version": "1.3.0",
     "title": "Multi-Hypervisor Migration, Dashboard Overhaul & More",
     "items": [
