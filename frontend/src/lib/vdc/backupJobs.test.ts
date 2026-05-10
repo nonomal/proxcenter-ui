@@ -25,6 +25,12 @@ function makeScope(over: Partial<{
   pools: string[]
   pbs: Array<{ datastore: string; namespace: string }>
 }> = {}): VdcScope {
+  // The backup-jobs route hands validateTenantJobInfra a PVE connection
+  // id; the PBS-keyed map (pbsNamespacesByConnection) is irrelevant
+  // here. The mock therefore mirrors what scope.ts builds: namespaces
+  // are also indexed under the PVE connection so the PVE-side caller
+  // can answer "is this namespace bound to any vDC on this cluster?".
+  const pbsRows = over.pbs ?? [{ datastore: 'main', namespace: 'tenant-acme/vdc-prod' }]
   return {
     connectionIds: new Set([CONN]),
     pbsConnectionIds: new Set(),
@@ -33,7 +39,8 @@ function makeScope(over: Partial<{
     poolsByConnection: new Map([[CONN, new Set(over.pools ?? ['pool-acme'])]]),
     vnetsByConnection: new Map(),
     sharedBridgesByConnection: new Map(),
-    pbsNamespacesByConnection: new Map([[CONN, over.pbs ?? [{ datastore: 'main', namespace: 'tenant-acme/vdc-prod' }]]]),
+    pbsNamespacesByConnection: new Map(),
+    pbsNamespacesByPveConnection: new Map([[CONN, new Set(pbsRows.map(p => p.namespace))]]),
   }
 }
 
@@ -79,6 +86,12 @@ describe('validateTenantJobInfra (storage / node / fleecing / namespace)', () =>
     const scope = makeScope()
     const err = validateTenantJobInfra({ storage: 'vdc-acme-pbs', node: 'pve9' }, scope, CONN)
     expect(err).toMatch(/Node "pve9" is not authorised/)
+  })
+
+  it('rejects an empty node when the body explicitly sets it (PUT delete-pin attempt)', () => {
+    const scope = makeScope()
+    expect(validateTenantJobInfra({ node: '' }, scope, CONN)).toMatch(/pinned to a vDC node/)
+    expect(validateTenantJobInfra({ node: null }, scope, CONN)).toMatch(/pinned to a vDC node/)
   })
 
   it('rejects fleecing onto a foreign storage when fleecing is enabled', () => {

@@ -54,6 +54,7 @@ describe('getVdcScope — tenant without any vDC', () => {
     expect(scope!.vnetsByConnection.size).toBe(0)
     expect(scope!.sharedBridgesByConnection.size).toBe(0)
     expect(scope!.pbsNamespacesByConnection.size).toBe(0)
+    expect(scope!.pbsNamespacesByPveConnection.size).toBe(0)
   })
 
   it('makes downstream Set lookups deny: a random connection id maps to undefined', async () => {

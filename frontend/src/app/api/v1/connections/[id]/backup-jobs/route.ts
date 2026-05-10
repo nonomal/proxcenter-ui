@@ -279,6 +279,16 @@ export async function POST(req: Request, ctx: RouteContext) {
       if (poolError) {
         return NextResponse.json({ error: poolError }, { status: 403 })
       }
+      // Tenants must pin a node at create time. validateTenantJobInfra
+      // only enforces "non-empty + in vDC" when `node` is in the body;
+      // create requests that omit it would otherwise produce a
+      // cluster-wide PVE backup job that runs on nodes outside the vDC.
+      if (typeof body.node !== 'string' || body.node.length === 0) {
+        return NextResponse.json(
+          { error: 'Tenants must pin the backup job to a vDC node — set "node" in the request body.' },
+          { status: 403 },
+        )
+      }
       const infraError = validateTenantJobInfra(body, scope, id)
       if (infraError) {
         return NextResponse.json({ error: infraError }, { status: 403 })

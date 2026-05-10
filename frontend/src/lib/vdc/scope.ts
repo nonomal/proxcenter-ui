@@ -28,6 +28,14 @@ export interface VdcScope {
   sharedBridgesByConnection: Map<string, Set<string>>
   /** Per-PBS-connection: list of { datastore, namespace } the tenant is authorised on. */
   pbsNamespacesByConnection: Map<string, Array<{ datastore: string; namespace: string }>>
+  /**
+   * Per-PVE-connection: PBS namespaces reachable from a vDC anchored on
+   * that PVE cluster (across every PBS binding of every vDC the tenant
+   * has on that connection). Used by backup-jobs validation, where the
+   * route knows the PVE connection id but the binding rows are keyed
+   * by PBS connection id.
+   */
+  pbsNamespacesByPveConnection: Map<string, Set<string>>
 }
 
 // ---------------------------------------------------------------------------
@@ -122,6 +130,7 @@ async function buildVdcScope(tenantId: string): Promise<VdcScope> {
   const vnetsByConnection = new Map<string, Set<string>>()
   const sharedBridgesByConnection = new Map<string, Set<string>>()
   const pbsNamespacesByConnection = new Map<string, Array<{ datastore: string; namespace: string }>>()
+  const pbsNamespacesByPveConnection = new Map<string, Set<string>>()
   const pbsConnectionIds = new Set<string>()
 
   for (const row of vdcRows) {
@@ -162,12 +171,19 @@ async function buildVdcScope(tenantId: string): Promise<VdcScope> {
     }
 
     // PBS namespaces: keyed by PBS connection (a vDC can have bindings on
-    // multiple PBS connections; many vDCs can share the same PBS).
+    // multiple PBS connections; many vDCs can share the same PBS). Also
+    // mirrored under the vDC's PVE connection so backup-jobs validation
+    // (which only knows the PVE connection id) can answer "is this
+    // namespace ever bound to a vDC on this cluster?".
     for (const pr of row.pbsNamespaces) {
       const list = pbsNamespacesByConnection.get(pr.pbsConnectionId) ?? []
       list.push({ datastore: pr.datastore, namespace: pr.namespace })
       pbsNamespacesByConnection.set(pr.pbsConnectionId, list)
       pbsConnectionIds.add(pr.pbsConnectionId)
+
+      const pveSet = pbsNamespacesByPveConnection.get(connId) ?? new Set<string>()
+      pveSet.add(pr.namespace)
+      pbsNamespacesByPveConnection.set(connId, pveSet)
     }
   }
 
@@ -180,6 +196,7 @@ async function buildVdcScope(tenantId: string): Promise<VdcScope> {
     vnetsByConnection,
     sharedBridgesByConnection,
     pbsNamespacesByConnection,
+    pbsNamespacesByPveConnection,
   }
 }
 

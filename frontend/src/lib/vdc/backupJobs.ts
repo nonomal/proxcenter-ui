@@ -100,7 +100,12 @@ export function validateTenantJobInfra(
 ): string | null {
   const allowedNodes = scope.nodesByConnection.get(connectionId) ?? new Set<string>()
   const allowedStorages = scope.storagesByConnection.get(connectionId) ?? new Set<string>()
-  const allowedNamespaces = scope.pbsNamespacesByConnection.get(connectionId) ?? []
+  // pbsNamespacesByPveConnection is the right index here: the route
+  // gives us the PVE connection id, and we want the union of namespaces
+  // the tenant is allowed to address from any vDC anchored on that PVE
+  // cluster. The PBS-keyed map (pbsNamespacesByConnection) is used by
+  // /api/v1/pbs/[id]/... routes, where the id is a PBS connection.
+  const allowedNamespaces = scope.pbsNamespacesByPveConnection.get(connectionId) ?? new Set<string>()
 
   if (typeof body.storage === 'string' && body.storage.length > 0) {
     if (!allowedStorages.has(body.storage)) {
@@ -108,13 +113,20 @@ export function validateTenantJobInfra(
     }
   }
 
-  // PVE accepts `node` either unset (run on every node) or pointing at a
-  // specific cluster member. Tenants must pin to a node inside their
-  // vDC; running cluster-wide would let a job target nodes outside the
-  // scope on the next vDC reshape.
-  if (typeof body.node === 'string' && body.node.length > 0) {
-    if (!allowedNodes.has(body.node)) {
-      return `Node "${body.node}" is not authorised for this tenant.`
+  // For tenants, PVE backup jobs MUST be pinned to a vDC node. Cluster-
+  // wide jobs (no `node` on PVE) would silently target nodes outside the
+  // tenant's scope on the next reshape. The helper allows `body.node`
+  // to be omitted entirely (PUT shape with unrelated fields), but as
+  // soon as it's present in the body, we enforce both non-empty AND
+  // belonging to the vDC. The route layer is responsible for requiring
+  // node presence at create time.
+  if ('node' in body) {
+    const v = body.node
+    if (typeof v !== 'string' || v.length === 0) {
+      return 'Tenants must keep the backup job pinned to a vDC node.'
+    }
+    if (!allowedNodes.has(v)) {
+      return `Node "${v}" is not authorised for this tenant.`
     }
   }
 
@@ -126,8 +138,7 @@ export function validateTenantJobInfra(
 
   if (typeof body.namespace === 'string' && body.namespace.length > 0) {
     const ns = body.namespace
-    const matches = allowedNamespaces.some((n) => n.namespace === ns)
-    if (!matches) {
+    if (!allowedNamespaces.has(ns)) {
       return `PBS namespace "${ns}" is not authorised for this tenant on this connection.`
     }
   }

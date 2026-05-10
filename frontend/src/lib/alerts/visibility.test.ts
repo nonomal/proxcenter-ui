@@ -55,6 +55,7 @@ function ctx(tenantId: string, opts: Partial<AlertVisibilityCtx> = {}): AlertVis
       vnetsByConnection: new Map(),
       sharedBridgesByConnection: new Map(),
       pbsNamespacesByConnection: new Map(),
+      pbsNamespacesByPveConnection: new Map(),
     },
     vdcVmids: new Map([[CONN_SHARED, new Set(['100'])]]),
     ...opts,
