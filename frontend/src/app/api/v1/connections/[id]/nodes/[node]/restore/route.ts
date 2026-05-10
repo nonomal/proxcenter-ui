@@ -8,6 +8,8 @@ import { releaseAllocationsForVm } from "@/lib/vdc/ipam"
 import { waitForTask } from "@/lib/proxmox/tasks"
 import { prisma } from "@/lib/db/prisma"
 import { getCurrentTenantId, DEFAULT_TENANT_ID } from "@/lib/tenant"
+import { resolveVdcForTenant } from "@/lib/vdc/quota"
+import { assertVdcPbsAccess, getVdcScope } from "@/lib/vdc/scope"
 
 export const runtime = "nodejs"
 
@@ -46,6 +48,41 @@ export async function POST(
       return NextResponse.json({ error: "VMID is required" }, { status: 400 })
     }
 
+    // Tenant scoping. Resolved up-front so every later branch (pbsBackup
+    // path, direct-archive path, target storage) goes through the same
+    // allow-list. RBAC was already checked above (BACKUP at node-resource
+    // granularity); this layer adds the vDC contract.
+    const tenantId = await getCurrentTenantId()
+    const isTenant = tenantId !== DEFAULT_TENANT_ID
+    let allowedStorages: Set<string> | null = null
+    if (isTenant) {
+      // Verify the target node is in the tenant's vDC. resolveVdcForTenant
+      // throws NODE_NOT_AUTHORIZED when the node is outside the allow list;
+      // returning null means the tenant has no vDC on this connection at all,
+      // which we deny too — restore is not a free tier here.
+      let vdcInfo
+      try {
+        vdcInfo = await resolveVdcForTenant(tenantId, id, node)
+      } catch (e: any) {
+        if (e?.message === 'NODE_NOT_AUTHORIZED') {
+          return NextResponse.json({ error: 'This node is not authorized for your vDC' }, { status: 403 })
+        }
+        throw e
+      }
+      if (!vdcInfo) {
+        return NextResponse.json({ error: 'No vDC on this connection — restore not allowed' }, { status: 403 })
+      }
+      const scope = await getVdcScope(tenantId)
+      if (!scope) {
+        // Cannot happen for a non-default tenant after the v1.4.0 scope
+        // contract fix (scope is always a VdcScope, possibly empty), but
+        // keep a defensive deny so a regression on scope.ts can't reopen
+        // the leak silently.
+        return NextResponse.json({ error: 'Tenant vDC scope not resolved' }, { status: 403 })
+      }
+      allowedStorages = scope.storagesByConnection.get(id) ?? new Set<string>()
+    }
+
     const conn = await getConnectionById(id)
 
     // Resolve the PVE-side volid the way qmrestore expects it. Two paths:
@@ -67,6 +104,23 @@ export async function POST(
       }
       if (!pbsId || !datastore || !backupPath) {
         return NextResponse.json({ error: "pbsBackup requires pbsId, datastore, and backupPath" }, { status: 400 })
+      }
+      // Tenant guard on the PBS source: assertVdcPbsAccess returns admin
+      // for the provider, the binding tuples for an authorised tenant,
+      // or a 403 Response when the tenant has no vDC on this PBS at all.
+      // We then verify the (datastore, namespace) tuple matches one of
+      // the tenant's bindings — a tenant who knows or guesses the path
+      // of a foreign vDC's backup must not be able to restore it.
+      if (isTenant) {
+        const access = await assertVdcPbsAccess(pbsId)
+        if (access instanceof Response) return access
+        if (access.kind === 'tenant') {
+          const wantedNs = (namespace || '').trim()
+          const ok = access.allowed.some(a => a.datastore === datastore && a.namespace === wantedNs)
+          if (!ok) {
+            return NextResponse.json({ error: 'PBS backup source is not authorised for this tenant' }, { status: 403 })
+          }
+        }
       }
       // Look up the PBS connection to know which `server` PVE storages
       // need to advertise. We compare lower-cased hostnames so an IP vs
@@ -133,6 +187,29 @@ export async function POST(
     // `.NNNZ`) without stripping the millis would 500 here. Strip defensively
     // so any upstream miss doesn't surface as "unable to parse PBS volume name".
     archive = archive.replace(/(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})\.\d{1,6}Z$/, '$1Z')
+
+    // Source / target storage validation for tenants. The archive volid
+    // is shaped `<storage>:<volume-path>`; the prefix tells us where PVE
+    // will read the backup from. If the caller bypassed the pbsBackup
+    // path (which we already gated above) and supplied a raw archive,
+    // make sure that storage lives inside the tenant's vDC. Same goes
+    // for the optional `storage` parameter (where the restored disks
+    // land): it must be one of the tenant's vDC storages.
+    if (allowedStorages !== null) {
+      const archiveStorage = archive.split(':', 2)[0] ?? ''
+      if (!archiveStorage || !allowedStorages.has(archiveStorage)) {
+        return NextResponse.json(
+          { error: `Archive storage "${archiveStorage}" is not authorised for this tenant.` },
+          { status: 403 },
+        )
+      }
+      if (typeof storage === 'string' && storage.length > 0 && !allowedStorages.has(storage)) {
+        return NextResponse.json(
+          { error: `Target storage "${storage}" is not authorised for this tenant.` },
+          { status: 403 },
+        )
+      }
+    }
 
     // PVE has no /qmrestore or /vzrestore REST endpoint — those are CLI
     // commands. The actual restore lives behind POST /nodes/{node}/qemu
@@ -204,8 +281,7 @@ export async function POST(
     // in the tenant's vDC scope (vDC membership is keyed on PVE pool).
     let targetPool: string | null = null
     try {
-      const tenantId = await getCurrentTenantId()
-      if (tenantId !== DEFAULT_TENANT_ID) {
+      if (isTenant) {
         const row = await prisma.vdc.findFirst({
           where: {
             tenantId,
