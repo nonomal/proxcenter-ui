@@ -150,15 +150,30 @@ export const authOptions: NextAuthOptions = {
         })
 
         // Safety net: ensure user has at least one tenant membership.
-        // Only fall back to 'default' if the user has been stripped of every
-        // membership — otherwise tenant-scoped users would be re-added to
-        // 'default' on every login.
+        // Only super admins (cross-tenant by design) get the auto-attach
+        // to the provider tenant `default`. A tenant-scoped user with
+        // zero memberships has been stripped of access by an admin
+        // action; re-attaching them to `default` would silently elevate
+        // them to provider scope. Refuse the login instead so the
+        // operator sees the issue and re-assigns the user explicitly.
         const anyMembership = await prisma.userTenant.findFirst({
           where: { userId: user.id },
           select: { userId: true },
         })
 
         if (!anyMembership) {
+          const isSuperAdmin = await prisma.rbacUserRole.findFirst({
+            where: {
+              userId: user.id,
+              roleId: "role_super_admin",
+              OR: [{ expiresAt: null }, { expiresAt: { gt: loginNow } }],
+            },
+            select: { id: true },
+          })
+          if (!isSuperAdmin) {
+            await logFailure("No tenant membership")
+            throw new Error("Compte sans tenant — contactez votre administrateur")
+          }
           await prisma.userTenant.upsert({
             where: { userId_tenantId: { userId: user.id, tenantId: "default" } },
             update: {},
@@ -284,6 +299,17 @@ export const authOptions: NextAuthOptions = {
           })
 
           if (!hasAnyLdapTenant) {
+            const isSuperAdmin = await prisma.rbacUserRole.findFirst({
+              where: {
+                userId: user.id,
+                roleId: "role_super_admin",
+                OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+              },
+              select: { id: true },
+            })
+            if (!isSuperAdmin) {
+              throw new Error("Compte sans tenant — contactez votre administrateur")
+            }
             await prisma.userTenant.upsert({
               where: { userId_tenantId: { userId: user.id, tenantId: "default" } },
               update: {},
@@ -409,6 +435,17 @@ export const authOptions: NextAuthOptions = {
           })
 
           if (!hasAnyTenant) {
+            const isSuperAdmin = await prisma.rbacUserRole.findFirst({
+              where: {
+                userId: existing.id,
+                roleId: "role_super_admin",
+                OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+              },
+              select: { id: true },
+            })
+            if (!isSuperAdmin) {
+              throw new Error("Compte sans tenant — contactez votre administrateur")
+            }
             await prisma.userTenant.upsert({
               where: { userId_tenantId: { userId: existing.id, tenantId: "default" } },
               update: {},
