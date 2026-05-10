@@ -11,6 +11,7 @@ import { pbsFetch } from "@/lib/proxmox/pbs-client"
 import { pveFetch } from "@/lib/proxmox/client"
 import { orchestratorFetch } from "@/lib/orchestrator/client"
 import { discoverNodeIps } from "@/lib/proxmox/discoverNodeIps"
+import { captureFingerprint } from "@/lib/proxmox/pbsFingerprint"
 
 export const runtime = "nodejs"
 
@@ -290,6 +291,21 @@ export async function POST(req: Request) {
           { error: `XCP-ng XO connection failed: ${e?.message || 'Unable to connect'}. Verify the XO URL and credentials.` },
           { status: 400 }
         )
+      }
+    }
+
+    // Best-effort PBS TLS fingerprint capture at create time. Without it,
+    // the vDC binding selector hides the connection in auto-mode (which
+    // needs the fingerprint to authenticate the API calls that
+    // provision the namespace, sub-token and ACL on PBS). If the host
+    // is unreachable or the cert probe fails, the connection is still
+    // saved with fingerprint=null and the user can re-capture later via
+    // ConnectionDialog → "Capture fingerprint".
+    if (type === 'pbs') {
+      try {
+        data.fingerprint = await captureFingerprint(baseUrl)
+      } catch (e: any) {
+        console.warn(`[connections] PBS fingerprint capture failed for ${baseUrl}: ${e?.message ?? e}`)
       }
     }
 
