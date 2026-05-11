@@ -9,6 +9,8 @@ import { useTheme, alpha } from '@mui/material/styles'
 import { menuData } from '@/@menu/menuData'
 import { useRBAC } from '@/contexts/RBACContext'
 import { useLicense } from '@/contexts/LicenseContext'
+import { useMyVdcs } from '@/hooks/useMyVdcs'
+import { useTenant } from '@/contexts/TenantContext'
 
 // Section accent colors for visual distinction
 const sectionColors = {
@@ -25,21 +27,39 @@ const BurgerMenu = ({ anchorEl, open, onClose }) => {
   const pathname = usePathname()
   const t = useTranslations()
   const theme = useTheme()
-  const { hasPermission } = useRBAC()
+  const { hasPermission, loading: rbacLoading } = useRBAC()
   const { hasFeature } = useLicense()
+  const { hasVdc, loading: vdcLoading } = useMyVdcs()
+  const { currentTenant, loading: tenantLoading } = useTenant()
+  const isProviderTenant = currentTenant?.id === 'default'
 
   const sections = useMemo(() => {
     const data = menuData(t)
     const result = []
 
+    // Mirrors the canView logic in GenerateMenu.jsx so the burger and the
+    // horizontal nav agree on visibility. Without this, items declaring
+    // requires.hasVdc were always shown in the burger (e.g. "My vDC"
+    // appeared on the default tenant even when no vDC existed).
+    const passesRequires = (entry) => {
+      if (rbacLoading || vdcLoading || tenantLoading) return true
+      if (entry.requires?.hasVdc === true && !hasVdc) return false
+      if (entry.requires?.hasVdc === false && hasVdc) return false
+      if (entry.requires?.isProviderTenant === true && !isProviderTenant) return false
+      return true
+    }
+
     for (const item of data) {
+      if (!passesRequires(item)) continue
+
       if (!item.isSection) {
+        if (item.permissions && !item.permissions.some(p => hasPermission(p))) continue
         result.push({
           standalone: true,
           label: item.label,
           icon: item.icon,
           href: item.href,
-          locked: false
+          locked: item.requiredFeature && !hasFeature(item.requiredFeature),
         })
         continue
       }
@@ -49,6 +69,7 @@ const BurgerMenu = ({ anchorEl, open, onClose }) => {
       const sectionLocked = item.requiredFeature && !hasFeature(item.requiredFeature)
 
       const children = (item.children || []).filter(child => {
+        if (!passesRequires(child)) return false
         if (child.permissions && !child.permissions.some(p => hasPermission(p))) return false
         return true
       }).map(child => ({
@@ -69,7 +90,7 @@ const BurgerMenu = ({ anchorEl, open, onClose }) => {
     }
 
     return result
-  }, [t, hasPermission, hasFeature])
+  }, [t, hasPermission, hasFeature, hasVdc, isProviderTenant, rbacLoading, vdcLoading, tenantLoading])
 
   const handleNavigate = (href, locked) => {
     if (locked) return
