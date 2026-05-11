@@ -2,7 +2,7 @@
 import { NextResponse } from "next/server"
 
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
-import { getDb } from "@/lib/db/sqlite"
+import { prisma } from "@/lib/db/prisma"
 import { decryptSecret } from "@/lib/crypto/secret"
 
 export const runtime = "nodejs"
@@ -43,14 +43,16 @@ export async function POST(req: Request) {
     }
 
     // If bind_password is empty but a saved password exists in DB, use it
+    // (the form only exposes a "hasBindPassword" hint via GET, never the
+    // ciphertext, so the user can re-test without re-entering the secret).
     if (bind_dn && !bind_password) {
       try {
-        const db = getDb()
-        const config = db
-          .prepare("SELECT bind_password_enc FROM ldap_config WHERE id = 'default'")
-          .get() as any
-        if (config?.bind_password_enc) {
-          bind_password = decryptSecret(config.bind_password_enc)
+        const config = await prisma.ldapConfig.findUnique({
+          where: { id: "default" },
+          select: { bindPasswordEnc: true },
+        })
+        if (config?.bindPasswordEnc) {
+          bind_password = decryptSecret(config.bindPasswordEnc)
         }
       } catch {}
     }

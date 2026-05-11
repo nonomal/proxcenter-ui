@@ -22,12 +22,12 @@ export async function GET(
 
     const { profileId } = await ctx.params
     const tenantId = await getCurrentTenantId()
-    const profile = getProfile(profileId, tenantId)
+    const profile = await getProfile(profileId, tenantId)
     if (!profile) {
       return NextResponse.json({ error: 'Profile not found' }, { status: 404 })
     }
 
-    const checks = getProfileChecks(profileId, tenantId)
+    const checks = await getProfileChecks(profileId, tenantId)
     return NextResponse.json({ data: { ...profile, checks } })
   } catch (e: any) {
     return NextResponse.json({ error: e?.message || 'Internal server error' }, { status: 500 })
@@ -47,7 +47,7 @@ export async function PUT(
 
     const { profileId } = await ctx.params
     const tenantId = await getCurrentTenantId()
-    const existing = getProfile(profileId, tenantId)
+    const existing = await getProfile(profileId, tenantId)
     if (!existing) {
       return NextResponse.json({ error: 'Profile not found' }, { status: 404 })
     }
@@ -56,16 +56,16 @@ export async function PUT(
 
     // Update profile metadata
     if (body.name !== undefined || body.description !== undefined) {
-      updateProfile(profileId, { name: body.name, description: body.description }, tenantId)
+      await updateProfile(profileId, { name: body.name, description: body.description }, tenantId)
     }
 
     // Update checks if provided
     if (Array.isArray(body.checks)) {
-      updateProfileChecks(profileId, body.checks, tenantId)
+      await updateProfileChecks(profileId, body.checks, tenantId)
     }
 
-    const updated = getProfile(profileId, tenantId)
-    const checks = getProfileChecks(profileId, tenantId)
+    const updated = await getProfile(profileId, tenantId)
+    const checks = await getProfileChecks(profileId, tenantId)
     return NextResponse.json({ data: { ...updated, checks } })
   } catch (e: any) {
     return NextResponse.json({ error: e?.message || 'Internal server error' }, { status: 500 })
@@ -85,12 +85,12 @@ export async function DELETE(
 
     const { profileId } = await ctx.params
     const tenantId = await getCurrentTenantId()
-    const existing = getProfile(profileId, tenantId)
+    const existing = await getProfile(profileId, tenantId)
     if (!existing) {
       return NextResponse.json({ error: 'Profile not found' }, { status: 404 })
     }
 
-    deleteProfile(profileId, tenantId)
+    await deleteProfile(profileId, tenantId)
     return NextResponse.json({ success: true })
   } catch (e: any) {
     return NextResponse.json({ error: e?.message || 'Internal server error' }, { status: 500 })

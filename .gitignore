@@ -27,6 +27,11 @@ CLAUDE.md
 # Next.js build
 .next/
 
+# Root-level caches from dev tooling that runs at the repo root rather
+# than under frontend/ (vitest's vite cache landed here once via a stray
+# install).
+/node_modules/
+
 # Lock files
 package-lock.json
 
@@ -34,6 +39,8 @@ package-lock.json
 config/orchestrator.yaml
 !config/orchestrator.yaml.example
 config/prometheus.yml
+# Per-developer compose override (port mappings, volume binds, etc.)
+docker-compose.override.yml
 
 # Data directories
 data/

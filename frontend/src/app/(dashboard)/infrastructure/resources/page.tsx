@@ -5,6 +5,7 @@ import { useEffect, useState, useMemo } from 'react'
 import { useLocale, useTranslations } from 'next-intl'
 import { getDateLocale } from '@/lib/i18n/date'
 import EnterpriseGuard from '@/components/guards/EnterpriseGuard'
+import ProviderTenantGuard from '@/components/guards/ProviderTenantGuard'
 import { Features } from '@/contexts/LicenseContext'
 import {
   Alert,
@@ -79,6 +80,7 @@ export default function ResourcesPage() {
   }
 
   return (
+    <ProviderTenantGuard>
     <EnterpriseGuard requiredFeature={Features.GREEN_METRICS} featureName={t('resources.greenMetricsFeature')}>
       <Box sx={{ p: 3 }}>
         {/* Toolbar */}
@@ -150,5 +152,6 @@ export default function ResourcesPage() {
         )}
       </Box>
     </EnterpriseGuard>
+    </ProviderTenantGuard>
   )
 }

@@ -3,15 +3,25 @@ import { NextResponse } from 'next/server'
 
 import { alertsApi } from '@/lib/orchestrator/client'
 import { demoResponse } from '@/lib/demo/demo-api'
-import { getSessionPrisma, getTenantConnectionIds } from '@/lib/tenant'
+import { getCurrentTenantId, getSessionPrisma, getTenantConnectionIds } from '@/lib/tenant'
+import { getVdcScope } from '@/lib/vdc/scope'
 import { checkPermission, PERMISSIONS } from '@/lib/rbac'
+import { isAlertVisibleToTenant } from '@/lib/alerts/visibility'
+import { getVdcVmidsByConnection } from '@/lib/alerts/vdcVmids'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
 /**
- * Build a fingerprint from an orchestrator alert to match against silences.
- * Mirrors the logic in src/lib/alerts/fingerprint.ts but adapted for orchestrator alert shape.
+ * Build a fingerprint from an orchestrator alert to match against silences
+ * and to dedupe within the list view.
+ *
+ * `rule_id` is part of the key: when two rules fire on the same event
+ * (e.g. NEW-MSP "test" + CLOUD-MSP "start/stop" both subscribed to
+ * vmstart on a shared cluster), the orchestrator stores them as two
+ * rows with the same connection/severity/resource. Without rule_id in
+ * the fingerprint they'd dedupe into one row and the wrong tenant
+ * could end up owning the surviving alert.
  */
 function buildOrchestratorFingerprint(alert: {
   connection_id?: string
@@ -19,9 +29,10 @@ function buildOrchestratorFingerprint(alert: {
   severity?: string
   resource?: string
   resource_type?: string
+  rule_id?: string
 }): string {
   const source = alert.connection_id ? `${alert.connection_id}:${alert.type || ''}` : (alert.type || '')
-  const data = `${source}|${alert.severity || ''}|${alert.resource_type || ''}|${alert.resource || ''}|${alert.type || ''}`
+  const data = `${source}|${alert.severity || ''}|${alert.resource_type || ''}|${alert.resource || ''}|${alert.type || ''}|${alert.rule_id || ''}`
   return crypto.createHash('sha256').update(data).digest('hex').slice(0, 32)
 }
 
@@ -34,7 +45,11 @@ export async function GET(req: Request) {
   if (demo) return demo
 
   try {
-    const denied = await checkPermission(PERMISSIONS.ALERTS_VIEW)
+    // CONNECTION_VIEW baseline (same as /api/v1/changes): vDC tenants don't
+    // necessarily carry alerts.view in their default role but they need to
+    // see alerts on their own resources. Tenant scoping is enforced by the
+    // tenantConnectionIds + vdcScope filters below.
+    const denied = await checkPermission(PERMISSIONS.CONNECTION_VIEW)
     if (denied) return denied
 
     const { searchParams } = new URL(req.url)
@@ -43,10 +58,17 @@ export async function GET(req: Request) {
     const limit = searchParams.get('limit') ? Number.parseInt(searchParams.get('limit')!) : 100
     const offset = searchParams.get('offset') ? Number.parseInt(searchParams.get('offset')!) : 0
 
-    // Get tenant's connection IDs for filtering
+    // Reachable connections = directly owned ∪ vDC-bound. Going through
+    // the helper instead of the inline prisma.connection query so MSP
+    // tenants (who own no connections directly, only vDC bindings) get
+    // their alerts populated. Same fix as /api/v1/changes.
     const prisma = await getSessionPrisma()
-    const tenantConnections = await prisma.connection.findMany({ select: { id: true } })
-    const tenantConnectionIds = new Set(tenantConnections.map((c: any) => c.id))
+    const tenantConnectionIds = await getTenantConnectionIds()
+    const tenantId = await getCurrentTenantId()
+    // For vDC tenants on multi-tenant clusters, drop non-VM alerts (node /
+    // license / cluster-wide system alerts are provider concerns) and apply
+    // node-level scoping so neighbour activity doesn't leak.
+    const vdcScope = await getVdcScope(tenantId)
 
     const response = await alertsApi.getAlerts({
       connection_id: connectionId,
@@ -55,11 +77,22 @@ export async function GET(req: Request) {
       offset: 0
     })
 
-    // Filter alerts to only include those from tenant's connections
+    // Filter alerts: rule ownership AND resource scope. Both gates must
+    // pass — a tenant-owned rule that fires on a neighbour tenant's node
+    // (orchestrator is not tenant-aware) would otherwise leak through.
     const allAlerts = response.data?.data || response.data || []
-    const filtered = Array.isArray(allAlerts)
-      ? allAlerts.filter((a: any) => !a.connection_id || tenantConnectionIds.has(a.connection_id))
-      : allAlerts
+    const vdcVmids = vdcScope ? await getVdcVmidsByConnection(tenantId) : undefined
+    const visibilityCtx = { tenantId, tenantConnectionIds, vdcScope, vdcVmids }
+    // isAlertVisibleToTenant became async in the Postgres cutover; resolve
+    // each alert's visibility up-front before filtering, otherwise the
+    // filter sees a Promise (truthy) and lets every alert through.
+    let filtered = allAlerts
+    if (Array.isArray(allAlerts)) {
+      const visible = await Promise.all(
+        allAlerts.map((a: any) => isAlertVisibleToTenant(a, visibilityCtx)),
+      )
+      filtered = allAlerts.filter((_: any, i: number) => visible[i])
+    }
 
     // Load active silences for this tenant (graceful fallback if table doesn't exist yet)
     const now = new Date()

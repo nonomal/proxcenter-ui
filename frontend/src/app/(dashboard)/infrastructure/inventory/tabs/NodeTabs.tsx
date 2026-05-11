@@ -4,6 +4,7 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react'
 import { useTranslations } from 'next-intl'
 import DOMPurify from 'dompurify'
 import { useBranding } from '@/contexts/BrandingContext'
+import { useRBAC } from '@/contexts/RBACContext'
 import { useHostsByConnection } from '@/hooks/useHosts'
 import ExpandableChart from '../components/ExpandableChart'
 
@@ -76,6 +77,7 @@ export default function NodeTabs(props: any) {
   const t = useTranslations()
   const theme = useTheme()
   const { branding } = useBranding()
+  const { isAdmin } = useRBAC()
   const chartTooltipStyle = { backgroundColor: theme.palette.background.paper, border: `1px solid ${theme.palette.divider}`, borderRadius: 4, color: theme.palette.text.primary }
 
   const {
@@ -317,25 +319,26 @@ export default function NodeTabs(props: any) {
                     </Box>
                   }
                 />
-                {/* Onglet Notes */}
-                <Tab
+                {/* Onglet Notes — admin only */}
+                {isAdmin && <Tab
                   label={
                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
                       <i className="ri-file-text-line" style={{ fontSize: 16 }} />
                       {t('inventory.tabNotes')}
                     </Box>
                   }
-                />
-                {/* Onglet Shell */}
-                <Tab
+                />}
+                {/* Onglet Shell — admin only */}
+                {isAdmin && <Tab
                   label={
                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
                       <i className="ri-terminal-box-line" style={{ fontSize: 16 }} />
                       {t('inventory.tabShell')}
                     </Box>
                   }
-                />
-                <Tab
+                />}
+                {/* Onglet Guests — admin only */}
+                {isAdmin && <Tab
                   label={
                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
                       <i className="ri-computer-line" style={{ fontSize: 16 }} />
@@ -343,45 +346,45 @@ export default function NodeTabs(props: any) {
                       <Chip size="small" label={data.vmsData.length} sx={{ height: 18, fontSize: 11 }} />
                     </Box>
                   }
-                />
-                {/* Onglet Snapshots */}
-                <Tab
+                />}
+                {/* Onglet Snapshots — admin only */}
+                {isAdmin && <Tab
                   label={
                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
                       <i className="ri-camera-line" style={{ fontSize: 16 }} />
                       {t('inventory.tabSnapshots')}
                     </Box>
                   }
-                />
-                {/* Onglet Disks pour tous les nodes */}
-                <Tab
+                />}
+                {/* Onglet Disks — admin only */}
+                {isAdmin && <Tab
                   label={
                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
                       <i className="ri-hard-drive-2-line" style={{ fontSize: 16 }} />
                       {t('inventory.tabDisks')}
                     </Box>
                   }
-                />
-                {/* Onglet System pour tous les nodes */}
-                <Tab
+                />}
+                {/* Onglet System — admin only */}
+                {isAdmin && <Tab
                   label={
                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
                       <i className="ri-settings-3-line" style={{ fontSize: 16 }} />
                       {t('inventory.tabSystem')}
                     </Box>
                   }
-                />
-                {/* Onglet Firewall pour tous les nodes */}
-                <Tab
+                />}
+                {/* Onglet Firewall — admin only */}
+                {isAdmin && <Tab
                   label={
                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
                       <i className="ri-shield-keyhole-line" style={{ fontSize: 16 }} />
                       {t('inventory.tabFirewall')}
                     </Box>
                   }
-                />
-                {/* Onglet Ceph seulement pour les nodes dans un cluster */}
-                {data.clusterName && (
+                />}
+                {/* Onglet Ceph — admin only, cluster nodes only */}
+                {isAdmin && data.clusterName && (
                   <Tab
                     label={
                       <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
@@ -391,8 +394,8 @@ export default function NodeTabs(props: any) {
                     }
                   />
                 )}
-                {/* Onglet Backups seulement pour les hosts standalone (pas dans un cluster) */}
-                {!data.clusterName && (
+                {/* Onglet Backups — admin only, standalone only */}
+                {isAdmin && !data.clusterName && (
                   <Tab
                     label={
                       <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
@@ -402,8 +405,8 @@ export default function NodeTabs(props: any) {
                     }
                   />
                 )}
-                {/* Onglet Cluster seulement pour les hosts standalone */}
-                {!data.clusterName && (
+                {/* Onglet Cluster — admin only, standalone only */}
+                {isAdmin && !data.clusterName && (
                   <Tab
                     label={
                       <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
@@ -413,26 +416,26 @@ export default function NodeTabs(props: any) {
                     }
                   />
                 )}
-                {/* Onglet Replication pour tous les nodes */}
-                <Tab
+                {/* Onglet Replication — admin only */}
+                {isAdmin && <Tab
                   label={
                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
                       <i className="ri-refresh-line" style={{ fontSize: 16 }} />
                       {t('inventory.tabReplication')}
                     </Box>
                   }
-                />
-                {/* Onglet Updates — always accessible */}
-                <Tab
+                />}
+                {/* Onglet Updates — admin only */}
+                {isAdmin && <Tab
                   label={
                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
                       <i className="ri-download-cloud-line" style={{ fontSize: 16 }} />
                       {t('inventory.tabUpdates')}
                     </Box>
                   }
-                />
-                {/* Onglet Subscription pour tous les nodes */}
-                <Tab
+                />}
+                {/* Onglet Subscription — admin only */}
+                {isAdmin && <Tab
                   label={
                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
                       <i className="ri-vip-crown-line" style={{ fontSize: 16 }} />
@@ -440,83 +443,39 @@ export default function NodeTabs(props: any) {
                     </Box>
                   }
                   sx={branding.enabled && branding.showSubscription === false ? { display: 'none' } : {}}
-                />
-                {/* Onglet CVE Scanner */}
-                <Tab
-                  disabled={!cveAvailable}
+                />}
+                {/* Onglet CVE — admin only */}
+                {isAdmin && <Tab
+                  sx={!cveAvailable ? { display: 'none' } : undefined}
                   label={
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, opacity: cveAvailable ? 1 : 0.4 }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
                       <i className="ri-shield-cross-line" style={{ fontSize: 16 }} />
                       CVE
-                      {!cveAvailable && (
-                        <Chip
-                          size="small"
-                          label="Enterprise"
-                          sx={{
-                            height: 18,
-                            fontSize: '0.6rem',
-                            fontWeight: 600,
-                            bgcolor: 'primary.main',
-                            color: 'primary.contrastText',
-                            ml: 0.5,
-                            '& .MuiChip-label': { px: 0.75 }
-                          }}
-                        />
-                      )}
                     </Box>
                   }
-                />
-                {/* Onglet Change Tracking */}
-                <Tab
-                  disabled={!changeTrackingAvailable}
+                />}
+                {/* Onglet Change Tracking — admin only */}
+                {isAdmin && <Tab
+                  sx={!changeTrackingAvailable ? { display: 'none' } : undefined}
                   label={
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, opacity: changeTrackingAvailable ? 1 : 0.4 }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
                       <i className="ri-git-commit-line" style={{ fontSize: 16 }} />
                       {t('inventory.tabChangeTracking')}
-                      {!changeTrackingAvailable && (
-                        <Chip
-                          size="small"
-                          label="Enterprise"
-                          sx={{
-                            height: 18,
-                            fontSize: '0.6rem',
-                            fontWeight: 600,
-                            bgcolor: 'primary.main',
-                            color: 'primary.contrastText',
-                            ml: 0.5,
-                            '& .MuiChip-label': { px: 0.75 }
-                          }}
-                        />
-                      )}
                     </Box>
                   }
-                />
-                <Tab
-                  disabled={!complianceAvailable}
+                />}
+                {/* Onglet Compliance — admin only */}
+                {isAdmin && <Tab
+                  sx={!complianceAvailable ? { display: 'none' } : undefined}
                   label={
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, opacity: complianceAvailable ? 1 : 0.4 }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
                       <i className="ri-shield-check-line" style={{ fontSize: 16 }} />
                       {t('inventory.tabCompliance')}
-                      {!complianceAvailable && (
-                        <Chip
-                          size="small"
-                          label="Enterprise"
-                          sx={{
-                            height: 18,
-                            fontSize: '0.6rem',
-                            fontWeight: 600,
-                            bgcolor: 'primary.main',
-                            color: 'primary.contrastText',
-                            ml: 0.5,
-                            '& .MuiChip-label': { px: 0.75 }
-                          }}
-                        />
-                      )}
                     </Box>
                   }
-                />
-                {/* Onglets datacenter pour les hosts standalone (pas de ClusterTabs) */}
-                {!data.clusterName && (
+                />}
+                {/* Datacenter-level tabs (standalone hosts) — provider scope, hidden from tenants */}
+                {isAdmin && !data.clusterName && (
                   <Tab
                     label={
                       <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
@@ -526,7 +485,7 @@ export default function NodeTabs(props: any) {
                     }
                   />
                 )}
-                {!data.clusterName && (
+                {isAdmin && !data.clusterName && (
                   <Tab
                     label={
                       <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
@@ -536,7 +495,7 @@ export default function NodeTabs(props: any) {
                     }
                   />
                 )}
-                {!data.clusterName && (
+                {isAdmin && !data.clusterName && (
                   <Tab
                     label={
                       <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
@@ -4152,18 +4111,16 @@ export default function NodeTabs(props: any) {
                   />
                 )}
 
-                {/* Onglet Settings - Index 16 pour standalone uniquement */}
-                {nodeTab === 16 && !data.clusterName && (
+                {/* Settings / Metric Server / Notifications — super admin only, standalone hosts */}
+                {isAdmin && nodeTab === 16 && !data.clusterName && (
                   <DatacenterSettingsTab connectionId={parseNodeId(selection?.id || '').connId} />
                 )}
 
-                {/* Onglet Metric Server - Index 17 pour standalone uniquement */}
-                {nodeTab === 17 && !data.clusterName && (
+                {isAdmin && nodeTab === 17 && !data.clusterName && (
                   <MetricServerTab connectionId={parseNodeId(selection?.id || '').connId} />
                 )}
 
-                {/* Onglet Notifications - Index 18 pour standalone uniquement */}
-                {nodeTab === 18 && !data.clusterName && (
+                {isAdmin && nodeTab === 18 && !data.clusterName && (
                   <NotificationsTab connectionId={parseNodeId(selection?.id || '').connId} />
                 )}
               </CardContent>

@@ -1,12 +1,14 @@
 'use client'
 
 import { useState, useCallback, useEffect } from 'react'
+import { useRouter } from 'next/navigation'
 
 import { Box, Card } from '@mui/material'
 import { useTranslations } from 'next-intl'
 import { ReactFlowProvider } from '@xyflow/react'
 
 import { usePageTitle } from '@/contexts/PageTitleContext'
+import { useTenant } from '@/contexts/TenantContext'
 
 import type { TopologyFilters, SelectedNodeInfo } from './types'
 import { useTopologyData } from './hooks/useTopologyData'
@@ -19,6 +21,17 @@ import TopologyGeoView from './components/TopologyGeoView'
 export default function TopologyPage() {
   const t = useTranslations()
   const { setPageInfo } = usePageTitle()
+  // Topology view is provider-only — also gated in the menu via
+  // requires.isProviderTenant. Redirect tenants who hit the URL directly
+  // (bookmark, copy-paste) instead of letting them load a graph that
+  // would re-leak node names hidden everywhere else in the tenant view.
+  const { currentTenant, loading: tenantLoading } = useTenant()
+  const router = useRouter()
+  useEffect(() => {
+    if (!tenantLoading && currentTenant && currentTenant.id !== 'default') {
+      router.replace('/')
+    }
+  }, [tenantLoading, currentTenant, router])
 
   const [filters, setFilters] = useState<TopologyFilters>({
     vmThreshold: 8,
@@ -50,6 +63,13 @@ export default function TopologyPage() {
   const handleNodeSelect = useCallback((node: SelectedNodeInfo | null) => {
     setSelectedNode(node)
   }, [])
+
+  // Hold the render until the tenant context has loaded and the redirect
+  // above has had a chance to fire. Avoids a one-frame flash of the graph
+  // for tenants who landed via direct URL.
+  if (tenantLoading || (currentTenant && currentTenant.id !== 'default')) {
+    return null
+  }
 
   return (
     <Box sx={{ height: 'calc(100vh - 130px)', display: 'flex', flexDirection: 'column', gap: 2 }}>

@@ -131,6 +131,16 @@ function printBanner() {
 
   const edition = process.env.ORCHESTRATOR_URL ? 'Enterprise' : 'Community'
 
+  // Derive a label from DATABASE_URL so the banner reflects what the app
+  // actually talks to (postgres:// since the SQLite cutover, but the
+  // helper degrades gracefully if someone overrides the connection
+  // string).
+  const dbUrl = process.env.DATABASE_URL || ''
+  const dbLabel = /^postgres(ql)?:\/\//i.test(dbUrl) ? 'Postgres'
+    : /^file:/i.test(dbUrl) ? 'SQLite'
+    : dbUrl ? 'Custom'
+    : 'Unset'
+
   const c = {
     orange: '\x1b[38;5;208m',
     green: '\x1b[32m',
@@ -151,7 +161,7 @@ ${c.orange}${c.bold} ██████╗ ██╗  ██╗ █████�
 
  ${c.dim}Unified server on port ${PORT}${c.reset}
  ${c.dim}├─${c.reset} HTTP + WebSocket  ${c.white}http://${hostname}:${PORT}${c.reset}  ${c.green}✓${c.reset}
- ${c.dim}└─${c.reset} Database          ${c.white}SQLite${c.reset}             ${c.green}✓${c.reset}
+ ${c.dim}└─${c.reset} Database          ${c.white}${dbLabel.padEnd(11)}${c.reset}        ${c.green}✓${c.reset}
 
  ${c.dim}WebSocket routes${c.reset}
  ${c.dim}├─${c.reset} /api/internal/ws/shell           ${c.dim}Node/VM/CT shell${c.reset}

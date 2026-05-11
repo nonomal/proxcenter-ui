@@ -10,6 +10,7 @@ import {
 
 import { usePageTitle } from "@/contexts/PageTitleContext"
 import EnterpriseGuard from '@/components/guards/EnterpriseGuard'
+import ProviderTenantGuard from '@/components/guards/ProviderTenantGuard'
 import { Features, useLicense } from '@/contexts/LicenseContext'
 import { useToast } from '@/contexts/ToastContext'
 import * as firewallAPI from '@/lib/api/firewall'
@@ -98,6 +99,7 @@ export default function NetworkAutomationPage() {
   }, [activeTab, rulesSubTab, selectedConnection, vmFirewallData.length, loadingVMRules, loadVMFirewallData])
 
   return (
+    <ProviderTenantGuard>
     <EnterpriseGuard requiredFeature={Features.MICROSEGMENTATION} featureName="Microsegmentation / Firewall">
       <Box sx={{ minHeight: '100vh', p: 3 }}>
 
@@ -240,5 +242,6 @@ export default function NetworkAutomationPage() {
         </Card>
       </Box>
     </EnterpriseGuard>
+    </ProviderTenantGuard>
   )
 }

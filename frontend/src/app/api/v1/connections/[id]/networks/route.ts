@@ -3,6 +3,8 @@ import { NextResponse } from "next/server"
 import { pveFetch } from "@/lib/proxmox/client"
 import { getConnectionById } from "@/lib/connections/getConnection"
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
+import { getCurrentTenantId } from "@/lib/tenant"
+import { getVdcScope } from "@/lib/vdc/scope"
 
 export const runtime = "nodejs"
 
@@ -85,9 +87,23 @@ export async function GET(_req: Request, ctx: RouteContext) {
     const conn = await getConnectionById(id)
 
     // Get all VMs/CTs from cluster resources
-    const resources = await pveFetch<any[]>(conn, "/cluster/resources?type=vm")
-    if (!resources || !Array.isArray(resources)) {
+    const allResources = await pveFetch<any[]>(conn, "/cluster/resources?type=vm")
+    if (!allResources || !Array.isArray(allResources)) {
       return NextResponse.json({ data: [] })
+    }
+
+    // Restrict to the tenant's vDC pool(s) on this connection. Without this,
+    // a tenant viewing /infrastructure/inventory > Network sees every VM on
+    // a shared PVE cluster (cross-vDC leak). super-admin / provider tenant
+    // returns null scope -> no filtering applied.
+    const tenantId = await getCurrentTenantId()
+    const vdcScope = await getVdcScope(tenantId)
+    let resources = allResources
+    if (vdcScope) {
+      const allowedPools = vdcScope.poolsByConnection.get(id)
+      resources = allowedPools
+        ? allResources.filter((vm: any) => typeof vm?.pool === 'string' && allowedPools.has(vm.pool))
+        : []
     }
 
     // Batch fetch configs with concurrency limit

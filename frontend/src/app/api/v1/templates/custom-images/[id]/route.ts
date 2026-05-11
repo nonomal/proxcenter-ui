@@ -1,7 +1,7 @@
 // src/app/api/v1/templates/custom-images/[id]/route.ts
 import { NextResponse } from "next/server"
 
-import { getSessionPrisma } from "@/lib/tenant"
+import { getSessionPrisma, getCurrentTenantId, DEFAULT_TENANT_ID } from "@/lib/tenant"
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
 import { updateCustomImageSchema } from "@/lib/schemas"
 
@@ -47,9 +47,17 @@ export async function PUT(req: Request, ctx: Ctx) {
     }
 
     const body = parseResult.data
+    // isShared can only be toggled by the provider (tenant 'default').
+    // Strip it from any other tenant's update payload to keep the catalogue
+    // sharing decision in provider hands.
+    const tenantId = await getCurrentTenantId()
+    const data: any = { ...body }
+    if (data.isShared !== undefined && tenantId !== DEFAULT_TENANT_ID) {
+      delete data.isShared
+    }
     const image = await prisma.customImage.update({
       where: { id },
-      data: body,
+      data,
     })
 
     const { audit } = await import("@/lib/audit")

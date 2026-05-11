@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useMemo } from 'react'
 import { useTranslations, useLocale } from 'next-intl'
 import dynamic from 'next/dynamic'
 import DOMPurify from 'dompurify'
@@ -62,8 +62,10 @@ import ChartContainer from '@/components/ChartContainer'
 import { formatBytes } from '@/utils/format'
 import { formatDateTime } from '@/lib/i18n/date'
 import VmFirewallTab from '@/components/VmFirewallTab'
+import RestoreVmDialog from '@/components/backup/RestoreVmDialog'
 import ChangeTrackingTab from './ChangeTrackingTab'
 import { useLicense, Features } from '@/contexts/LicenseContext'
+import { useRBAC } from '@/contexts/RBACContext'
 const AddDiskDialog = dynamic(() => import('@/components/HardwareModals').then(mod => ({ default: mod.AddDiskDialog })), { ssr: false })
 const AddNetworkDialog = dynamic(() => import('@/components/HardwareModals').then(mod => ({ default: mod.AddNetworkDialog })), { ssr: false })
 const EditDiskDialog = dynamic(() => import('@/components/HardwareModals').then(mod => ({ default: mod.EditDiskDialog })), { ssr: false })
@@ -75,9 +77,11 @@ const DeleteUnusedDiskDialog = dynamic(() => import('@/components/hardware/Delet
 import type { InventorySelection, DetailsPayload, RrdTimeframe, SeriesPoint, Status } from '../types'
 import { formatBps, formatOsType, formatTime, formatUptime, parseMarkdown, markdownSx, parseNodeId, parseVmId, cpuPct, pct, buildSeriesFromRrd, fetchRrd } from '../helpers'
 import { useTagColors } from '@/contexts/TagColorContext'
+import { useTenant } from '@/contexts/TenantContext'
 import { AreaPctChart, AreaBpsChart2 } from '../components/RrdCharts'
 import InventorySummary from '../components/InventorySummary'
 import { SaveIcon, AddIcon, CloseIcon } from '../components/IconWrappers'
+import VdcQuotaBanner from '@/components/inventory/VdcQuotaBanner'
 
 function BufferedNumberField({
   value,
@@ -137,8 +141,60 @@ export default function VmDetailTabs(props: any) {
   const t = useTranslations()
   const locale = useLocale()
   const theme = useTheme()
+  // Replication and HA are provider-scope operations (cluster-wide resource
+  // planning, node failover policies) — hide their tabs from tenants.
+  const { isAdmin } = useRBAC()
+  // Tenant-only: live vDC quota banner on the Hardware tab so the user
+  // sees the impact of CPU/RAM tweaks before hitting Save (the server still
+  // returns 409 if the projected usage exceeds the quota; this is purely
+  // an anticipation UX). Provider has no vDC scope and the banner hides.
+  const { currentTenant, loading: tenantLoading } = useTenant()
+  const isProviderTenant = !tenantLoading && currentTenant?.id === 'default'
+  const [vdcQuota, setVdcQuota] = useState<{ maxVcpus: number | null; maxRamMb: number | null; maxStorageMb: number | null; maxVms: number | null } | null>(null)
+  const [vdcUsage, setVdcUsage] = useState<{ usedVcpus: number; usedRamMb: number; usedStorageMb: number; usedVms: number } | null>(null)
+  const [hwQuotaBlocked, setHwQuotaBlocked] = useState(false)
   const vmConnId = props.selection?.id ? parseVmId(props.selection.id).connId : undefined
   const { getColor: getTagColor } = useTagColors(vmConnId)
+
+  // Fetch vDC quota+usage for the connection that hosts this VM. Skipped
+  // for the provider (no vDC mapping → API returns nothing). Refreshed
+  // when the selection / tenant changes.
+  useEffect(() => {
+    if (!vmConnId || tenantLoading || isProviderTenant) {
+      setVdcQuota(null); setVdcUsage(null)
+      return
+    }
+    let cancelled = false
+    void (async () => {
+      try {
+        const res = await fetch('/api/v1/vdcs')
+        if (!res.ok) { if (!cancelled) { setVdcQuota(null); setVdcUsage(null) } ; return }
+        const json = await res.json()
+        const vdcs: any[] = Array.isArray(json?.data) ? json.data : []
+        const match = vdcs.find(v => v.connectionId === vmConnId || v.connection_id === vmConnId)
+        if (cancelled) return
+        if (match?.quota) {
+          setVdcQuota({
+            maxVcpus: match.quota.maxVcpus ?? null,
+            maxRamMb: match.quota.maxRamMb ?? null,
+            maxStorageMb: match.quota.maxStorageMb ?? null,
+            maxVms: match.quota.maxVms ?? null,
+          })
+          setVdcUsage({
+            usedVcpus: match.usage?.usedVcpus ?? 0,
+            usedRamMb: match.usage?.usedRamMb ?? 0,
+            usedStorageMb: match.usage?.usedStorageMb ?? 0,
+            usedVms: match.usage?.usedVms ?? 0,
+          })
+        } else {
+          setVdcQuota(null); setVdcUsage(null)
+        }
+      } catch {
+        if (!cancelled) { setVdcQuota(null); setVdcUsage(null) }
+      }
+    })()
+    return () => { cancelled = true }
+  }, [vmConnId, tenantLoading, isProviderTenant])
   const chartTooltipStyle = { backgroundColor: theme.palette.background.paper, border: `1px solid ${theme.palette.divider}`, borderRadius: 4, color: theme.palette.text.primary }
   const [cpuFlagsOpen, setCpuFlagsOpen] = useState(false)
   const [hwSections, setHwSections] = useState<Set<string>>(new Set(['cpu', 'memory', 'system', 'disks', 'network', 'other']))
@@ -149,6 +205,11 @@ export default function VmDetailTabs(props: any) {
     return next
   })
   const [expandedVmBackupGroups, setExpandedVmBackupGroups] = useState<Set<string>>(new Set())
+  // Namespace filter for the BACKUP tab. 'all' shows every namespace, otherwise
+  // limits the listing to the chosen one. Reset when a different VM is selected.
+  const [vmBackupNamespaceFilter, setVmBackupNamespaceFilter] = useState<string>('all')
+  // Per-backup restore dialog (Backup tab). Null when closed.
+  const [restoreDialog, setRestoreDialog] = useState<{ backup: any } | null>(null)
   const [bootOrderOpen, setBootOrderOpen] = useState(false)
   const [bootDevices, setBootDevices] = useState<Array<{ id: string; enabled: boolean }>>([])
   const [bootSaving, setBootSaving] = useState(false)
@@ -204,6 +265,7 @@ export default function VmDetailTabs(props: any) {
     haConfig,
     haEditing,
     haError,
+    haFailback,
     haGroup,
     haGroups,
     haLoading,
@@ -294,6 +356,7 @@ export default function VmDetailTabs(props: any) {
     setExplorerFiles,
     setExplorerSearch,
     setHaComment,
+    setHaFailback,
     setHaEditing,
     setHaGroup,
     setHaMaxRelocate,
@@ -340,6 +403,23 @@ export default function VmDetailTabs(props: any) {
 
   const { hasFeature } = useLicense()
   const changeTrackingAvailable = hasFeature(Features.CHANGE_TRACKING)
+
+  // Namespaces seen in the loaded backup snapshots, sorted alphabetically with
+  // root first. Drives the dropdown above the BACKUP list.
+  const availableBackupNamespaces = useMemo<string[]>(() => {
+    const set = new Set<string>()
+    for (const b of backups || []) set.add(b.namespace || '')
+    return Array.from(set).sort((a, b) => (a === '' ? -1 : b === '' ? 1 : a.localeCompare(b)))
+  }, [backups])
+
+  // Reset the filter to 'all' as soon as it points to a namespace that is no
+  // longer in the current backups (e.g. switching to another VM whose snapshots
+  // live in a different namespace).
+  useEffect(() => {
+    if (vmBackupNamespaceFilter !== 'all' && !availableBackupNamespaces.includes(vmBackupNamespaceFilter)) {
+      setVmBackupNamespaceFilter('all')
+    }
+  }, [availableBackupNamespaces, vmBackupNamespaceFilter])
 
   const [diskMenuAnchor, setDiskMenuAnchor] = useState<HTMLElement | null>(null)
   const [diskMenuTarget, setDiskMenuTarget] = useState<any | null>(null)
@@ -428,6 +508,7 @@ export default function VmDetailTabs(props: any) {
                   }
                 />
                 <Tab
+                  sx={!isAdmin ? { display: 'none' } : undefined}
                   label={
                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
                       <i className="ri-repeat-line" style={{ fontSize: 16 }} />
@@ -448,7 +529,7 @@ export default function VmDetailTabs(props: any) {
                 />
                 {selectedVmIsCluster && (
                   <Tab
-                    sx={data?.isTemplate ? { display: 'none' } : undefined}
+                    sx={(!isAdmin || data?.isTemplate) ? { display: 'none' } : undefined}
                     label={
                       <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
                         <i className="ri-shield-check-line" style={{ fontSize: 16 }} />
@@ -466,26 +547,11 @@ export default function VmDetailTabs(props: any) {
                   }
                 />
                 <Tab
-                  disabled={!changeTrackingAvailable}
+                  sx={!changeTrackingAvailable ? { display: 'none' } : undefined}
                   label={
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, opacity: changeTrackingAvailable ? 1 : 0.4 }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
                       <i className="ri-git-commit-line" style={{ fontSize: 16 }} />
                       {t('inventory.tabChangeTracking')}
-                      {!changeTrackingAvailable && (
-                        <Chip
-                          size="small"
-                          label="Enterprise"
-                          sx={{
-                            height: 18,
-                            fontSize: '0.6rem',
-                            fontWeight: 600,
-                            bgcolor: 'primary.main',
-                            color: 'primary.contrastText',
-                            ml: 0.5,
-                            '& .MuiChip-label': { px: 0.75 }
-                          }}
-                        />
-                      )}
                     </Box>
                   }
                 />
@@ -754,6 +820,32 @@ export default function VmDetailTabs(props: any) {
                     </Box>
                   ) : (
                     <Stack spacing={1}>
+                      {/* ── vDC quota banner (tenant only) ──
+                          Live preview of CPU/RAM deltas vs the vDC quota.
+                          Only the *delta* relative to the current config is
+                          billed against the quota — decreases come out as 0.
+                          Disk delta is intentionally omitted: existing disks
+                          are already counted in `usedStorageMb`, and add/resize
+                          go through dedicated routes that have their own
+                          server-side check. */}
+                      {vdcQuota && vdcUsage && (() => {
+                        const currentVcpus = ((data?.cpuInfo?.cores ?? cpuCores) as number) * ((data?.cpuInfo?.sockets ?? cpuSockets) as number)
+                        const newVcpus = (cpuCores ?? 1) * (cpuSockets ?? 1)
+                        const vcpusDelta = Math.max(0, newVcpus - currentVcpus)
+                        const currentRamMb = (data?.memoryInfo?.memory ?? memory) as number
+                        const newRamMb = (memory ?? currentRamMb) as number
+                        const ramDelta = Math.max(0, newRamMb - currentRamMb)
+                        return (
+                          <VdcQuotaBanner
+                            quota={vdcQuota}
+                            usage={vdcUsage}
+                            requested={{ vcpus: vcpusDelta, ramMb: ramDelta, storageMb: 0, vms: 0 }}
+                            onStateChange={({ blocked }) => {
+                              if (blocked !== hwQuotaBlocked) setHwQuotaBlocked(blocked)
+                            }}
+                          />
+                        )
+                      })()}
                       {/* ── Pending changes revert button (full width) ── */}
                       {(() => {
                         // Use the raw pending keys from PVE's config.pending, which
@@ -1144,7 +1236,7 @@ export default function VmDetailTabs(props: any) {
                           <Button
                             variant="contained"
                             fullWidth
-                            disabled={savingCpu || !cpuModified}
+                            disabled={savingCpu || !cpuModified || hwQuotaBlocked}
                             onClick={saveCpuConfig}
                             startIcon={savingCpu ? <CircularProgress size={16} /> : <SaveIcon />}
                           >
@@ -1350,7 +1442,7 @@ export default function VmDetailTabs(props: any) {
                           <Button
                             variant="contained"
                             fullWidth
-                            disabled={savingMemory || !memoryModified}
+                            disabled={savingMemory || !memoryModified || hwQuotaBlocked}
                             onClick={saveMemoryConfig}
                             startIcon={savingMemory ? <CircularProgress size={16} /> : <SaveIcon />}
                           >
@@ -1636,13 +1728,21 @@ export default function VmDetailTabs(props: any) {
                                         model: net.model,
                                         bridge: net.bridge,
                                         mac: net.macaddr,
+                                        macaddr: net.macaddr,
                                         vlan: net.tag,
                                         firewall: net.firewall,
                                         linkDown: net.linkDown,
                                         rate: net.rate,
                                         mtu: net.mtu,
-                                      queues: net.queues
-                                    })
+                                        queues: net.queues,
+                                        // LXC-only — pre-populate when opening on a container
+                                        name: net.name,
+                                        ip: net.ip,
+                                        gw: net.gw,
+                                        ip6: net.ip6,
+                                        gw6: net.gw6,
+                                        hostmanaged: net.hostmanaged,
+                                      })
                                     setEditNetworkDialogOpen(true)
                                   }}
                                 >
@@ -1655,7 +1755,7 @@ export default function VmDetailTabs(props: any) {
                                         <Typography variant="body2" fontWeight={600} sx={{ opacity: net.linkDown ? 0.6 : 1 }}>
                                           {net.id}
                                         </Typography>
-                                        <Chip label={net.model} size="small" sx={{ height: 20, fontSize: 11 }} />
+                                        <Chip label={net.model || (net.name ? 'veth' : '—')} size="small" sx={{ height: 20, fontSize: 11 }} />
                                         {net.linkDown && (
                                           <Chip
                                             icon={<i className="ri-link-unlink" style={{ fontSize: 12 }} />}
@@ -2624,35 +2724,54 @@ return (
                 <Box>
                   {/* Header avec bouton de création */}
                   {!selectedBackup && (
-                    <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
-                      <Typography variant="h6" sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                    <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2, gap: 2 }}>
+                      <Typography variant="h6" sx={{ display: 'flex', alignItems: 'center', gap: 1, flexShrink: 0 }}>
                         <i className="ri-hard-drive-2-line" style={{ fontSize: 20 }} />
                         {t('inventory.tabs.backups')}
                       </Typography>
-                      <Button
-                        variant="contained"
-                        size="small"
-                        startIcon={<AddIcon />}
-                        onClick={() => {
-                          // Charger les storages de backup disponibles
-                          if (selection?.type === 'vm') {
-                            const { connId, node } = parseVmId(selection.id)
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexShrink: 0 }}>
+                        {availableBackupNamespaces.length > 1 && (
+                          <FormControl size="small" sx={{ minWidth: 200 }}>
+                            <InputLabel>Namespace</InputLabel>
+                            <Select
+                              value={vmBackupNamespaceFilter}
+                              label="Namespace"
+                              onChange={e => setVmBackupNamespaceFilter(e.target.value)}
+                            >
+                              <MenuItem value="all">{t('backups.allNamespaces')}</MenuItem>
+                              {availableBackupNamespaces.map(ns => (
+                                <MenuItem key={ns || '__root__'} value={ns}>
+                                  {ns || t('backups.rootNamespace')}
+                                </MenuItem>
+                              ))}
+                            </Select>
+                          </FormControl>
+                        )}
+                        <Button
+                          variant="contained"
+                          size="small"
+                          startIcon={<AddIcon />}
+                          onClick={() => {
+                            // Charger les storages de backup disponibles
+                            if (selection?.type === 'vm') {
+                              const { connId, node } = parseVmId(selection.id)
 
-                            fetch(`/api/v1/connections/${encodeURIComponent(connId)}/nodes/${encodeURIComponent(node)}/storages?content=backup`)
-                              .then(res => res.json())
-                              .then(json => setBackupStorages(json.data || []))
-                              .catch(() => setBackupStorages([]))
-                          }
+                              fetch(`/api/v1/connections/${encodeURIComponent(connId)}/nodes/${encodeURIComponent(node)}/storages?content=backup`)
+                                .then(res => res.json())
+                                .then(json => setBackupStorages(json.data || []))
+                                .catch(() => setBackupStorages([]))
+                            }
 
-                          setBackupStorage('')
-                          setBackupMode('snapshot')
-                          setBackupCompress('zstd')
-                          setBackupNote('')
-                          setCreateBackupDialogOpen(true)
-                        }}
-                      >
-                        {t('inventory.newBackup')}
-                      </Button>
+                            setBackupStorage('')
+                            setBackupMode('snapshot')
+                            setBackupCompress('zstd')
+                            setBackupNote('')
+                            setCreateBackupDialogOpen(true)
+                          }}
+                        >
+                          {t('inventory.newBackup')}
+                        </Button>
+                      </Box>
                     </Box>
                   )}
                   
@@ -2708,9 +2827,23 @@ return (
                       )
                     }
 
+                    // Apply the namespace filter before grouping so the rest of
+                    // the UI (counts, totals) stays consistent with what is shown.
+                    const visibleBackups = vmBackupNamespaceFilter === 'all'
+                      ? backups
+                      : backups.filter((b: any) => (b.namespace || '') === vmBackupNamespaceFilter)
+
+                    if (visibleBackups.length === 0) {
+                      return (
+                        <Alert severity="info" sx={{ mt: 2 }}>
+                          {t('common.noData')}
+                        </Alert>
+                      )
+                    }
+
                     // Group by pbsName/datastore
                     const groupMap = new Map<string, any[]>()
-                    for (const backup of backups) {
+                    for (const backup of visibleBackups) {
                       const groupKey = `${backup.pbsName || 'PBS'}/${backup.datastore || 'default'}`
                       if (!groupMap.has(groupKey)) groupMap.set(groupKey, [])
                       groupMap.get(groupKey)!.push(backup)
@@ -2806,7 +2939,7 @@ return (
                                         key={backup.id || idx}
                                         sx={{
                                           display: 'grid',
-                                          gridTemplateColumns: '1fr 90px 70px 40px',
+                                          gridTemplateColumns: '1fr 90px 70px 40px 32px',
                                           gap: 1, px: 2, pl: 5.5, py: 0.25,
                                           borderBottom: idx < groupBackups.length - 1 ? '1px solid' : 'none',
                                           borderColor: 'divider',
@@ -2845,6 +2978,17 @@ return (
                                         </Box>
                                         <Box sx={{ display: 'flex', justifyContent: 'center' }}>
                                           <i className="ri-arrow-right-s-line" style={{ fontSize: 16, opacity: 0.4 }} />
+                                        </Box>
+                                        <Box sx={{ display: 'flex', justifyContent: 'center' }}>
+                                          <MuiTooltip title={t('inventory.pbsRestoreVm') ?? 'Restore'}>
+                                            <IconButton
+                                              size="small"
+                                              sx={{ p: 0.25 }}
+                                              onClick={(ev) => { ev.stopPropagation(); setRestoreDialog({ backup }) }}
+                                            >
+                                              <i className="ri-history-line" style={{ fontSize: 14 }} />
+                                            </IconButton>
+                                          </MuiTooltip>
                                         </Box>
                                       </Box>
                                     ))}
@@ -4185,17 +4329,29 @@ return (
               )}
 
               {/* ==================== ONGLET 9 - HA (seulement pour les clusters) ==================== */}
-              {detailTab === 9 && selectedVmIsCluster && (
+              {detailTab === 9 && selectedVmIsCluster && (() => {
+                const haStateColor = (s?: string): 'success' | 'warning' | 'error' | 'default' => {
+                  switch (s) {
+                    case 'started':
+                    case 'enabled': return 'success'
+                    case 'stopped': return 'warning'
+                    case 'disabled': return 'error'
+                    default: return 'default'
+                  }
+                }
+                const failbackOn = haConfig && Number(haConfig.failback ?? 1) === 1
+
+                return (
                 <Box sx={{ py: 2 }}>
                   <Card variant="outlined" sx={{ borderRadius: 2 }}>
                     <CardContent>
                       <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2 }}>
                         <Typography variant="h6" sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                          <i className="ri-shield-check-line" style={{ fontSize: 20 }} />{' '}
+                          <i className="ri-shield-check-line" style={{ fontSize: 20 }} />
                           High Availability (HA)
                         </Typography>
-                        <Box sx={{ display: 'flex', gap: 1 }}>
-                          {haConfig && !haEditing && (
+                        {haConfig && !haEditing && (
+                          <Box sx={{ display: 'flex', gap: 1 }}>
                             <Button
                               size="small"
                               variant="outlined"
@@ -4206,18 +4362,16 @@ return (
                             >
                               {t('audit.actions.disable')}
                             </Button>
-                          )}
-                          {!haEditing && (
                             <Button
                               size="small"
-                              variant="outlined"
+                              variant="contained"
                               startIcon={<i className="ri-edit-line" />}
                               onClick={() => setHaEditing(true)}
                             >
-                              {haConfig ? t('common.edit') : t('common.enabled')}
+                              {t('common.edit')}
                             </Button>
-                          )}
-                        </Box>
+                          </Box>
+                        )}
                       </Box>
 
                       {/* Loading */}
@@ -4232,35 +4386,18 @@ return (
                         <Alert severity="error" sx={{ mb: 2 }}>{haError}</Alert>
                       )}
 
-                      {/* Avertissement cluster */}
-                      {!haLoading && (
-                        <Alert severity="info" sx={{ mb: 2 }}>
-                          <Typography variant="body2">
-                            {t('inventory.haQuorumRecommendation')}
-                          </Typography>
-                        </Alert>
-                      )}
-
                       {/* Contenu HA */}
                       {!haLoading && !haError && (
                         <>
                           {haEditing ? (
                             <Box>
                               <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 2, mb: 2 }}>
-                                <Box>
-                                  <Typography variant="body2" fontWeight={600} sx={{ mb: 0.5 }}>
-                                    VM:
-                                  </Typography>
-                                  <Typography variant="body2" sx={{ opacity: 0.7 }}>
-                                    {selection?.type === 'vm' ? parseVmId(selection.id).vmid : ''}
-                                  </Typography>
-                                </Box>
                                 <FormControl fullWidth size="small">
-                                  <InputLabel>Group</InputLabel>
+                                  <InputLabel>{t('inventory.group')}</InputLabel>
                                   <Select
                                     value={haGroup}
                                     onChange={(e) => setHaGroup(e.target.value)}
-                                    label="Group"
+                                    label={t('inventory.group')}
                                   >
                                     <MenuItem value="">
                                       <em>{t('common.none')}</em>
@@ -4272,21 +4409,12 @@ return (
                                     ))}
                                   </Select>
                                 </FormControl>
-                                
-                                <TextField
-                                  label="Max. Restart"
-                                  type="number"
-                                  size="small"
-                                  value={haMaxRestart}
-                                  onChange={(e) => setHaMaxRestart(Number.parseInt(e.target.value) || 0)}
-                                  inputProps={{ min: 0, max: 10 }}
-                                />
                                 <FormControl fullWidth size="small">
-                                  <InputLabel>Request State</InputLabel>
+                                  <InputLabel>{t('inventory.haRequestState')}</InputLabel>
                                   <Select
                                     value={haState}
                                     onChange={(e) => setHaState(e.target.value)}
-                                    label="Request State"
+                                    label={t('inventory.haRequestState')}
                                   >
                                     <MenuItem value="started">started</MenuItem>
                                     <MenuItem value="stopped">stopped</MenuItem>
@@ -4295,26 +4423,63 @@ return (
                                     <MenuItem value="ignored">ignored</MenuItem>
                                   </Select>
                                 </FormControl>
-                                
+
                                 <TextField
-                                  label="Max. Relocate"
+                                  label={t('cluster.maxRestart')}
+                                  type="number"
+                                  size="small"
+                                  value={haMaxRestart}
+                                  onChange={(e) => setHaMaxRestart(Number.parseInt(e.target.value) || 0)}
+                                  inputProps={{ min: 0, max: 10 }}
+                                />
+                                <TextField
+                                  label={t('cluster.maxRelocate')}
                                   type="number"
                                   size="small"
                                   value={haMaxRelocate}
                                   onChange={(e) => setHaMaxRelocate(Number.parseInt(e.target.value) || 0)}
                                   inputProps={{ min: 0, max: 10 }}
                                 />
-                                <Box />
-                                
+
+                                <Box
+                                  sx={{
+                                    gridColumn: '1 / -1',
+                                    border: '1px solid',
+                                    borderColor: 'divider',
+                                    borderRadius: 1,
+                                    px: 2,
+                                    py: 1,
+                                  }}
+                                >
+                                  <FormControlLabel
+                                    control={
+                                      <Switch
+                                        checked={haFailback}
+                                        onChange={(e) => setHaFailback(e.target.checked)}
+                                        disabled={haSaving}
+                                      />
+                                    }
+                                    label={
+                                      <Box>
+                                        <Typography variant="body2" fontWeight={600}>{t('inventory.haFailback')}</Typography>
+                                        <Typography variant="caption" sx={{ opacity: 0.7 }}>
+                                          {t('inventory.haFailbackHelp')}
+                                        </Typography>
+                                      </Box>
+                                    }
+                                    sx={{ m: 0, alignItems: 'center' }}
+                                  />
+                                </Box>
+
                                 <TextField
-                                  label="Comment"
+                                  label={t('inventory.comment')}
                                   size="small"
                                   value={haComment}
                                   onChange={(e) => setHaComment(e.target.value)}
                                   sx={{ gridColumn: '1 / -1' }}
                                 />
                               </Box>
-                              
+
                               <Stack direction="row" spacing={1} justifyContent="flex-end">
                                 <Button
                                   variant="outlined"
@@ -4332,7 +4497,7 @@ return (
                                   disabled={haSaving}
                                   startIcon={haSaving ? <CircularProgress size={16} /> : <SaveIcon />}
                                 >
-                                  {haSaving ? t('common.saving') : (haConfig ? t('common.save') : t('common.enabled'))}
+                                  {haSaving ? t('common.saving') : (haConfig ? t('common.save') : t('inventory.haEnable'))}
                                 </Button>
                               </Stack>
                             </Box>
@@ -4340,44 +4505,68 @@ return (
                             <Box
                               sx={{
                                 display: 'grid',
-                                gridTemplateColumns: 'repeat(2, 1fr)',
-                                gap: 2,
-                                p: 2,
-                                bgcolor: 'action.hover',
-                                borderRadius: 1,
+                                gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+                                gap: 1.5,
                               }}
                             >
-                              <Box>
-                                <Typography variant="caption" sx={{ opacity: 0.7 }}>{t('inventory.state')}</Typography>
+                              <Box sx={{ p: 1.5, border: '1px solid', borderColor: 'divider', borderRadius: 1 }}>
+                                <Typography variant="caption" sx={{ opacity: 0.7, display: 'block', mb: 0.5 }}>
+                                  {t('inventory.state')}
+                                </Typography>
+                                <Chip
+                                  label={haConfig.state || 'started'}
+                                  size="small"
+                                  color={haStateColor(haConfig.state)}
+                                />
+                              </Box>
+                              <Box sx={{ p: 1.5, border: '1px solid', borderColor: 'divider', borderRadius: 1 }}>
+                                <Typography variant="caption" sx={{ opacity: 0.7, display: 'block', mb: 0.5 }}>
+                                  {t('inventory.group')}
+                                </Typography>
                                 <Typography variant="body2" fontWeight={600}>
-                                  <Chip 
-                                    label={haConfig.state || 'started'} 
-                                    size="small" 
-                                    color={haConfig.state === 'started' || haConfig.state === 'enabled' ? 'success' : 'default'}
-                                  />
+                                  {haConfig.group || <span style={{ opacity: 0.5, fontWeight: 400 }}>{t('common.none')}</span>}
                                 </Typography>
                               </Box>
-                              <Box>
-                                <Typography variant="caption" sx={{ opacity: 0.7 }}>{t('inventory.group')}</Typography>
-                                <Typography variant="body2" fontWeight={600}>
-                                  {haConfig.group || <span style={{ opacity: 0.5 }}>{t('common.none')}</span>}
+                              <Box sx={{ p: 1.5, border: '1px solid', borderColor: 'divider', borderRadius: 1 }}>
+                                <Typography variant="caption" sx={{ opacity: 0.7, display: 'block', mb: 0.5 }}>
+                                  {t('cluster.maxRestart')}
                                 </Typography>
-                              </Box>
-                              <Box>
-                                <Typography variant="caption" sx={{ opacity: 0.7 }}>Max Restart</Typography>
                                 <Typography variant="body2" fontWeight={600}>
                                   {haConfig.max_restart ?? 1}
                                 </Typography>
                               </Box>
-                              <Box>
-                                <Typography variant="caption" sx={{ opacity: 0.7 }}>Max Relocate</Typography>
+                              <Box sx={{ p: 1.5, border: '1px solid', borderColor: 'divider', borderRadius: 1 }}>
+                                <Typography variant="caption" sx={{ opacity: 0.7, display: 'block', mb: 0.5 }}>
+                                  {t('cluster.maxRelocate')}
+                                </Typography>
                                 <Typography variant="body2" fontWeight={600}>
                                   {haConfig.max_relocate ?? 1}
                                 </Typography>
                               </Box>
+                              {haConfig.failback !== undefined && (
+                                <Box sx={{ gridColumn: '1 / -1', p: 1.5, border: '1px solid', borderColor: 'divider', borderRadius: 1, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                  <Box>
+                                    <Typography variant="body2" fontWeight={600}>{t('inventory.haFailback')}</Typography>
+                                    <Typography variant="caption" sx={{ opacity: 0.7 }}>
+                                      {t('inventory.haFailbackHelp')}
+                                    </Typography>
+                                  </Box>
+                                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
+                                    <i
+                                      className={failbackOn ? 'ri-checkbox-circle-fill' : 'ri-close-circle-fill'}
+                                      style={{ fontSize: 18, color: failbackOn ? 'var(--mui-palette-success-main)' : 'var(--mui-palette-text-disabled)' }}
+                                    />
+                                    <Typography variant="body2" fontWeight={600}>
+                                      {failbackOn ? t('common.enabled') : t('common.disabled')}
+                                    </Typography>
+                                  </Box>
+                                </Box>
+                              )}
                               {haConfig.comment && (
-                                <Box sx={{ gridColumn: '1 / -1' }}>
-                                  <Typography variant="caption" sx={{ opacity: 0.7 }}>{t('inventoryPage.comment')}</Typography>
+                                <Box sx={{ gridColumn: '1 / -1', p: 1.5, border: '1px solid', borderColor: 'divider', borderRadius: 1 }}>
+                                  <Typography variant="caption" sx={{ opacity: 0.7, display: 'block', mb: 0.5 }}>
+                                    {t('inventory.comment')}
+                                  </Typography>
                                   <Typography variant="body2">
                                     {haConfig.comment}
                                   </Typography>
@@ -4387,19 +4576,29 @@ return (
                           ) : (
                             <Box
                               sx={{
-                                p: 3,
-                                bgcolor: 'action.hover',
+                                p: 4,
+                                border: '1px dashed',
+                                borderColor: 'divider',
                                 borderRadius: 1,
                                 textAlign: 'center',
                               }}
                             >
-                              <i className="ri-shield-cross-line" style={{ fontSize: 48, opacity: 0.3 }} />
-                              <Typography variant="body2" sx={{ opacity: 0.5, mt: 1 }}>
+                              <i className="ri-shield-cross-line" style={{ fontSize: 56, opacity: 0.3 }} />
+                              <Typography variant="subtitle1" fontWeight={600} sx={{ mt: 1.5 }}>
                                 {t('inventory.haNotEnabled')}
                               </Typography>
-                              <Typography variant="caption" sx={{ opacity: 0.4 }}>
-                                {t('common.noData')}
+                              <Typography variant="body2" sx={{ opacity: 0.7, mt: 0.5, maxWidth: 480, mx: 'auto' }}>
+                                {t('inventory.haEnableDescription')}
                               </Typography>
+                              <Button
+                                variant="contained"
+                                size="small"
+                                startIcon={<i className="ri-shield-check-line" />}
+                                onClick={() => setHaEditing(true)}
+                                sx={{ mt: 2 }}
+                              >
+                                {t('inventory.haEnable')}
+                              </Button>
                             </Box>
                           )}
                         </>
@@ -4407,7 +4606,8 @@ return (
                     </CardContent>
                   </Card>
                 </Box>
-              )}
+                )
+              })()}
 
               {/* ==================== ONGLET FIREWALL (10 si cluster, 9 sinon) ==================== */}
               {((selectedVmIsCluster && detailTab === 10) || (!selectedVmIsCluster && detailTab === 9)) && selection?.type === 'vm' && (
@@ -4533,6 +4733,20 @@ return (
           </Button>
         </DialogActions>
       </Dialog>
+      {restoreDialog && selection?.type === 'vm' && (() => {
+        const { connId, node, type, vmid } = parseVmId(selection.id)
+        return (
+          <RestoreVmDialog
+            open
+            onClose={() => setRestoreDialog(null)}
+            connectionId={connId}
+            node={node}
+            type={(type === 'lxc' ? 'lxc' : 'qemu')}
+            backup={restoreDialog.backup}
+            sourceVmid={Number(vmid)}
+          />
+        )
+      })()}
     </>
   )
 }

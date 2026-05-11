@@ -6,7 +6,7 @@ import { getServerSession } from "next-auth"
 
 import { authOptions } from "@/lib/auth/config"
 import { demoResponse } from "@/lib/demo/demo-api"
-import { getDb } from "@/lib/db/sqlite"
+import { prisma } from "@/lib/db/prisma"
 
 // GET /api/v1/rbac/permissions - Liste toutes les permissions disponibles
 export async function GET(req: NextRequest) {
@@ -20,27 +20,29 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "Non autorisé" }, { status: 401 })
     }
 
-    const db = getDb()
-    
     // Récupérer toutes les permissions groupées par catégorie
-    const permissions = db.prepare(`
-      SELECT id, name, category, description, is_dangerous
-      FROM rbac_permissions
-      ORDER BY category, name
-    `).all() as any[]
+    const rows = await prisma.rbacPermission.findMany({
+      select: { id: true, name: true, category: true, description: true, isDangerous: true },
+      orderBy: [{ category: "asc" }, { name: "asc" }],
+    })
+
+    // Préserver la forme snake_case attendue par le frontend
+    const permissions = rows.map(p => ({
+      id: p.id,
+      name: p.name,
+      category: p.category,
+      description: p.description,
+      is_dangerous: p.isDangerous,
+    }))
 
     // Grouper par catégorie
     const byCategory = permissions.reduce((acc, perm) => {
       if (!acc[perm.category]) {
         acc[perm.category] = []
       }
+      acc[perm.category].push(perm)
 
-      acc[perm.category].push({
-        ...perm,
-        is_dangerous: perm.is_dangerous === 1
-      })
-      
-return acc
+      return acc
     }, {} as Record<string, any[]>)
 
     const categories = Object.keys(byCategory).map(cat => ({
@@ -57,7 +59,7 @@ return acc
 
   } catch (error: any) {
     console.error("GET /api/v1/rbac/permissions error:", error)
-    
+
 return NextResponse.json(
       { error: error.message || "Erreur serveur" },
       { status: 500 }

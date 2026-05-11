@@ -3,7 +3,10 @@ import { NextResponse } from 'next/server'
 import { pveFetch } from '@/lib/proxmox/client'
 import { getConnectionById } from '@/lib/connections/getConnection'
 import { getSessionPrisma } from "@/lib/tenant"
+import { prisma as globalPrisma } from "@/lib/db/prisma"
 import { checkPermission, PERMISSIONS } from '@/lib/rbac'
+import { getVdcVmidsByConnection } from "@/lib/alerts/vdcVmids"
+import { extractTaskVmid } from "@/lib/tasks/scope"
 
 export const runtime = 'nodejs'
 
@@ -57,18 +60,34 @@ return 'info'
 
 export async function GET(req: Request) {
   try {
-    const prisma = await getSessionPrisma()
-    const permError = await checkPermission(PERMISSIONS.EVENTS_VIEW)
+    const sessionPrisma = await getSessionPrisma()
+    // connection.view baseline — tenants get a scoped feed filtered by their
+    // vDC's nodes below. Super admins (no scope) see everything.
+    const permError = await checkPermission(PERMISSIONS.CONNECTION_VIEW)
     if (permError) return permError
+
+    const { getCurrentTenantId } = await import('@/lib/tenant')
+    const { getVdcScope } = await import('@/lib/vdc/scope')
+    const tenantId = await getCurrentTenantId()
+    const vdcScope = await getVdcScope(tenantId)
+    // Pool-level scope (shared-node MSP clusters need this on top of the
+    // node filter, which collapses to a no-op when every vDC owns every
+    // node).
+    const vdcVmids = vdcScope ? await getVdcVmidsByConnection(tenantId) : null
 
     const { searchParams } = new URL(req.url)
     const limit = Math.min(Number.parseInt(searchParams.get('limit') || '100'), 500)
     const source = searchParams.get('source') || 'all' // 'tasks', 'logs', 'all'
 
-    // Récupérer uniquement les connexions PVE (pas PBS)
-    const connections = await prisma.connection.findMany({
-      where: { type: 'pve' }
-    })
+    // For vDC tenants, the PVE connections their vDC consumes are owned by a
+    // different tenant (the provider) so the session-scoped client can't see
+    // them. Use the global client + an explicit id whitelist from the scope,
+    // mirroring /api/v1/guests/{vmid}/backups. Without this fix the tenant
+    // gets an empty connections list and zero tasks in the taskbar.
+    const connPrisma = vdcScope ? globalPrisma : sessionPrisma
+    const connWhere: any = { type: 'pve' }
+    if (vdcScope) connWhere.id = { in: [...vdcScope.connectionIds] }
+    const connections = await connPrisma.connection.findMany({ where: connWhere })
     
     if (connections.length === 0) {
       return NextResponse.json({ data: [] })
@@ -133,6 +152,25 @@ export async function GET(req: Request) {
               }
             } catch {}
 
+            // Tenant vDC scope: drop tasks that ran on a node outside the
+            // tenant's authorised set. Super admin keeps the full list.
+            const allowedNodes = vdcScope?.nodesByConnection.get(conn.id)
+            if (allowedNodes) {
+              tasks = tasks.filter(t => !t.node || allowedNodes.has(t.node))
+            }
+            // Pool-membership filter: on a shared-node cluster the node
+            // filter above is a no-op, so apply vmid → vDC pool isolation.
+            // VM tasks must target a tenant vmid; non-VM tasks (cluster /
+            // node level, e.g. ceph, package updates) are provider-only.
+            const allowedVmids = vdcVmids?.get(conn.id)
+            if (allowedVmids) {
+              tasks = tasks.filter(t => {
+                const vmid = extractTaskVmid(t.id)
+                if (!vmid) return false
+                return allowedVmids.has(vmid)
+              })
+            }
+
             // Traiter les tâches - trier par date décroissante d'abord
             tasks.sort((a, b) => (b.starttime || 0) - (a.starttime || 0))
             const limitedTasks = tasks.slice(0, limit)
@@ -167,8 +205,10 @@ export async function GET(req: Request) {
             }
           }
 
-          // Récupérer les logs
-          if (source === 'all' || source === 'logs') {
+          // Récupérer les logs (provider-only — they are cluster syslog
+          // entries with no vmid scope, leaking them into vDC tenants
+          // would surface neighbour activity).
+          if ((source === 'all' || source === 'logs') && !vdcScope) {
             let logs: ProxmoxClusterLog[] = []
             
             // Essayer d'abord /cluster/log (pour les clusters)
@@ -184,6 +224,12 @@ export async function GET(req: Request) {
             } catch {
               // Pour les standalone, pas de logs cluster disponibles
               // On pourrait ajouter /nodes/{node}/syslog mais c'est très verbeux
+            }
+
+            // Same tenant scope filter for cluster logs.
+            const allowedNodesLogs = vdcScope?.nodesByConnection.get(conn.id)
+            if (allowedNodesLogs) {
+              logs = logs.filter(l => !l.node || allowedNodesLogs.has(l.node))
             }
 
             for (const log of logs) {

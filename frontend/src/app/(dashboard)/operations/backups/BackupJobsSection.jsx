@@ -52,18 +52,18 @@ export default function BackupJobsSection({ pveConnections = [] }) {
   const [vms, setVms] = useState([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
-  
+
   // Dialog
   const [dialogOpen, setDialogOpen] = useState(false)
   const [dialogMode, setDialogMode] = useState('create') // 'create' | 'edit'
   const [editingJob, setEditingJob] = useState(null)
   const [saving, setSaving] = useState(false)
-  
+
   // Dialog de confirmation de suppression
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
   const [jobToDelete, setJobToDelete] = useState(null)
   const [deleting, setDeleting] = useState(false)
-  
+
   // Form state
   const [formData, setFormData] = useState({
     enabled: true,
@@ -85,14 +85,14 @@ export default function BackupJobsSection({ pveConnections = [] }) {
   // Charger les backup jobs quand on sélectionne une connexion
   const loadJobs = useCallback(async () => {
     if (!selectedConnection) return
-    
+
     setLoading(true)
     setError(null)
-    
+
     try {
       const res = await fetch(`/api/v1/connections/${encodeURIComponent(selectedConnection)}/backup-jobs`)
       const json = await res.json()
-      
+
       if (json.error) {
         setError(json.error)
       } else {
@@ -110,11 +110,11 @@ export default function BackupJobsSection({ pveConnections = [] }) {
   // Charger les VMs pour la sélection
   const loadVms = useCallback(async () => {
     if (!selectedConnection) return
-    
+
     try {
       const res = await fetch(`/api/v1/connections/${encodeURIComponent(selectedConnection)}/resources?type=vm`)
       const json = await res.json()
-      
+
       if (!json.error) {
         // Combiner VMs et CTs
         const allVms = (json.data || []).filter(r => r.type === 'qemu' || r.type === 'lxc')
@@ -195,20 +195,20 @@ export default function BackupJobsSection({ pveConnections = [] }) {
   // Sauvegarder
   const handleSave = async () => {
     setSaving(true)
-    
+
     try {
       const url = dialogMode === 'create'
         ? `/api/v1/connections/${encodeURIComponent(selectedConnection)}/backup-jobs`
         : `/api/v1/connections/${encodeURIComponent(selectedConnection)}/backup-jobs/${encodeURIComponent(editingJob.id)}`
-      
+
       const res = await fetch(url, {
         method: dialogMode === 'create' ? 'POST' : 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(formData)
       })
-      
+
       const json = await res.json()
-      
+
       if (json.error) {
         setError(json.error)
       } else {
@@ -231,17 +231,17 @@ export default function BackupJobsSection({ pveConnections = [] }) {
   // Confirmer la suppression
   const handleDeleteConfirm = async () => {
     if (!jobToDelete) return
-    
+
     setDeleting(true)
-    
+
     try {
       const res = await fetch(
         `/api/v1/connections/${encodeURIComponent(selectedConnection)}/backup-jobs/${encodeURIComponent(jobToDelete.id)}`,
         { method: 'DELETE' }
       )
-      
+
       const json = await res.json()
-      
+
       if (json.error) {
         setError(json.error)
       } else {
@@ -267,9 +267,9 @@ export default function BackupJobsSection({ pveConnections = [] }) {
           body: JSON.stringify({ enabled: !job.enabled })
         }
       )
-      
+
       const json = await res.json()
-      
+
       if (!json.error) {
         loadJobs()
       }
@@ -285,9 +285,9 @@ export default function BackupJobsSection({ pveConnections = [] }) {
         `/api/v1/connections/${encodeURIComponent(selectedConnection)}/backup-jobs/${encodeURIComponent(job.id)}?action=run`,
         { method: 'POST' }
       )
-      
+
       const json = await res.json()
-      
+
       if (json.error) {
         setError(json.error)
       } else {
@@ -525,7 +525,7 @@ export default function BackupJobsSection({ pveConnections = [] }) {
                   ))}
                 </Select>
               </FormControl>
-              
+
               <TextField
                 size="small"
                 label={t('backups.namespace')}
@@ -543,7 +543,7 @@ export default function BackupJobsSection({ pveConnections = [] }) {
                 placeholder="00:00 ou */6:00"
                 helperText={t('backups.scheduleHelp')}
               />
-              
+
               <FormControl fullWidth size="small">
                 <InputLabel>{t('backups.node')}</InputLabel>
                 <Select

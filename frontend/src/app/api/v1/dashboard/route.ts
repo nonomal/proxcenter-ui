@@ -3,6 +3,7 @@ import { NextResponse } from "next/server"
 import { getServerSession } from "next-auth"
 
 import { getSessionPrisma, getCurrentTenantId } from "@/lib/tenant"
+import { getVdcScope } from '@/lib/vdc/scope'
 import { pveFetch } from "@/lib/proxmox/client"
 import { pbsFetch } from "@/lib/proxmox/pbs-client"
 import { getConnectionById, getPbsConnectionById } from "@/lib/connections/getConnection"
@@ -12,7 +13,7 @@ import { authOptions } from "@/lib/auth/config"
 import { filterVmsByPermission, filterNodesByPermission } from "@/lib/rbac"
 import { alertsApi } from "@/lib/orchestrator/client"
 import { demoResponse } from "@/lib/demo/demo-api"
-import { getDb } from "@/lib/db/sqlite"
+import { getSetting } from "@/lib/db/settings"
 
 export const runtime = "nodejs"
 
@@ -81,8 +82,10 @@ async function syncAlertsToDatabase(alerts: any[]) {
           }
         })
       }
-    } catch (e) {
-      // Ignorer les erreurs individuelles pour ne pas bloquer
+    } catch (e: any) {
+      // P2002: concurrent request created this row between our findUnique and create.
+      // The row exists — nothing to do on this tick; next poll will update normally.
+      if (e?.code === 'P2002') continue
       console.error('[dashboard] Alert upsert error:', e)
     }
   }
@@ -123,6 +126,9 @@ export async function GET(req: Request) {
     const userId = session.user.id
     const tenantId = (session as any).user?.tenantId || 'default'
 
+    // vDC scope: restrict dashboard to tenant's vDC resources
+    const vdcScope = await getVdcScope(tenantId)
+
     // Thresholds configurés par l'utilisateur (via Settings > Alert thresholds)
     // Stockés localement en SQLite, fonctionne sans orchestrator (Community + Enterprise).
     const thresholds = {
@@ -134,15 +140,10 @@ export async function GET(req: Request) {
       storage_critical: 90,
     }
     try {
-      const row = getDb()
-        .prepare('SELECT value FROM settings WHERE key = ? AND tenant_id = ?')
-        .get('alert_thresholds', tenantId) as { value: string } | undefined
-      if (row?.value) {
-        const stored = JSON.parse(row.value)
-        if (stored && typeof stored === 'object') {
-          for (const k of ['cpu_warning', 'cpu_critical', 'memory_warning', 'memory_critical', 'storage_warning', 'storage_critical'] as const) {
-            if (typeof stored[k] === 'number') thresholds[k] = stored[k]
-          }
+      const stored = await getSetting<any>('alert_thresholds', tenantId)
+      if (stored && typeof stored === 'object') {
+        for (const k of ['cpu_warning', 'cpu_critical', 'memory_warning', 'memory_critical', 'storage_warning', 'storage_critical'] as const) {
+          if (typeof stored[k] === 'number') thresholds[k] = stored[k]
         }
       }
     } catch {
@@ -155,8 +156,13 @@ export async function GET(req: Request) {
       select: { id: true, name: true, type: true, hasCeph: true },
     })
 
-    const pveConnections = allConnections.filter(c => c.type === 'pve')
+    let pveConnections = allConnections.filter(c => c.type === 'pve')
     const pbsConnections = allConnections.filter(c => c.type === 'pbs')
+
+    // If vDC scope is active, only fetch PVE connections that have vDCs for this tenant
+    if (vdcScope) {
+      pveConnections = pveConnections.filter(c => vdcScope.connectionIds.has(c.id))
+    }
 
     // ============================================
     // CHARGER PVE ET PBS EN PARALLÈLE
@@ -358,11 +364,36 @@ return null
     for (const data of validPve) {
       if (data.isCluster) totalClusters++
 
+      // vDC filtering: restrict nodes and guests to what the tenant's vDCs allow
+      const allowedNodes = vdcScope?.nodesByConnection.get(data.conn.id)
+      const allowedPools = vdcScope?.poolsByConnection.get(data.conn.id)
+
+      // Filter nodes by vDC scope (when scope is active, only keep allowed nodes)
+      const scopedNodes = vdcScope
+        ? data.nodes.filter((n: any) => allowedNodes?.has(n.node))
+        : data.nodes
+
+      // Filter VMs/LXCs by vDC pool membership
+      const scopedVms = vdcScope
+        ? data.vms.filter((vm: any) => {
+            const pool = vm.pool
+            if (!pool || pool === '') return false
+            return allowedPools?.has(pool) ?? false
+          })
+        : data.vms
+      const scopedLxcs = vdcScope
+        ? data.lxcs.filter((lxc: any) => {
+            const pool = lxc.pool
+            if (!pool || pool === '') return false
+            return allowedPools?.has(pool) ?? false
+          })
+        : data.lxcs
+
       // Aggregate real storage per connection
       globalStorageUsed += data.connStorageUsed || 0
       globalStorageMax += data.connStorageMax || 0
 
-      for (const node of data.nodes) {
+      for (const node of scopedNodes) {
         allNodes.push({
           connId: data.conn.id, node: node.node,
           name: node.node, connection: data.conn.name || data.conn.id, connectionId: data.conn.id,
@@ -372,12 +403,12 @@ return null
         })
       }
 
-      for (const vm of data.vms) allVms.push({ ...vm, connId: data.conn.id, connection: data.conn.name, connectionId: data.conn.id })
-      for (const lxc of data.lxcs) allLxcs.push({ ...lxc, connId: data.conn.id, connection: data.conn.name, connectionId: data.conn.id })
+      for (const vm of scopedVms) allVms.push({ ...vm, connId: data.conn.id, connection: data.conn.name, connectionId: data.conn.id })
+      for (const lxc of scopedLxcs) allLxcs.push({ ...lxc, connId: data.conn.id, connection: data.conn.name, connectionId: data.conn.id })
 
       clusterInfos.push({
-        id: data.conn.id, name: data.clusterName, isCluster: data.isCluster, nodes: data.nodes.length,
-        onlineNodes: data.nodes.filter(n => n.status === 'online').length,
+        id: data.conn.id, name: data.clusterName, isCluster: data.isCluster, nodes: scopedNodes.length,
+        onlineNodes: scopedNodes.filter((n: any) => n.status === 'online').length,
         quorum: data.quorum ? { quorate: data.quorum.quorate, votes: data.quorum.votes, expected_votes: data.quorum.expected_votes } : null,
         cephHealth: data.cephStatus?.health?.status || null,
       })
@@ -636,9 +667,9 @@ return null
     // ============================================
     // RBAC FILTERING — scope data to user's permissions
     // ============================================
-    const filteredVms = filterVmsByPermission(userId, allVms, undefined, tenantId)
-    const filteredLxcs = filterVmsByPermission(userId, allLxcs, undefined, tenantId)
-    const filteredNodes = filterNodesByPermission(userId, allNodes, undefined, tenantId)
+    const filteredVms = await filterVmsByPermission(userId, allVms, undefined, tenantId)
+    const filteredLxcs = await filterVmsByPermission(userId, allLxcs, undefined, tenantId)
+    const filteredNodes = await filterNodesByPermission(userId, allNodes, undefined, tenantId)
 
     // Recompute node-level aggregates from filtered nodes
     const fOnlineNodes = filteredNodes.filter((n: any) => n.status === 'online').length

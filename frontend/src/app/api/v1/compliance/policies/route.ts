@@ -20,7 +20,7 @@ export async function GET(req: Request) {
     if (denied) return denied
 
     const tenantId = await getCurrentTenantId()
-    const policies = getSecurityPolicies(tenantId)
+    const policies = await getSecurityPolicies(tenantId)
     return NextResponse.json({ data: policies })
   } catch (e: any) {
     console.error('Error fetching security policies:', e)
@@ -43,7 +43,7 @@ export async function PUT(req: Request) {
 
     const body = await req.json()
     const tenantId = await getCurrentTenantId()
-    const updated = updateSecurityPolicies(body, session.user.id, tenantId)
+    const updated = await updateSecurityPolicies(body, session.user.id, tenantId)
 
     await audit({
       action: 'update',

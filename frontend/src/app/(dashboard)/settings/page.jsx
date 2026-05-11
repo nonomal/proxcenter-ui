@@ -5,6 +5,8 @@ import { useEffect, useMemo, useState } from 'react'
 import dynamic from 'next/dynamic'
 import { useSearchParams, useRouter } from 'next/navigation'
 
+import { useSession } from 'next-auth/react'
+
 import { useTranslations } from 'next-intl'
 
 import {
@@ -42,6 +44,8 @@ import { usePageTitle } from '@/contexts/PageTitleContext'
 import { useLicense, Features } from '@/contexts/LicenseContext'
 import { useRBAC } from '@/contexts/RBACContext'
 import EmptyState from '@/components/EmptyState'
+import { CountryFlag } from '@/components/ui/CountryFlag'
+import { findCountry } from '@/lib/utils/countries'
 
 import { useConnectionsManagement } from '@/hooks/useConnectionsManagement'
 import { useLicenseManagement } from '@/hooks/useLicenseManagement'
@@ -78,6 +82,11 @@ const WhiteLabelTab = dynamic(() => import('@/components/settings/WhiteLabelTab'
   loading: () => <Box sx={{ p: 3, textAlign: 'center' }}><LinearProgress /></Box>
 })
 
+const VdcTab = dynamic(() => import('@/components/settings/VdcTab'), {
+  ssr: false,
+  loading: () => <Box sx={{ p: 3, textAlign: 'center' }}><LinearProgress /></Box>
+})
+
 const TenantsTab = dynamic(() => import('@/components/settings/TenantsTab'), {
   ssr: false,
   loading: () => <Box sx={{ p: 3, textAlign: 'center' }}><LinearProgress /></Box>
@@ -91,6 +100,11 @@ const AlertThresholdsTab = dynamic(() => import('@/components/settings/AlertThre
 const SshCommandsTab = dynamic(() => import('@/components/settings/SshCommandsTab'), {
   ssr: false,
   loading: () => <Box sx={{ p: 3, textAlign: 'center' }}><LinearProgress /></Box>
+})
+
+const DatacentersSection = dynamic(() => import('@/components/settings/green/DatacentersSection'), {
+  ssr: false,
+  loading: () => <Box sx={{ p: 2, textAlign: 'center' }}><LinearProgress /></Box>
 })
 
 /* ==================== Utility ==================== */
@@ -366,6 +380,7 @@ function ConnectionsTab() {
       latitude: formData.latitude !== '' && !Number.isNaN(Number.parseFloat(formData.latitude)) ? Number.parseFloat(formData.latitude) : null,
       longitude: formData.longitude !== '' && !Number.isNaN(Number.parseFloat(formData.longitude)) ? Number.parseFloat(formData.longitude) : null,
       locationLabel: formData.locationLabel?.trim() || null,
+      country: formData.country?.trim().toUpperCase() || null,
       // PVE/PBS: API token
       ...(!isExtHypervisor && formData.apiToken.trim() && { apiToken: formData.apiToken.trim() }),
       // VMware/XCP-ng: username + password
@@ -457,25 +472,41 @@ function ConnectionsTab() {
     }
   }
 
-  const deleteConnection = async (id, type) => {
+  // Connection delete confirmation. Native window.confirm() was leaking
+  // through here — see feedback_modals_mui rule. State holds the pending
+  // deletion target until the user clicks Delete or Cancel in the MUI
+  // dialog rendered below.
+  const [deleteConnectionDialog, setDeleteConnectionDialog] = useState(null)
+  const [deletingConnection, setDeletingConnection] = useState(false)
+
+  const deleteConnection = (id, type) => {
     const typeName = type === 'pbs' ? 'PBS' : type === 'vmware' ? 'VMware ESXi' : type === 'xcpng' ? 'XCP-ng' : type === 'nutanix' ? 'Nutanix' : type === 'hyperv' ? 'Hyper-V' : 'PVE'
-    const ok = window.confirm(t('settings.deleteConnectionConfirm', { type: typeName }))
+    setDeleteConnectionDialog({ id, type, typeName })
+  }
 
-    if (!ok) return
-    await fetchJson(`/api/v1/connections/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  const confirmDeleteConnection = async () => {
+    if (!deleteConnectionDialog) return
+    const { id, type } = deleteConnectionDialog
+    setDeletingConnection(true)
+    try {
+      await fetchJson(`/api/v1/connections/${encodeURIComponent(id)}`, { method: 'DELETE' })
 
-    if (type === 'pve') {
-      await loadPveConnections()
-    } else if (type === 'pbs') {
-      await loadPbsConnections()
-    } else if (type === 'vmware') {
-      await loadVmwareConnections()
-    } else if (type === 'xcpng') {
-      await loadXcpngConnections()
-    } else if (type === 'nutanix') {
-      await loadNutanixConnections()
-    } else if (type === 'hyperv') {
-      await loadHypervConnections()
+      if (type === 'pve') {
+        await loadPveConnections()
+      } else if (type === 'pbs') {
+        await loadPbsConnections()
+      } else if (type === 'vmware') {
+        await loadVmwareConnections()
+      } else if (type === 'xcpng') {
+        await loadXcpngConnections()
+      } else if (type === 'nutanix') {
+        await loadNutanixConnections()
+      } else if (type === 'hyperv') {
+        await loadHypervConnections()
+      }
+      setDeleteConnectionDialog(null)
+    } finally {
+      setDeletingConnection(false)
     }
   }
 
@@ -634,19 +665,31 @@ function ConnectionsTab() {
       {
         field: 'locationLabel',
         headerName: t('settings.location'),
-        width: 140,
-        renderCell: params => (
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, height: '100%' }}>
-            {params.value ? (
-              <>
-                <i className='ri-map-pin-2-line' style={{ fontSize: 14, opacity: 0.6 }} />
-                <Typography variant='body2' noWrap>{params.value}</Typography>
-              </>
-            ) : (
-              <Typography variant='caption' sx={{ opacity: 0.3 }}>—</Typography>
-            )}
-          </Box>
-        )
+        width: 180,
+        renderCell: params => {
+          const country = params.row.country
+          const country3 = findCountry(country)?.code
+          if (!params.value && !country3) {
+            return (
+              <Box sx={{ display: 'flex', alignItems: 'center', height: '100%' }}>
+                <Typography variant='caption' sx={{ opacity: 0.3 }}>—</Typography>
+              </Box>
+            )
+          }
+          return (
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, height: '100%', overflow: 'hidden' }}>
+              {country3 && <CountryFlag code={country3} size={18} />}
+              {params.value ? (
+                <>
+                  <i className='ri-map-pin-2-line' style={{ fontSize: 14, opacity: 0.6 }} />
+                  <Typography variant='body2' noWrap>{params.value}</Typography>
+                </>
+              ) : country3 ? (
+                <Typography variant='body2' sx={{ opacity: 0.7 }}>{country3}</Typography>
+              ) : null}
+            </Box>
+          )
+        },
       },
       {
         field: 'actions',
@@ -722,19 +765,31 @@ function ConnectionsTab() {
       {
         field: 'locationLabel',
         headerName: t('settings.location'),
-        width: 140,
-        renderCell: params => (
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, height: '100%' }}>
-            {params.value ? (
-              <>
-                <i className='ri-map-pin-2-line' style={{ fontSize: 14, opacity: 0.6 }} />
-                <Typography variant='body2' noWrap>{params.value}</Typography>
-              </>
-            ) : (
-              <Typography variant='caption' sx={{ opacity: 0.3 }}>—</Typography>
-            )}
-          </Box>
-        )
+        width: 180,
+        renderCell: params => {
+          const country = params.row.country
+          const country3 = findCountry(country)?.code
+          if (!params.value && !country3) {
+            return (
+              <Box sx={{ display: 'flex', alignItems: 'center', height: '100%' }}>
+                <Typography variant='caption' sx={{ opacity: 0.3 }}>—</Typography>
+              </Box>
+            )
+          }
+          return (
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, height: '100%', overflow: 'hidden' }}>
+              {country3 && <CountryFlag code={country3} size={18} />}
+              {params.value ? (
+                <>
+                  <i className='ri-map-pin-2-line' style={{ fontSize: 14, opacity: 0.6 }} />
+                  <Typography variant='body2' noWrap>{params.value}</Typography>
+                </>
+              ) : country3 ? (
+                <Typography variant='body2' sx={{ opacity: 0.7 }}>{country3}</Typography>
+              ) : null}
+            </Box>
+          )
+        },
       },
       {
         field: 'actions',
@@ -873,19 +928,31 @@ function ConnectionsTab() {
       {
         field: 'locationLabel',
         headerName: t('settings.location'),
-        width: 140,
-        renderCell: params => (
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, height: '100%' }}>
-            {params.value ? (
-              <>
-                <i className='ri-map-pin-2-line' style={{ fontSize: 14, opacity: 0.6 }} />
-                <Typography variant='body2' noWrap>{params.value}</Typography>
-              </>
-            ) : (
-              <Typography variant='caption' sx={{ opacity: 0.3 }}>—</Typography>
-            )}
-          </Box>
-        )
+        width: 180,
+        renderCell: params => {
+          const country = params.row.country
+          const country3 = findCountry(country)?.code
+          if (!params.value && !country3) {
+            return (
+              <Box sx={{ display: 'flex', alignItems: 'center', height: '100%' }}>
+                <Typography variant='caption' sx={{ opacity: 0.3 }}>—</Typography>
+              </Box>
+            )
+          }
+          return (
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, height: '100%', overflow: 'hidden' }}>
+              {country3 && <CountryFlag code={country3} size={18} />}
+              {params.value ? (
+                <>
+                  <i className='ri-map-pin-2-line' style={{ fontSize: 14, opacity: 0.6 }} />
+                  <Typography variant='body2' noWrap>{params.value}</Typography>
+                </>
+              ) : country3 ? (
+                <Typography variant='body2' sx={{ opacity: 0.7 }}>{country3}</Typography>
+              ) : null}
+            </Box>
+          )
+        },
       },
       {
         field: 'actions',
@@ -1038,6 +1105,9 @@ function ConnectionsTab() {
         <Tabs
           value={connTab}
           onChange={(_, v) => setConnTab(v)}
+          variant="scrollable"
+          scrollButtons="auto"
+          allowScrollButtonsMobile
           sx={{ '& .MuiTab-root': { minHeight: 48 } }}
         >
           <Tab
@@ -1393,6 +1463,39 @@ function ConnectionsTab() {
         initialData={editingConn}
         mode={editingConn ? 'edit' : 'create'}
       />
+
+      {/* Dialog confirmation suppression connexion — remplace l'ancien
+          window.confirm. Le titre i18n existant t('settings.deleteConnectionConfirm')
+          est interpolé avec le typeName (PVE / PBS / VMware / …). */}
+      <Dialog
+        open={!!deleteConnectionDialog}
+        onClose={() => !deletingConnection && setDeleteConnectionDialog(null)}
+        maxWidth='xs'
+        fullWidth
+      >
+        <DialogTitle sx={{ display: 'flex', alignItems: 'center', gap: 1, color: 'error.main' }}>
+          <i className='ri-delete-bin-line' style={{ fontSize: 20 }} />
+          {t('settings.deleteConnectionConfirm', { type: deleteConnectionDialog?.typeName || '' })}
+        </DialogTitle>
+        <DialogContent>
+          <Alert severity='warning' sx={{ mt: 1 }}>
+            {t('common.deleteConfirmation')}
+          </Alert>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setDeleteConnectionDialog(null)} disabled={deletingConnection}>
+            {t('common.cancel')}
+          </Button>
+          <Button
+            variant='contained'
+            color='error'
+            onClick={confirmDeleteConnection}
+            disabled={deletingConnection}
+          >
+            {deletingConnection ? t('common.loading') : t('common.delete')}
+          </Button>
+        </DialogActions>
+      </Dialog>
     </>
   )
 }
@@ -1976,18 +2079,16 @@ function AITab() {
                       label={t('settings.modelLabel')}
                       onChange={e => setSettings(s => ({ ...s, ollamaModel: e.target.value }))}
                     >
-                      {availableModels.length > 0 ? (
-                        availableModels.map(m => (
+                      {availableModels.length > 0
+                        ? availableModels.map(m => (
                           <MenuItem key={m} value={m}>{m}</MenuItem>
                         ))
-                      ) : (
-                        <>
-                          <MenuItem value='mistral:7b'>mistral:7b ({t('settings.recommended')})</MenuItem>
-                          <MenuItem value='llama3.1:8b'>llama3.1:8b</MenuItem>
-                          <MenuItem value='qwen2.5:7b'>qwen2.5:7b</MenuItem>
-                          <MenuItem value='phi3:14b'>phi3:14b</MenuItem>
-                        </>
-                      )}
+                        : [
+                          <MenuItem key='mistral:7b' value='mistral:7b'>mistral:7b ({t('settings.recommended')})</MenuItem>,
+                          <MenuItem key='llama3.1:8b' value='llama3.1:8b'>llama3.1:8b</MenuItem>,
+                          <MenuItem key='qwen2.5:7b' value='qwen2.5:7b'>qwen2.5:7b</MenuItem>,
+                          <MenuItem key='phi3:14b' value='phi3:14b'>phi3:14b</MenuItem>,
+                        ]}
                     </Select>
                   </FormControl>
 
@@ -2274,206 +2375,10 @@ function GreenTab() {
         {t('settings.greenConfigDescription')}
       </Typography>
 
-      {/* Section PUE & Énergie */}
-      <Card variant='outlined' sx={{ mb: 3 }}>
-        <CardContent>
-          <Typography variant='subtitle1' fontWeight={700} sx={{ mb: 2, display: 'flex', alignItems: 'center', gap: 1 }}>
-            <i className='ri-flashlight-line' style={{ color: '#f59e0b' }} />
-            {t('settings.datacenterEnergy')}
-          </Typography>
-
-          <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '1fr 1fr' }, gap: 3 }}>
-            <Box>
-              <TextField
-                fullWidth
-                type='number'
-                label={t('settings.pueLabel')}
-                value={settings.pue}
-                onChange={e => setSettings(s => ({ ...s, pue: Number.parseFloat(e.target.value) || 1.0 }))}
-                inputProps={{ step: 0.1, min: 1.0, max: 3.0 }}
-                helperText={t('settings.pueHelperTextFull')}
-                sx={{ mb: 2 }}
-              />
-
-              <Alert severity='info' sx={{ fontSize: '0.8rem' }}>
-                <span dangerouslySetInnerHTML={{ __html: t('settings.pueDescriptionFull') }} />
-              </Alert>
-            </Box>
-
-            <Box>
-              <TextField
-                fullWidth
-                type='number'
-                label={t('settings.electricityPriceLabel')}
-                value={settings.electricityPrice}
-                onChange={e => setSettings(s => ({ ...s, electricityPrice: Number.parseFloat(e.target.value) || 0 }))}
-                inputProps={{ step: 0.01, min: 0 }}
-                InputProps={{
-                  endAdornment: <InputAdornment position='end'>{currencySymbol}/kWh</InputAdornment>
-                }}
-                helperText={t('settings.electricityPriceHelper')}
-                sx={{ mb: 2 }}
-              />
-
-              <FormControl fullWidth>
-                <InputLabel>{t('settings.currencyLabel')}</InputLabel>
-                <Select
-                  value={settings.currency || 'EUR'}
-                  label={t('settings.currencyLabel')}
-                  onChange={e => setSettings(s => ({ ...s, currency: e.target.value }))}
-                >
-                  {currencyOptions.map(c => (
-                    <MenuItem key={c.code} value={c.code}>{c.label}</MenuItem>
-                  ))}
-                </Select>
-              </FormControl>
-            </Box>
-          </Box>
-        </CardContent>
-      </Card>
-
-      {/* Section Émissions CO₂ */}
-      <Card variant='outlined' sx={{ mb: 3 }}>
-        <CardContent>
-          <Typography variant='subtitle1' fontWeight={700} sx={{ mb: 2, display: 'flex', alignItems: 'center', gap: 1 }}>
-            <i className='ri-leaf-line' style={{ color: '#22c55e' }} />
-            {t('settings.co2Emissions')}
-          </Typography>
-
-          <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '1fr 1fr' }, gap: 3 }}>
-            <FormControl fullWidth>
-              <InputLabel>{t('settings.countryEnergyMixLabel')}</InputLabel>
-              <Select
-                value={settings.co2Country}
-                label={t('settings.countryEnergyMixLabel')}
-                onChange={e => handleCountryChange(e.target.value)}
-              >
-                {Object.entries(co2FactorsByCountry).map(([key, { label, value }]) => (
-                  <MenuItem key={key} value={key}>
-                    {label} ({value} kg CO₂/kWh)
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
-
-            {settings.co2Country === 'custom' && (
-              <TextField
-                fullWidth
-                type='number'
-                label={t('settings.customCo2FactorLabel')}
-                value={settings.co2Factor}
-                onChange={e => setSettings(s => ({ ...s, co2Factor: Number.parseFloat(e.target.value) || 0 }))}
-                inputProps={{ step: 0.001, min: 0 }}
-                InputProps={{
-                  endAdornment: <InputAdornment position='end'>kg CO₂/kWh</InputAdornment>
-                }}
-              />
-            )}
-          </Box>
-
-          <Alert severity='success' sx={{ mt: 2, fontSize: '0.8rem' }}>
-            {t('settings.co2FactorExplanationFull')}
-          </Alert>
-        </CardContent>
-      </Card>
-
-      {/* Section Spécifications Serveurs */}
-      <Card variant='outlined' sx={{ mb: 3 }}>
-        <CardContent>
-          <Typography variant='subtitle1' fontWeight={700} sx={{ mb: 2, display: 'flex', alignItems: 'center', gap: 1 }}>
-            <i className='ri-server-line' style={{ color: '#8b5cf6' }} />
-            {t('settings.serverSpecs')}
-          </Typography>
-
-          <Typography variant='body2' sx={{ opacity: 0.7, mb: 2 }}>
-            {t('settings.serverSpecsDescriptionFull')}
-          </Typography>
-
-          <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '1fr 1fr 1fr' }, gap: 2 }}>
-            <TextField
-              fullWidth
-              type='number'
-              label={t('settings.tdpPerCore')}
-              value={settings.serverSpecs?.tdpPerCore || 10}
-              onChange={e => setSettings(s => ({
-                ...s,
-                serverSpecs: { ...s.serverSpecs, tdpPerCore: Number.parseFloat(e.target.value) || 10 }
-              }))}
-              inputProps={{ step: 1, min: 1 }}
-              InputProps={{
-                endAdornment: <InputAdornment position='end'>W</InputAdornment>
-              }}
-              helperText={t('settings.tdpPerCoreHelper')}
-            />
-
-            <TextField
-              fullWidth
-              type='number'
-              label={t('settings.ramConsumptionPerGb')}
-              value={settings.serverSpecs?.wattsPerGbRam || 0.375}
-              onChange={e => setSettings(s => ({
-                ...s,
-                serverSpecs: { ...s.serverSpecs, wattsPerGbRam: Number.parseFloat(e.target.value) || 0.375 }
-              }))}
-              inputProps={{ step: 0.1, min: 0 }}
-              InputProps={{
-                endAdornment: <InputAdornment position='end'>W/GB</InputAdornment>
-              }}
-              helperText={t('settings.ramConsumptionHelper')}
-            />
-
-            <TextField
-              fullWidth
-              type='number'
-              label={t('settings.overheadPerServer')}
-              value={settings.serverSpecs?.overheadPerServer || 50}
-              onChange={e => setSettings(s => ({
-                ...s,
-                serverSpecs: { ...s.serverSpecs, overheadPerServer: Number.parseFloat(e.target.value) || 50 }
-              }))}
-              inputProps={{ step: 10, min: 0 }}
-              InputProps={{
-                endAdornment: <InputAdornment position='end'>W</InputAdornment>
-              }}
-              helperText={t('settings.overheadHelper')}
-            />
-          </Box>
-
-          <Divider sx={{ my: 2 }} />
-
-          <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '1fr 1fr' }, gap: 2 }}>
-            <TextField
-              fullWidth
-              type='number'
-              label={t('settings.avgCoresPerServer')}
-              value={settings.serverSpecs?.avgCoresPerServer || 64}
-              onChange={e => setSettings(s => ({
-                ...s,
-                serverSpecs: { ...s.serverSpecs, avgCoresPerServer: Number.parseInt(e.target.value) || 64 }
-              }))}
-              inputProps={{ step: 1, min: 1 }}
-              helperText={t('settings.avgCoresHelper')}
-            />
-
-            <FormControl fullWidth>
-              <InputLabel>{t('settings.storageTypeLabel')}</InputLabel>
-              <Select
-                value={settings.serverSpecs?.storageType || 'mixed'}
-                label={t('settings.storageTypeLabel')}
-                onChange={e => setSettings(s => ({
-                  ...s,
-                  serverSpecs: { ...s.serverSpecs, storageType: e.target.value }
-                }))}
-              >
-                <MenuItem value='hdd'>{t('settings.storageTypes.hdd')}</MenuItem>
-                <MenuItem value='ssd'>{t('settings.storageTypes.ssd')}</MenuItem>
-                <MenuItem value='nvme'>{t('settings.storageTypes.nvme')}</MenuItem>
-                <MenuItem value='mixed'>{t('settings.storageTypes.mixed')}</MenuItem>
-              </Select>
-            </FormControl>
-          </Box>
-        </CardContent>
-      </Card>
+      {/* Datacenter catalogue — energy + server-spec defaults live per-DC. */}
+      <Box sx={{ mb: 3 }}>
+        <DatacentersSection />
+      </Box>
 
       {/* Section Affichage */}
       <Card variant='outlined' sx={{ mb: 3 }}>
@@ -2580,6 +2485,9 @@ export default function SettingsPage() {
   const searchParams = useSearchParams()
   const { hasFeature, loading: licenseLoading } = useLicense()
   const { isAdmin: isSuperAdmin } = useRBAC()
+  const { data: session } = useSession()
+  const currentTenantId = session?.user?.tenantId || 'default'
+  const isProviderTenant = currentTenantId === 'default'
 
   const { setPageInfo } = usePageTitle()
 
@@ -2597,34 +2505,34 @@ export default function SettingsPage() {
     return () => setPageInfo('', '', '')
   }, [setPageInfo, t, isOnboarding])
 
-  // Check if a tab's required feature is available
-  const isTabAvailable = (tab) => {
-    if (tab.superAdminOnly && !isSuperAdmin) return false
-    if (licenseLoading) return true
-    if (!tab.requiredFeature) return true
-    return hasFeature(tab.requiredFeature)
-  }
-
-  const allTabNames = ['connections', 'appearance', 'alert-thresholds', 'notifications', 'ldap', 'oidc', 'license', 'ai', 'green', 'white-label', 'tenants', 'ssh-commands']
+  const allTabNames = ['connections', 'appearance', 'alert-thresholds', 'notifications', 'ldap', 'oidc', 'license', 'ai', 'green', 'white-label', 'vdc', 'tenants', 'ssh-commands']
 
   const allTabs = [
-    { label: t('settings.connections'), icon: 'ri-link', component: ConnectionsTab },
+    { label: t('settings.connections'), icon: 'ri-link', component: ConnectionsTab, providerOnly: true },
     { label: t('settings.appearance'), icon: 'ri-palette-line', component: AppearanceTab },
-    { label: t('settings.alertThresholds.title'), icon: 'ri-alarm-warning-line', component: AlertThresholdsTab },
-    { label: t('settings.notifications'), icon: 'ri-notification-3-line', component: NotificationsTab, requiredFeature: Features.NOTIFICATIONS },
-    { label: 'LDAP / Active Directory', icon: 'ri-server-line', component: LdapConfigTab, requiredFeature: Features.LDAP },
-    { label: 'OIDC / SSO', icon: 'ri-shield-keyhole-line', component: OidcConfigTab, requiredFeature: Features.OIDC },
-    { label: t('settings.license'), icon: 'ri-key-2-line', component: LicenseTab },
-    { label: t('settings.ai'), icon: 'ri-robot-line', component: AITab, requiredFeature: Features.AI_INSIGHTS },
-    { label: 'RSE / Green IT', icon: 'ri-leaf-line', component: GreenTab, requiredFeature: Features.GREEN_METRICS },
-    { label: 'White Label', icon: 'ri-pantone-line', component: WhiteLabelTab, requiredFeature: Features.WHITE_LABEL },
-    { label: 'Tenants', icon: 'ri-building-line', component: TenantsTab, requiredFeature: Features.MULTI_TENANCY, superAdminOnly: true },
-    { label: t('settings.sshCommands.tabLabel'), icon: 'ri-terminal-line', component: SshCommandsTab },
+    { label: t('settings.alertThresholds.title'), icon: 'ri-alarm-warning-line', component: AlertThresholdsTab, providerOnly: true },
+    { label: t('settings.notifications'), icon: 'ri-notification-3-line', component: NotificationsTab, requiredFeature: Features.NOTIFICATIONS, providerOnly: true },
+    { label: 'LDAP / Active Directory', icon: 'ri-server-line', component: LdapConfigTab, requiredFeature: Features.LDAP, providerOnly: true },
+    { label: 'OIDC / SSO', icon: 'ri-shield-keyhole-line', component: OidcConfigTab, requiredFeature: Features.OIDC, providerOnly: true },
+    { label: t('settings.license'), icon: 'ri-key-2-line', component: LicenseTab, providerOnly: true },
+    { label: t('settings.ai'), icon: 'ri-robot-line', component: AITab, requiredFeature: Features.AI_INSIGHTS, providerOnly: true },
+    { label: 'RSE / Green IT', icon: 'ri-leaf-line', component: GreenTab, requiredFeature: Features.GREEN_METRICS, providerOnly: true },
+    { label: 'White Label', icon: 'ri-pantone-line', component: WhiteLabelTab, requiredFeature: Features.WHITE_LABEL, providerOnly: true },
+    { label: t('vdc.title'), icon: 'ri-cloud-line', component: VdcTab, requiredFeature: Features.MULTI_TENANCY, providerOnly: true },
+    { label: 'Tenants', icon: 'ri-building-line', component: TenantsTab, requiredFeature: Features.MULTI_TENANCY, providerOnly: true },
+    { label: t('settings.sshCommands.tabLabel'), icon: 'ri-terminal-line', component: SshCommandsTab, providerOnly: true },
   ]
 
-  // Hide tabs that require superAdmin when user is not superAdmin (e.g. Tenants tab)
+  // Hide provider-only tabs (Tenants, vDC) unless super admin AND currently
+  // in provider tenant. License-gated tabs are also filtered out entirely
+  // when the feature is missing — same UX as the inventory detail tabs:
+  // the user only sees what they can actually use, no greyed-out chips.
+  // While the license is still loading we keep gated tabs visible to avoid
+  // a visible→hidden flicker once the response lands.
   const visibleIndices = allTabs.reduce((acc, tab, idx) => {
-    if (!tab.superAdminOnly || isSuperAdmin) acc.push(idx)
+    if (tab.providerOnly && !(isSuperAdmin && isProviderTenant)) return acc
+    if (!licenseLoading && tab.requiredFeature && !hasFeature(tab.requiredFeature)) return acc
+    acc.push(idx)
     return acc
   }, [])
 
@@ -2686,6 +2594,9 @@ export default function SettingsPage() {
             <Tabs
               value={mainTab}
               onChange={(_, v) => handleTabChange(v)}
+              variant="scrollable"
+              scrollButtons="auto"
+              allowScrollButtonsMobile
               sx={{
                 '& .MuiTab-root': {
                   minHeight: 56,
@@ -2694,36 +2605,17 @@ export default function SettingsPage() {
                 }
               }}
             >
-              {tabs.map((tab, idx) => {
-                const available = isTabAvailable(tab)
-                return (
-                  <Tab
-                    key={idx}
-                    disabled={!available}
-                    label={
-                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, opacity: available ? 1 : 0.4 }}>
-                        <i className={tab.icon} style={{ fontSize: 18 }} />
-                        <span>{tab.label}</span>
-                        {!available && (
-                          <Chip
-                            size="small"
-                            label="Enterprise"
-                            sx={{
-                              height: 18,
-                              fontSize: '0.6rem',
-                              fontWeight: 600,
-                              bgcolor: 'primary.main',
-                              color: 'primary.contrastText',
-                              ml: 0.5,
-                              '& .MuiChip-label': { px: 0.75 }
-                            }}
-                          />
-                        )}
-                      </Box>
-                    }
-                  />
-                )
-              })}
+              {tabs.map((tab, idx) => (
+                <Tab
+                  key={idx}
+                  label={
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      <i className={tab.icon} style={{ fontSize: 18 }} />
+                      <span>{tab.label}</span>
+                    </Box>
+                  }
+                />
+              ))}
             </Tabs>
           </Box>
 

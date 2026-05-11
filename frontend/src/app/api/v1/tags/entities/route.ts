@@ -7,7 +7,6 @@ export const runtime = "nodejs"
 
 /**
  * GET /api/v1/tags/entities — list all clusters and nodes that have tags
- * Uses raw SQL to avoid Prisma client cache issues with new columns
  */
 export async function GET() {
   try {
@@ -16,13 +15,16 @@ export async function GET() {
 
     const prisma = await getSessionPrisma()
 
-    const connections = await prisma.$queryRawUnsafe<any[]>(
-      'SELECT id, name, tags FROM "Connection" WHERE tags IS NOT NULL AND tags != \'\''
-    )
-
-    const hosts = await prisma.$queryRawUnsafe<any[]>(
-      'SELECT id, "connectionId", node, tags FROM "ManagedHost" WHERE tags IS NOT NULL AND tags != \'\''
-    )
+    const [connections, hosts] = await Promise.all([
+      prisma.connection.findMany({
+        where: { AND: [{ tags: { not: null } }, { tags: { not: '' } }] },
+        select: { id: true, name: true, tags: true },
+      }),
+      prisma.managedHost.findMany({
+        where: { AND: [{ tags: { not: null } }, { tags: { not: '' } }] },
+        select: { id: true, connectionId: true, node: true, tags: true },
+      }),
+    ])
 
     const data = [
       ...connections.map(c => ({ entityType: 'cluster', id: c.id, name: c.name, tags: c.tags })),

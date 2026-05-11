@@ -16,6 +16,7 @@ export const createConnectionSchema = z.object({
   latitude: z.number().min(-90).max(90).nullable().optional(),
   longitude: z.number().min(-180).max(180).nullable().optional(),
   locationLabel: z.string().nullable().optional(),
+  country: z.string().length(2).regex(/^[A-Za-z]{2}$/).transform(s => s.toUpperCase()).nullable().optional(),
   apiToken: z.string().transform(s => s.trim()).optional().default(''),
 
   // VMware ESXi fields
@@ -108,6 +109,7 @@ export const updateConnectionSchema = z.object({
   latitude: z.number().min(-90).max(90).nullable().optional(),
   longitude: z.number().min(-180).max(180).nullable().optional(),
   locationLabel: z.string().nullable().optional(),
+  country: z.string().length(2).regex(/^[A-Za-z]{2}$/).transform(s => s.toUpperCase()).nullable().optional(),
   tags: z.string().nullable().optional(),
   apiToken: z.string().transform(s => s.trim()).optional(),
 
@@ -224,7 +226,7 @@ export const createCustomImageSchema = z.object({
   vendor: z.string().max(50).default('custom').transform(s => s.trim()),
   version: z.string().max(50).default('').transform(s => s.trim()),
   arch: z.string().max(20).default('amd64').transform(s => s.trim()),
-  format: z.enum(['qcow2', 'raw', 'vmdk', 'img']).default('qcow2'),
+  format: z.enum(['qcow2', 'raw', 'vmdk', 'img', 'iso']).default('qcow2'),
   sourceType: z.enum(['url', 'volume']),
   downloadUrl: z.string().url().nullable().optional(),
   checksumUrl: z.string().url().nullable().optional(),
@@ -236,6 +238,10 @@ export const createCustomImageSchema = z.object({
   recommendedCores: z.number().int().min(1).max(128).default(2),
   ostype: z.string().max(20).default('l26'),
   tags: z.string().max(200).nullable().optional(),
+  // Provider-only flag: if true and the caller is on the 'default' tenant,
+  // the image becomes part of the shared catalogue visible to every tenant.
+  // The route enforces the provider check; here we just accept the input.
+  isShared: z.boolean().default(false),
 }).superRefine((data, ctx) => {
   if (data.sourceType === 'url' && !data.downloadUrl) {
     ctx.addIssue({
@@ -259,7 +265,7 @@ export const updateCustomImageSchema = z.object({
   vendor: z.string().max(50).transform(s => s.trim()).optional(),
   version: z.string().max(50).transform(s => s.trim()).optional(),
   arch: z.string().max(20).transform(s => s.trim()).optional(),
-  format: z.enum(['qcow2', 'raw', 'vmdk', 'img']).optional(),
+  format: z.enum(['qcow2', 'raw', 'vmdk', 'img', 'iso']).optional(),
   sourceType: z.enum(['url', 'volume']).optional(),
   downloadUrl: z.string().url().nullable().optional(),
   checksumUrl: z.string().url().nullable().optional(),
@@ -271,6 +277,7 @@ export const updateCustomImageSchema = z.object({
   recommendedCores: z.number().int().min(1).max(128).optional(),
   ostype: z.string().max(20).optional(),
   tags: z.string().max(200).nullable().optional(),
+  isShared: z.boolean().optional(),
 })
 
 // ─── Templates / Blueprints ──────────────────────────────────────────────────
@@ -309,6 +316,9 @@ export const deploySchema = z.object({
   connectionId: z.string().min(1, 'connectionId is required'),
   node: z.string().min(1, 'node is required'),
   storage: z.string().min(1, 'storage is required'),
+  // ISO-mode only: separate storage that holds the boot ISO. Required when
+  // the resolved image is an install-media ISO (image.format === 'iso').
+  isoStorage: z.string().optional(),
   vmid: z.number().int().min(100).max(999999999),
   vmName: z.string().max(63).regex(/^[a-zA-Z][a-zA-Z0-9._-]*$/, 'Invalid VM name').optional(),
   imageSlug: z.string().min(1, 'imageSlug is required'),
@@ -325,6 +335,10 @@ export const deploySchema = z.object({
     ostype: z.string().default('l26'),
     agent: z.boolean().default(true),
     cpu: z.string().default('host'),
+    // ISO-mode toggles. SeaBIOS is fine for everything pre-Win10. UEFI
+    // (ovmf + efidisk0 with pre-enrolled-keys=1) is required for Windows
+    // 10/11/Server 2025 — otherwise Secure Boot fails the installer.
+    bios: z.enum(['seabios', 'ovmf']).default('seabios'),
   }),
   cloudInit: z.object({
     ciuser: z.string().optional(),
@@ -333,7 +347,14 @@ export const deploySchema = z.object({
     ipconfig0: z.string().default('ip=dhcp'),
     nameserver: z.string().optional(),
     searchdomain: z.string().optional(),
-  }).optional(),
+  }).nullable().optional(),
+  // ISO-mode network reservation: tenant pre-declares the IP/MAC the OS
+  // installer will configure manually (no cloud-init = PVE can't push
+  // ipconfigN). When the chosen bridge is an IPAM-managed VNet, both
+  // fields are required so the IPAM stays in sync with what the tenant
+  // will type in the installer. Ignored outside ISO mode.
+  staticIp: z.string().optional(),
+  staticMac: z.string().regex(/^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$/).optional(),
   saveAsBlueprint: z.boolean().default(false),
   blueprintName: z.string().max(100).optional(),
 })

@@ -3,10 +3,11 @@ import { cookies } from "next/headers"
 
 import { demoResponse } from "@/lib/demo/demo-api"
 import { pbsFetch } from "@/lib/proxmox/pbs-client"
-import { getPbsConnectionById } from "@/lib/connections/getConnection"
+import { getPbsConnectionById, getPbsConnectionByIdUnscoped } from "@/lib/connections/getConnection"
 import { formatBytes } from "@/utils/format"
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
 import { getDateLocale } from "@/lib/i18n/date"
+import { assertVdcPbsAccess } from "@/lib/vdc/scope"
 
 export const runtime = "nodejs"
 
@@ -23,32 +24,56 @@ export async function GET(
     const params = await Promise.resolve(ctx.params)
     const id = (params as any)?.id
     const backupId = (params as any)?.backupId
-    
+
     if (!id) return NextResponse.json({ error: "Missing params.id" }, { status: 400 })
     if (!backupId) return NextResponse.json({ error: "Missing params.backupId" }, { status: 400 })
 
     const denied = await checkPermission(PERMISSIONS.BACKUP_VIEW, "pbs", id)
     if (denied) return denied
 
+    const access = await assertVdcPbsAccess(id)
+    if (access instanceof Response) return access
+
     const cookieStore = await cookies()
     const dateLocale = getDateLocale(cookieStore.get('NEXT_LOCALE')?.value || 'en')
 
-    // Décoder le backupId: datastore/type/vmid/timestamp
+    // Decode the backupId composed by /pbs/[id]/backups:
+    //   <datastore>/[<namespace path>/]<backup-type>/<backup-id>/<backup-time>
+    //
+    // Sub-namespaces contain `/` (e.g. tenant-foo/vdc-bar), so a positional
+    // split would assign them to backup-type/backup-id and PBS would 400
+    // with "value is not defined in the enumeration". Anchor on the END of
+    // the path instead — the last three segments are always typed:
+    // [..., type, vmid, time].
     const decodedBackupId = decodeURIComponent(backupId)
     const parts = decodedBackupId.split('/')
-    
+
     if (parts.length < 4) {
-      return NextResponse.json({ error: "Invalid backupId format. Expected: datastore/type/vmid/timestamp" }, { status: 400 })
+      return NextResponse.json({ error: "Invalid backupId format. Expected: datastore/[namespace/]type/vmid/timestamp" }, { status: 400 })
     }
 
-    const [datastore, backupType, vmid, timestamp] = parts
+    const datastore = parts[0]
+    const timestamp = parts[parts.length - 1]
+    const vmid = parts[parts.length - 2]
+    const backupType = parts[parts.length - 3]
+    const namespaceFromId = parts.slice(1, parts.length - 3).join('/')
 
     const url = new URL(req.url)
     const filepath = url.searchParams.get('filepath') || '/' // Chemin à explorer
     const archiveName = url.searchParams.get('archive') // Nom de l'archive (ex: "root.pxar.didx")
-    const ns = url.searchParams.get('ns') || '' // PBS namespace
+    // The query param takes precedence (caller can pass it explicitly when
+    // the id wouldn't carry the namespace), but we fall back to whatever
+    // was embedded between datastore and backup-type. Always one or the
+    // other — never both.
+    const ns = url.searchParams.get('ns') || namespaceFromId
 
-    const conn = await getPbsConnectionById(id)
+    if (access.kind === 'tenant' && !access.allowed.some(a => a.datastore === datastore && a.namespace === ns)) {
+      return NextResponse.json({ error: 'Backup not accessible for this tenant' }, { status: 403 })
+    }
+
+    const conn = access.kind === 'admin'
+      ? await getPbsConnectionById(id)
+      : await getPbsConnectionByIdUnscoped(id)
 
     // Si pas d'archive spécifiée, lister les fichiers/archives du backup
     if (!archiveName) {
@@ -66,7 +91,7 @@ export async function GET(
       )
 
       const snapshot = snapshots?.find(s => String(s['backup-time']) === timestamp)
-      
+
       if (!snapshot) {
         return NextResponse.json({ error: "Snapshot not found" }, { status: 404 })
       }
@@ -76,7 +101,7 @@ export async function GET(
         const filename = typeof file === 'string' ? file : file.filename
         const isArchive = filename?.endsWith('.pxar.didx') || filename?.endsWith('.img.fidx')
         const isPxar = filename?.endsWith('.pxar.didx')
-        
+
         return {
           name: filename,
           type: isArchive ? 'archive' : 'file',
@@ -105,7 +130,7 @@ export async function GET(
     // L'API PBS pour explorer le contenu d'une archive pxar
     try {
       const catalogPath = `/admin/datastore/${encodeURIComponent(datastore)}/catalog`
-      
+
       const catalogParams = new URLSearchParams({
         'backup-type': backupType,
         'backup-id': vmid,
@@ -139,7 +164,7 @@ export async function GET(
       entries.sort((a: any, b: any) => {
         if (a.type === 'directory' && b.type !== 'directory') return -1
         if (a.type !== 'directory' && b.type === 'directory') return 1
-        
+
 return (a.name || '').localeCompare(b.name || '')
       })
 
@@ -159,7 +184,7 @@ return (a.name || '').localeCompare(b.name || '')
       })
     } catch (catalogError: any) {
       console.error("Catalog error:", catalogError)
-      
+
 return NextResponse.json({
         error: `Cannot browse archive: ${catalogError.message}`,
         data: {
@@ -179,7 +204,7 @@ return NextResponse.json({
 
   } catch (e: any) {
     console.error("PBS backup content error:", e)
-    
+
 return NextResponse.json({ error: e?.message || String(e) }, { status: 500 })
   }
 }

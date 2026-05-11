@@ -3,8 +3,16 @@ import { NextResponse } from "next/server"
 import { pveFetch } from "@/lib/proxmox/client"
 import { getConnectionById } from "@/lib/connections/getConnection"
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
+import { getVdcScope, guardTenantStorageWrite } from "@/lib/vdc/scope"
+import { getCurrentTenantId } from "@/lib/tenant"
+import { prisma } from "@/lib/db/prisma"
 
 export const runtime = "nodejs"
+
+// Content types where we enforce filename-prefix ownership for tenants —
+// kept in sync with the listing route so a tenant can't delete a sibling
+// tenant's ISO/import even by guessing the volid.
+const TENANT_FILTERED_CONTENT = new Set(['iso', 'import'])
 
 // DELETE /api/v1/connections/{id}/nodes/{node}/storage/{storage}/content/{volid}
 // Delete a volume from Proxmox storage
@@ -15,13 +23,35 @@ export async function DELETE(
   try {
     const { id, node, storage, volid } = await ctx.params
 
-    const denied = await checkPermission(PERMISSIONS.STORAGE_DELETE, "connection", id)
+    const denied = await checkPermission(PERMISSIONS.CONNECTION_VIEW, "connection", id)
     if (denied) return denied
+
+    const storageBlock = await guardTenantStorageWrite(id, storage)
+    if (storageBlock) return storageBlock
 
     const conn = await getConnectionById(id)
 
     // The volid is URL-encoded; Proxmox expects the full volid (storage:path)
     const decodedVolid = decodeURIComponent(volid)
+
+    // Tenant-ownership guard for the controlled content types. Volid format
+    // is "<storage>:<contentType>/<filename>" — extract contentType and the
+    // filename, refuse delete on iso/import volumes whose filename doesn't
+    // match `custom-<tenantSlug>-*`. Super admins (scope===null) skip this.
+    const tenantId = await getCurrentTenantId()
+    const scope = await getVdcScope(tenantId)
+    if (scope) {
+      const m = decodedVolid.match(/^[^:]+:([^/]+)\/(.+)$/)
+      const itemContent = m?.[1] || ''
+      const filename = m?.[2] || ''
+      if (TENANT_FILTERED_CONTENT.has(itemContent)) {
+        const row = await prisma.tenant.findUnique({ where: { id: tenantId }, select: { slug: true } })
+        const tenantSlug = row?.slug || tenantId.replace(/[^a-z0-9-]/gi, '').toLowerCase()
+        if (!filename.startsWith(`custom-${tenantSlug}-`)) {
+          return NextResponse.json({ error: "Volume not accessible" }, { status: 403 })
+        }
+      }
+    }
 
     await pveFetch<any>(
       conn,

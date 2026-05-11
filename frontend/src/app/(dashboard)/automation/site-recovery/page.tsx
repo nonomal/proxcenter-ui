@@ -11,6 +11,7 @@ import {
 import { Typography } from '@mui/material'
 
 import EnterpriseGuard from '@/components/guards/EnterpriseGuard'
+import ProviderTenantGuard from '@/components/guards/ProviderTenantGuard'
 import { Features, useLicense } from '@/contexts/LicenseContext'
 import { usePageTitle } from '@/contexts/PageTitleContext'
 
@@ -309,6 +310,7 @@ export default function SiteRecoveryPage() {
   }, [activeExecution?.id, activeExecution?.status, mutatePlans])
 
   return (
+    <ProviderTenantGuard>
     <EnterpriseGuard requiredFeature={Features.CEPH_REPLICATION} featureName="Site Recovery">
       <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2.5 }}>
         {/* Tabs + Actions */}
@@ -489,5 +491,6 @@ export default function SiteRecoveryPage() {
         />
       </Box>
     </EnterpriseGuard>
+    </ProviderTenantGuard>
   )
 }

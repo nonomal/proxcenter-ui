@@ -3,21 +3,22 @@ import { NextResponse } from "next/server"
 
 import { nanoid } from "nanoid"
 
-import { getDb } from "@/lib/db/sqlite"
+import { prisma } from "@/lib/db/prisma"
 import { hashPassword } from "@/lib/auth/password"
 
 /**
  * POST /api/v1/auth/setup
- * Crée le premier utilisateur admin (uniquement si aucun utilisateur n'existe)
+ * Crée le premier utilisateur admin (uniquement si aucun utilisateur n'existe).
+ *
+ * Le user, l'adhésion par défaut et le grant role_super_admin sont écrits
+ * dans la même transaction Prisma : aucune incohérence possible entre les
+ * trois tables si l'une des écritures échoue.
  */
 export async function POST(req: Request) {
   try {
-    const db = getDb()
-
     // Vérifier s'il y a déjà des utilisateurs
-    const count = db.prepare("SELECT COUNT(*) as count FROM users").get() as { count: number }
-
-    if (count.count > 0) {
+    const userCount = await prisma.user.count()
+    if (userCount > 0) {
       return NextResponse.json(
         { error: "Le setup initial a déjà été effectué" },
         { status: 400 }
@@ -55,43 +56,60 @@ export async function POST(req: Request) {
     // Hasher le mot de passe
     const hashedPassword = await hashPassword(password)
 
-    // Créer l'utilisateur admin
+    // Créer l'utilisateur admin + son adhésion + le grant super_admin
+    // dans une seule transaction.
     const id = nanoid()
-    const now = new Date().toISOString()
+    const now = new Date()
+    const normalisedEmail = email.toLowerCase().trim()
 
-    db.prepare(
-      `INSERT INTO users (id, email, password, name, role, enabled, created_at, updated_at)
-       VALUES (?, ?, ?, ?, 'super_admin', 1, ?, ?)`
-    ).run(id, email.toLowerCase().trim(), hashedPassword, name || null, now, now)
-
-    // Assign RBAC role_super_admin to the first user (default tenant)
-    const roleAssignId = nanoid()
-
-    db.prepare(
-      `INSERT INTO rbac_user_roles (id, user_id, role_id, scope_type, scope_target, tenant_id, granted_at)
-       VALUES (?, ?, 'role_super_admin', 'global', NULL, 'default', ?)`
-    ).run(roleAssignId, id, now)
-
-    // Add user to default tenant
-    db.prepare(
-      `INSERT OR IGNORE INTO user_tenants (user_id, tenant_id, is_default, joined_at)
-       VALUES (?, 'default', 1, ?)`
-    ).run(id, now)
+    await prisma.$transaction([
+      prisma.user.create({
+        data: {
+          id,
+          email: normalisedEmail,
+          password: hashedPassword,
+          name: name || null,
+          role: "super_admin",
+          enabled: true,
+          createdAt: now,
+          updatedAt: now,
+        },
+      }),
+      prisma.userTenant.create({
+        data: {
+          userId: id,
+          tenantId: "default",
+          isDefault: true,
+          joinedAt: now,
+        },
+      }),
+      prisma.rbacUserRole.create({
+        data: {
+          id: nanoid(),
+          userId: id,
+          roleId: "role_super_admin",
+          scopeType: "global",
+          scopeTarget: null,
+          tenantId: "default",
+          grantedAt: now,
+        },
+      }),
+    ])
 
     return NextResponse.json({
       success: true,
       message: "Compte administrateur créé avec succès",
       user: {
         id,
-        email: email.toLowerCase().trim(),
+        email: normalisedEmail,
         name: name || null,
         role: "super_admin",
       },
     })
   } catch (error: any) {
     console.error("Erreur setup:", error)
-    
-return NextResponse.json(
+
+    return NextResponse.json(
       { error: error?.message || "Erreur lors de la création du compte" },
       { status: 500 }
     )
@@ -104,12 +122,10 @@ return NextResponse.json(
  */
 export async function GET() {
   try {
-    const db = getDb()
-    const count = db.prepare("SELECT COUNT(*) as count FROM users").get() as { count: number }
-
+    const userCount = await prisma.user.count()
     return NextResponse.json({
-      setupRequired: count.count === 0,
-      userCount: count.count,
+      setupRequired: userCount === 0,
+      userCount,
     })
   } catch (error) {
     return NextResponse.json({

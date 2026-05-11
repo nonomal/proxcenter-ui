@@ -17,15 +17,15 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
     if (denied) return denied
 
     const conn = await getConnectionById(connId)
-    
+
     if (!conn) {
       return NextResponse.json({ error: 'Connection not found' }, { status: 404 })
     }
 
     // Récupérer la liste des pools - pveFetch retourne directement data
     const pools = await pveFetch<any[]>(conn, '/pools')
-    
-    return NextResponse.json({ 
+
+    return NextResponse.json({
       data: (pools || []).map((p: any) => ({
         poolid: p.poolid,
         comment: p.comment || null
@@ -33,7 +33,7 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
     })
   } catch (error: any) {
     console.error('Error fetching pools:', error)
-    
+
 return NextResponse.json(
       { error: error.message || 'Failed to fetch pools' },
       { status: 500 }

@@ -14,7 +14,6 @@ import { AreaChart, Area, YAxis, Tooltip as RTooltip } from 'recharts'
 import ChartContainer from '@/components/ChartContainer'
 
 import EmptyState from '@/components/EmptyState'
-import SiteRecoveryIllustration from '@/components/illustrations/SiteRecoveryIllustration'
 
 import type { ReplicationJob, ReplicationJobStatus, ReplicationJobLog } from '@/lib/orchestrator/site-recovery.types'
 import { scheduleToLabel } from './schedule/scheduleToLabel'
@@ -589,8 +588,7 @@ export default function ProtectionTab({
       {/* Jobs List */}
       {filtered.length === 0 ? (
         <EmptyState
-          illustration={(jobs || []).length === 0 ? <SiteRecoveryIllustration /> : undefined}
-          icon='ri-shield-line'
+          icon=''
           title={(jobs || []).length === 0 ? t('siteRecovery.protection.noJobs') : t('siteRecovery.protection.noJobFound')}
           description={(jobs || []).length === 0 ? t('siteRecovery.protection.noJobsDesc') : t('siteRecovery.protection.noJobFoundDesc')}
           size='large'

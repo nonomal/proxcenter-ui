@@ -39,12 +39,12 @@ export async function GET(req: Request) {
       }
     })
 
-    const result = getAuditLogs(options)
+    const result = await getAuditLogs(options)
 
     return NextResponse.json(result)
   } catch (error: any) {
     console.error("Erreur GET audit:", error)
-    
+
 return NextResponse.json({ error: error?.message || "Erreur serveur" }, { status: 500 })
   }
 }

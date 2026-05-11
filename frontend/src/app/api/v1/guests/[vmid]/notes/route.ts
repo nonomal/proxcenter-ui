@@ -1,8 +1,7 @@
 import { NextResponse } from "next/server"
 
-import { getSessionPrisma } from "@/lib/tenant"
 import { pveFetch } from "@/lib/proxmox/client"
-import { decryptSecret } from "@/lib/crypto/secret"
+import { getConnectionById } from "@/lib/connections/getConnection"
 
 export const runtime = "nodejs"
 
@@ -17,38 +16,12 @@ function parseVmKey(vmKey: string) {
     throw new Error('Invalid vmKey format. Expected connId:type:node:vmid')
   }
 
-  
+
 return {
     connId: parts[0],
     type: parts[1],
     node: parts[2],
     vmid: parts[3],
-  }
-}
-
-async function getConnection(id: string) {
-  const prisma = await getSessionPrisma()
-  const connection = await prisma.connection.findUnique({
-    where: { id },
-    select: {
-      id: true,
-      name: true,
-      baseUrl: true,
-      insecureTLS: true,
-      apiTokenEnc: true,
-    }
-  })
-
-  if (!connection || !connection.apiTokenEnc) {
-    return null
-  }
-
-  return {
-    id: connection.id,
-    name: connection.name,
-    baseUrl: connection.baseUrl,
-    apiToken: decryptSecret(connection.apiTokenEnc),
-    insecureDev: !!connection.insecureTLS,
   }
 }
 
@@ -64,9 +37,12 @@ export async function GET(
     const params = await ctx.params
     const { connId, type, node, vmid } = parseVmKey(params.vmid)
 
-    const conn = await getConnection(connId)
-
-    if (!conn) {
+    // Use the shared resolver so tenants can reach connections they only
+    // access via vDC assignment (not only the ones they own).
+    let conn
+    try {
+      conn = await getConnectionById(connId)
+    } catch {
       return NextResponse.json({ error: "Connection not found" }, { status: 404 })
     }
 
@@ -107,9 +83,12 @@ export async function PUT(
       return NextResponse.json({ error: "Content must be a string" }, { status: 400 })
     }
 
-    const conn = await getConnection(connId)
-
-    if (!conn) {
+    // Use the shared resolver so tenants can reach connections they only
+    // access via vDC assignment (not only the ones they own).
+    let conn
+    try {
+      conn = await getConnectionById(connId)
+    } catch {
       return NextResponse.json({ error: "Connection not found" }, { status: 404 })
     }
 

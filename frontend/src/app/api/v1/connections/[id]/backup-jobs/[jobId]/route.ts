@@ -3,6 +3,38 @@ import { NextResponse } from "next/server"
 import { pveFetch } from "@/lib/proxmox/client"
 import { getConnectionById } from "@/lib/connections/getConnection"
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
+import { getCurrentTenantId } from "@/lib/tenant"
+import { getAllowedJobPools, isJobOwnedByTenantPools, validateTenantJobBody, validateTenantJobInfra } from "@/lib/vdc/backupJobs"
+import { getVdcScope } from "@/lib/vdc/scope"
+
+/**
+ * Tenant ownership check used by every per-job endpoint. Loads the job
+ * from PVE and verifies its `pool` matches one of the tenant's vDCs on
+ * this connection. Returns the loaded job (so the caller can reuse it
+ * without a second roundtrip), or a Response to short-circuit with
+ * 403/404 on denial.
+ */
+async function loadJobForTenant(conn: any, connectionId: string, jobId: string) {
+  const tenantId = await getCurrentTenantId()
+  const scope = await getVdcScope(tenantId)
+  const allowedPools = await getAllowedJobPools(tenantId, connectionId)
+  let job: any
+  try {
+    job = await pveFetch<any>(conn, `/cluster/backup/${encodeURIComponent(jobId)}`)
+  } catch (err: any) {
+    const msg = String(err?.message || '')
+    if (msg.includes('404') || msg.toLowerCase().includes('not found')) {
+      return { error: NextResponse.json({ error: 'Job not found' }, { status: 404 }) }
+    }
+    throw err
+  }
+  if (allowedPools !== null && !isJobOwnedByTenantPools(job, allowedPools)) {
+    // Don't leak the existence of foreign jobs — same 404 shape as a
+    // truly missing job so probing is no more useful than guessing.
+    return { error: NextResponse.json({ error: 'Job not found' }, { status: 404 }) }
+  }
+  return { job, allowedPools, scope }
+}
 
 export const runtime = "nodejs"
 
@@ -12,7 +44,7 @@ type RouteContext = {
 
 /**
  * GET /api/v1/connections/[id]/backup-jobs/[jobId]
- * 
+ *
  * Récupère les détails d'un backup job
  */
 export async function GET(_req: Request, ctx: RouteContext) {
@@ -29,20 +61,20 @@ export async function GET(_req: Request, ctx: RouteContext) {
     if (denied) return denied
 
     const conn = await getConnectionById(id)
-    
-    const job = await pveFetch<any>(conn, `/cluster/backup/${encodeURIComponent(jobId)}`)
 
-    return NextResponse.json({ data: job })
+    const owned = await loadJobForTenant(conn, id, jobId)
+    if ('error' in owned) return owned.error
+    return NextResponse.json({ data: owned.job })
   } catch (e: any) {
     console.error("[backup-jobs] GET Error:", e)
-    
+
 return NextResponse.json({ error: e?.message || String(e) }, { status: 500 })
   }
 }
 
 /**
  * PUT /api/v1/connections/[id]/backup-jobs/[jobId]
- * 
+ *
  * Modifie un backup job existant
  */
 export async function PUT(req: Request, ctx: RouteContext) {
@@ -60,20 +92,42 @@ export async function PUT(req: Request, ctx: RouteContext) {
     if (denied) return denied
 
     const conn = await getConnectionById(id)
-    
+
+    // Tenant guard: must own the job before we let any field through.
+    const owned = await loadJobForTenant(conn, id, jobId)
+    if ('error' in owned) return owned.error
+    // And: if the body changes the selection (selectionMode/pool/vmid),
+    // re-validate against the tenant's pools to keep them inside their
+    // own vDC. Provider has no extra restriction.
+    if (owned.allowedPools !== null && (body.selectionMode || body.pool || body.vmids || body.excludedVmids)) {
+      const validationError = validateTenantJobBody(body, owned.allowedPools)
+      if (validationError) {
+        return NextResponse.json({ error: validationError }, { status: 403 })
+      }
+    }
+    // Same guard on infra fields: storage / node / fleecingStorage /
+    // namespace can each move the job out of the tenant's vDC if not
+    // pinned, so re-validate any field the body actually carries.
+    if (owned.allowedPools !== null && owned.scope !== null) {
+      const infraError = validateTenantJobInfra(body, owned.scope, id)
+      if (infraError) {
+        return NextResponse.json({ error: infraError }, { status: 403 })
+      }
+    }
+
     // Construire les paramètres
     const params = new URLSearchParams()
-    
+
     // Storage
     if (body.storage) {
       params.set('storage', body.storage)
     }
-    
+
     // Schedule
     if (body.schedule !== undefined) {
       params.set('schedule', body.schedule)
     }
-    
+
     // Node
     if (body.node !== undefined) {
       if (body.node) {
@@ -82,17 +136,17 @@ export async function PUT(req: Request, ctx: RouteContext) {
         params.set('delete', 'node')
       }
     }
-    
+
     // Mode
     if (body.mode) {
       params.set('mode', body.mode)
     }
-    
+
     // Compression
     if (body.compress) {
       params.set('compress', body.compress)
     }
-    
+
     // Sélection des VMs
     if (body.selectionMode === 'all') {
       params.set('all', '1')
@@ -123,12 +177,12 @@ export async function PUT(req: Request, ctx: RouteContext) {
         params.set('pool', body.pool)
       }
     }
-    
+
     // Enabled
     if (body.enabled !== undefined) {
       params.set('enabled', body.enabled ? '1' : '0')
     }
-    
+
     // Commentaire
     if (body.comment !== undefined) {
       if (body.comment) {
@@ -137,7 +191,7 @@ export async function PUT(req: Request, ctx: RouteContext) {
         params.append('delete', 'comment')
       }
     }
-    
+
     // Mail
     if (body.mailto !== undefined) {
       if (body.mailto) {
@@ -205,20 +259,20 @@ export async function PUT(req: Request, ctx: RouteContext) {
       body: params.toString()
     })
 
-    return NextResponse.json({ 
+    return NextResponse.json({
       data: result,
       message: 'Backup job updated successfully'
     })
   } catch (e: any) {
     console.error("[backup-jobs] PUT Error:", e)
-    
+
 return NextResponse.json({ error: e?.message || String(e) }, { status: 500 })
   }
 }
 
 /**
  * DELETE /api/v1/connections/[id]/backup-jobs/[jobId]
- * 
+ *
  * Supprime un backup job
  */
 export async function DELETE(_req: Request, ctx: RouteContext) {
@@ -235,24 +289,27 @@ export async function DELETE(_req: Request, ctx: RouteContext) {
     if (denied) return denied
 
     const conn = await getConnectionById(id)
-    
+
+    const owned = await loadJobForTenant(conn, id, jobId)
+    if ('error' in owned) return owned.error
+
     await pveFetch<any>(conn, `/cluster/backup/${encodeURIComponent(jobId)}`, {
       method: 'DELETE'
     })
 
-    return NextResponse.json({ 
+    return NextResponse.json({
       message: 'Backup job deleted successfully'
     })
   } catch (e: any) {
     console.error("[backup-jobs] DELETE Error:", e)
-    
+
 return NextResponse.json({ error: e?.message || String(e) }, { status: 500 })
   }
 }
 
 /**
  * POST /api/v1/connections/[id]/backup-jobs/[jobId]
- * 
+ *
  * Exécute immédiatement un backup job
  * Action: run
  */
@@ -272,20 +329,22 @@ export async function POST(req: Request, ctx: RouteContext) {
     if (denied) return denied
 
     const conn = await getConnectionById(id)
-    
+
     if (action === 'run') {
       // Exécuter le job immédiatement
       // Note: Proxmox n'a pas d'endpoint direct pour ça, on doit utiliser vzdump
       // avec les mêmes paramètres que le job
-      const job = await pveFetch<any>(conn, `/cluster/backup/${encodeURIComponent(jobId)}`)
-      
+      const owned = await loadJobForTenant(conn, id, jobId)
+      if ('error' in owned) return owned.error
+      const job = owned.job
+
       // Construire la commande vzdump
       const params = new URLSearchParams()
 
       params.set('storage', job.storage)
       if (job.mode) params.set('mode', job.mode)
       if (job.compress) params.set('compress', job.compress)
-      
+
       // VMs à sauvegarder
       if (job.all) {
         params.set('all', '1')
@@ -295,21 +354,21 @@ export async function POST(req: Request, ctx: RouteContext) {
       } else if (job.pool) {
         params.set('pool', job.pool)
       }
-      
+
       // Déterminer le node (si spécifié ou premier node disponible)
       const targetNode = job.node || (await pveFetch<any[]>(conn, `/nodes`))?.[0]?.node
-      
+
       if (!targetNode) {
         return NextResponse.json({ error: "No node available" }, { status: 400 })
       }
-      
+
       const result = await pveFetch<any>(conn, `/nodes/${encodeURIComponent(targetNode)}/vzdump`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: params.toString()
       })
-      
-      return NextResponse.json({ 
+
+      return NextResponse.json({
         data: result,
         message: 'Backup job started'
       })
@@ -318,7 +377,7 @@ export async function POST(req: Request, ctx: RouteContext) {
     return NextResponse.json({ error: "Invalid action" }, { status: 400 })
   } catch (e: any) {
     console.error("[backup-jobs] POST Error:", e)
-    
+
 return NextResponse.json({ error: e?.message || String(e) }, { status: 500 })
   }
 }

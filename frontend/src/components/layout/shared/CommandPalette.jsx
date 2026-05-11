@@ -19,6 +19,8 @@ import { useTranslations } from 'next-intl'
 import { menuData } from '@/@menu/menuData'
 import { useRBAC } from '@/contexts/RBACContext'
 import { useLicense } from '@/contexts/LicenseContext'
+import { useTenant } from '@/contexts/TenantContext'
+import { useMyVdcs } from '@/hooks/useMyVdcs'
 
 // ---------------------------------------------------------------------------
 // Fuzzy match utility (no external lib)
@@ -70,8 +72,11 @@ const CommandPalette = ({ open, onClose }) => {
   const router = useRouter()
   const t = useTranslations()
   const tCmd = useTranslations('commandPalette')
-  const { hasAnyPermission } = useRBAC()
-  const { hasFeature } = useLicense()
+  const { hasAnyPermission, loading: rbacLoading } = useRBAC()
+  const { hasFeature, loading: licenseLoading } = useLicense()
+  const { currentTenant, loading: tenantLoading } = useTenant()
+  const { hasVdc, loading: vdcLoading } = useMyVdcs()
+  const isProviderTenant = currentTenant?.id === 'default'
 
   const [query, setQuery] = useState('')
   const [activeIndex, setActiveIndex] = useState(0)
@@ -158,29 +163,56 @@ const CommandPalette = ({ open, onClose }) => {
     const items = []
     const data = menuData(t)
 
+    // Mirror GenerateMenu.canView: while contexts are loading we keep
+    // everything visible to avoid flickering; once loaded we apply the same
+    // four gates (vdc / provider-tenant / RBAC / license) the sidebar uses.
+    const canView = (entry) => {
+      if (rbacLoading || licenseLoading || tenantLoading || vdcLoading) return true
+      if (entry.requires?.hasVdc === true && !hasVdc) return false
+      if (entry.requires?.hasVdc === false && hasVdc) return false
+      if (entry.requires?.isProviderTenant === true && !isProviderTenant) return false
+      if (entry.permissions && entry.permissions.length > 0 && !hasAnyPermission(entry.permissions)) return false
+      if (entry.requiredFeature && !hasFeature(entry.requiredFeature)) return false
+
+      return true
+    }
+
+    // Section visibility predicate — kept narrower than `canView` to match
+    // the vertical menu (GenerateMenu.jsx). The section's own
+    // `requiredFeature` and `requires.isProviderTenant` MUST NOT gate the
+    // children: a child carries its own flag (e.g. Site Recovery has
+    // requiredFeature='ceph_replication') and would otherwise vanish from
+    // the palette whenever the section's parent flag — say DRS on the
+    // Orchestration section — happens to be unlicensed. Only the section's
+    // explicit `permissions` array still gates here because that mirrors
+    // the menu's own section-level check.
+    const sectionAllowed = (section) => {
+      if (rbacLoading) return true
+      if (section.permissions && section.permissions.length > 0 && !hasAnyPermission(section.permissions)) return false
+      return true
+    }
+
     for (const entry of data) {
       // Top-level page (no section)
       if (!entry.isSection && entry.href) {
+        if (!canView(entry)) continue
         items.push({ type: 'page', label: entry.label, icon: entry.icon, href: entry.href })
         continue
       }
 
       // Section with children
       if (entry.isSection && entry.children) {
-        // Check section-level gating
-        if (entry.permissions && !hasAnyPermission(entry.permissions)) continue
-        if (entry.requiredFeature && !hasFeature(entry.requiredFeature)) continue
+        if (!sectionAllowed(entry)) continue
 
         for (const child of entry.children) {
-          if (child.permissions && !hasAnyPermission(child.permissions)) continue
-          if (child.requiredFeature && !hasFeature(child.requiredFeature)) continue
+          if (!canView(child)) continue
           items.push({ type: 'page', label: child.label, icon: child.icon, href: child.href })
         }
       }
     }
 
     return items
-  }, [t, hasAnyPermission, hasFeature])
+  }, [t, hasAnyPermission, hasFeature, hasVdc, isProviderTenant, rbacLoading, licenseLoading, tenantLoading, vdcLoading])
 
   // -----------------------------------------------------------------------
   // 2. Actions — static list filtered by RBAC/License

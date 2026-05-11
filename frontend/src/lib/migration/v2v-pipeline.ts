@@ -101,6 +101,14 @@ export interface V2vMigrationConfig {
    * `-i vmx -it ssh ssh://<user>@<host>/<vmxPath>`.
    */
   esxiHost?: string
+  /**
+   * User-supplied target VMID. When set, used directly instead of
+   * `/cluster/nextid`; PVE rejects the create call if it's already taken.
+   * The race-tolerant create loop further down keeps next-free behavior
+   * when this is undefined; with a user pick we fail fast on conflict
+   * instead of silently allocating a different ID.
+   */
+  targetVmid?: number
 }
 
 interface LogEntry {
@@ -134,9 +142,9 @@ async function updateJob(id: string, status: MigrationStatus, extra: Record<stri
 async function appendLog(id: string, msg: string, level: LogEntry["level"] = "info") {
   const prisma = getPrismaForJob(id)
   const job = await prisma.migrationJob.findUnique({ where: { id }, select: { logs: true, progress: true } })
-  const logs: LogEntry[] = job?.logs ? JSON.parse(job.logs) : []
+  const logs: LogEntry[] = (job?.logs as LogEntry[] | null) ?? []
   logs.push({ ts: new Date().toISOString(), msg, level, progress: job?.progress ?? 0 } as any)
-  await prisma.migrationJob.update({ where: { id }, data: { logs: JSON.stringify(logs) } })
+  await prisma.migrationJob.update({ where: { id }, data: { logs } })
 }
 
 function isCancelled(jobId: string): boolean {
@@ -1848,11 +1856,15 @@ export async function runV2vMigrationPipeline(
 
     // ── PHASE 3: Create VM shell ──
     await updateJob(jobId, "creating_vm")
-    await appendLog(jobId, "Allocating VMID on Proxmox cluster...")
-
-    targetVmid = Number(await pveFetch<number | string>(pveConn, "/cluster/nextid"))
+    if (config.targetVmid !== undefined) {
+      targetVmid = config.targetVmid
+      await appendLog(jobId, `Using user-specified VMID ${targetVmid}`)
+    } else {
+      await appendLog(jobId, "Allocating VMID on Proxmox cluster...")
+      targetVmid = Number(await pveFetch<number | string>(pveConn, "/cluster/nextid"))
+      await appendLog(jobId, `Allocated VMID ${targetVmid}`)
+    }
     await updateJob(jobId, "creating_vm", { targetVmid })
-    await appendLog(jobId, `Allocated VMID ${targetVmid}`)
 
     if (isCancelled(jobId)) throw new Error("Migration cancelled")
 
@@ -2277,7 +2289,12 @@ export async function runV2vMigrationPipeline(
     // (sequential) this can't happen, but we keep the loop so future concurrent
     // bumps don't reintroduce the bug. Try up to 5 times: on conflict, ask PVE
     // for a fresh id and retry. Any other PVE error is fatal.
-    const MAX_VMID_RETRIES = 5
+    //
+    // Exception: when the user explicitly picked targetVmid via the dialog,
+    // we must NOT silently retry with a different id — fail fast on conflict
+    // so the user can pick another vmid or free the conflicting one.
+    const userPickedVmid = config.targetVmid !== undefined
+    const MAX_VMID_RETRIES = userPickedVmid ? 1 : 5
     let createdVmid = targetVmid
     for (let attempt = 0; attempt < MAX_VMID_RETRIES; attempt++) {
       try {

@@ -20,6 +20,7 @@ env:
   REGISTRY: ghcr.io
   FRONTEND_IMAGE: ghcr.io/${{ github.repository_owner }}/proxcenter-frontend
   ORCHESTRATOR_IMAGE: ghcr.io/${{ github.repository_owner }}/proxcenter-orchestrator
+  WEASYPRINT_IMAGE: ghcr.io/${{ github.repository_owner }}/proxcenter-weasyprint
 
 jobs:
   # ========================================
@@ -30,6 +31,22 @@ jobs:
     defaults:
       run:
         working-directory: ./frontend
+    # The vDC test suite (step 2.7) talks to a real Postgres via the
+    # vitest globalSetup at src/__tests__/setup/postgres.ts.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: proxcenter
+          POSTGRES_PASSWORD: test-pass
+          POSTGRES_DB: proxcenter
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U proxcenter -d proxcenter"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -44,14 +61,22 @@ jobs:
       - name: Install dependencies
         run: npm ci --legacy-peer-deps --ignore-scripts
 
+      - name: Install psql client
+        # The test globalSetup shells out to psql to create / drop the
+        # per-run schema; ubuntu-latest images ship without it.
+        run: sudo apt-get install -y --no-install-recommends postgresql-client
+
       - name: Run tests
+        env:
+          POSTGRES_TEST_URL_BASE: postgresql://proxcenter:test-pass@localhost:5432/proxcenter
         run: npx vitest run
 
   # ========================================
   # Build Frontend Image
   # ========================================
   build-frontend:
-    needs: [test]
+    needs: [test, test-backend]
+    if: ${{ always() && needs.test.result == 'success' && (needs.test-backend.result == 'success' || github.actor == 'dependabot[bot]') }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -95,6 +120,7 @@ jobs:
           tags: |
             type=ref,event=branch
             type=ref,event=pr
+            type=ref,event=tag
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
@@ -129,7 +155,8 @@ jobs:
   # Build Demo Image
   # ========================================
   build-demo:
-    needs: [test]
+    needs: [test, test-backend]
+    if: ${{ always() && needs.test.result == 'success' && (needs.test-backend.result == 'success' || github.actor == 'dependabot[bot]') }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -166,6 +193,87 @@ jobs:
           platforms: linux/amd64
 
   # ========================================
+  # Build WeasyPrint Sidecar Image
+  # ========================================
+  # Tiny Flask service that turns the orchestrator's HTML report templates
+  # into PDF documents. Built from `weasyprint/Dockerfile`. Published so
+  # Enterprise deployments can pull a pinned image instead of rebuilding
+  # locally on every `docker-compose up`.
+  build-weasyprint:
+    needs: [test, test-backend]
+    if: ${{ always() && needs.test.result == 'success' && (needs.test-backend.result == 'success' || github.actor == 'dependabot[bot]') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve version
+        id: resolve
+        env:
+          GH_REF: ${{ github.ref }}
+          GH_REF_NAME: ${{ github.ref_name }}
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          if [[ "$GH_REF" == refs/tags/v* ]]; then
+            VERSION="$GH_REF_NAME"
+            echo "version=${VERSION#v}" >> "$GITHUB_OUTPUT"
+          elif [[ -n "$INPUT_VERSION" && "$INPUT_VERSION" != "latest" ]]; then
+            echo "version=$INPUT_VERSION" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=dev" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Extract metadata for WeasyPrint
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.WEASYPRINT_IMAGE }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=ref,event=tag
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=${{ steps.resolve.outputs.version }},enable=${{ steps.resolve.outputs.version != 'dev' }}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+
+      - name: Build and push WeasyPrint
+        uses: docker/build-push-action@v7
+        with:
+          context: ./weasyprint
+          file: ./weasyprint/Dockerfile
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64
+
+      - name: Make WeasyPrint package public
+        if: github.event_name != 'pull_request'
+        run: |
+          curl -sS -X PATCH \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            https://api.github.com/user/packages/container/proxcenter-weasyprint \
+            -d '{"visibility":"public"}'
+
+  # ========================================
   # Run Backend Tests
   # Skipped for Dependabot PRs: they cannot access ORCHESTRATOR_PAT
   # and don't modify backend code.
@@ -173,6 +281,23 @@ jobs:
   test-backend:
     if: github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
+    # Replication tests open a per-run schema on this Postgres via
+    # POSTGRES_TEST_URL (mirrors the vitest globalSetup pattern). Tests
+    # t.Skip when the env is absent so default `go test` works locally.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: proxcenter
+          POSTGRES_PASSWORD: test-pass
+          POSTGRES_DB: proxcenter
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U proxcenter -d proxcenter"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -203,11 +328,13 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v6
         with:
-          go-version: '1.24'
+          go-version: '1.25'
           cache-dependency-path: backend/go.sum
 
       - name: Run backend tests
         working-directory: ./backend
+        env:
+          POSTGRES_TEST_URL: postgres://proxcenter:test-pass@localhost:5432/proxcenter?sslmode=disable
         run: go test ./internal/...
 
   # ========================================
@@ -215,7 +342,7 @@ jobs:
   # ========================================
   build-orchestrator:
     if: github.actor != 'dependabot[bot]'
-    needs: [test-backend]
+    needs: [test, test-backend]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -282,6 +409,7 @@ jobs:
           tags: |
             type=ref,event=branch
             type=ref,event=pr
+            type=ref,event=tag
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
@@ -305,7 +433,7 @@ jobs:
   # ========================================
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build-frontend, build-orchestrator]
+    needs: [build-frontend, build-demo, build-orchestrator, build-weasyprint]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -344,6 +472,7 @@ jobs:
             ```bash
             docker pull ghcr.io/adminsyspro/proxcenter-frontend:${{ github.ref_name }}
             docker pull ghcr.io/adminsyspro/proxcenter-orchestrator:${{ github.ref_name }}
+            docker pull ghcr.io/adminsyspro/proxcenter-weasyprint:${{ github.ref_name }}
             ```
           draft: false
           prerelease: false

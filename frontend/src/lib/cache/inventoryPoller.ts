@@ -10,17 +10,17 @@
 import { prisma } from "@/lib/db/prisma"
 import { getConnectionById } from "@/lib/connections/getConnection"
 import { pveFetch } from "@/lib/proxmox/client"
-import { getDb } from "@/lib/db/sqlite"
+import { getSetting } from "@/lib/db/settings"
 import { discoverNodeIps } from "@/lib/proxmox/discoverNodeIps"
 import { getFailureCount, getNodeIps } from "@/lib/cache/nodeIpCache"
 
 // ---------- Types ----------
 
 export type InventoryEvent =
-  | { event: 'vm:update'; connId: string; vmid: string | number; node: string; type: string; status: string; cpu?: number; mem?: number; maxmem?: number; disk?: number; maxdisk?: number; uptime?: number; name?: string }
+  | { event: 'vm:update'; connId: string; vmid: string | number; node: string; type: string; status: string; cpu?: number; mem?: number; maxmem?: number; disk?: number; maxdisk?: number; uptime?: number; name?: string; pool?: string }
   | { event: 'node:update'; connId: string; node: string; status: string; cpu?: number; mem?: number; maxmem?: number }
-  | { event: 'vm:added'; connId: string; vmid: string | number; node: string; type: string; status: string; name?: string; cpu?: number; mem?: number; maxmem?: number; template?: number }
-  | { event: 'vm:removed'; connId: string; vmid: string | number; node: string; type: string }
+  | { event: 'vm:added'; connId: string; vmid: string | number; node: string; type: string; status: string; name?: string; cpu?: number; mem?: number; maxmem?: number; template?: number; pool?: string }
+  | { event: 'vm:removed'; connId: string; vmid: string | number; node: string; type: string; pool?: string }
 
 export type Subscriber = (events: InventoryEvent[]) => void
 
@@ -40,11 +40,16 @@ type ResourceSnapshot = {
   type?: string
   vmid?: string | number
   template?: number
+  pool?: string
 }
 
 type ConnectionPoller = {
   interval: ReturnType<typeof setInterval>
   prevState: Map<string, ResourceSnapshot>
+  /** True once the first poll has fully populated prevState. Until then we
+   *  must NOT emit add/update/remove events — every VM looks "new" because
+   *  prevState is empty, but they're not. */
+  firstPollComplete: boolean
 }
 
 const pollers = new Map<string, ConnectionPoller>()
@@ -58,13 +63,15 @@ let ipRefreshCounter = IP_REFRESH_INTERVAL - 1 // trigger on first cycle
 // ---------- Diff logic ----------
 
 function hasChanged(prev: ResourceSnapshot, curr: ResourceSnapshot): boolean {
+  // Note: node change is handled separately as a relocation (remove+add)
+  // because the frontend vm:update handler updates VMs in place and never
+  // moves them between nodes — a node change must restructure the tree.
   return (
     prev.status !== curr.status ||
     prev.cpu !== curr.cpu ||
     prev.mem !== curr.mem ||
     prev.maxmem !== curr.maxmem ||
-    prev.name !== curr.name ||
-    prev.node !== curr.node
+    prev.name !== curr.name
   )
 }
 
@@ -82,11 +89,16 @@ async function pollConnection(connId: string, connConfig: any): Promise<Inventor
 
     let poller = pollers.get(connId)
     if (!poller) {
-      poller = { interval: null as any, prevState: new Map() }
+      poller = { interval: null as any, prevState: new Map(), firstPollComplete: false }
       pollers.set(connId, poller)
     }
 
     const currentIds = new Set<string>()
+    // Snapshot at loop entry — used to gate event emission so the first poll
+    // (or any poll where prevState is still empty) doesn't fire spurious
+    // vm:added for every VM. Reading prevState.size during the loop is wrong:
+    // it grows as we set entries, making every VM after the first look "new".
+    const isFirstPoll = !poller.firstPollComplete
 
     for (const r of resources) {
       if (!r?.type) continue
@@ -109,12 +121,14 @@ async function pollConnection(connId: string, connConfig: any): Promise<Inventor
           type: r.type,
           vmid: r.vmid,
           template: r.template,
+          pool: r.pool,
         }
 
         const prev = poller.prevState.get(id)
         if (!prev) {
-          // New VM detected (only push if we already had a previous snapshot = not first poll)
-          if (poller.prevState.size > 0) {
+          // Genuinely new VM — only emit on subsequent polls. On the first
+          // poll every VM has no prev, but that's the bootstrap, not new VMs.
+          if (!isFirstPoll) {
             events.push({
               event: 'vm:added',
               connId,
@@ -127,8 +141,36 @@ async function pollConnection(connId: string, connConfig: any): Promise<Inventor
               mem: r.mem,
               maxmem: r.maxmem,
               template: r.template,
+              pool: r.pool,
             })
           }
+        } else if (prev.node !== curr.node) {
+          // VM relocated between nodes (HA failover, manual migration via
+          // another window, ha-manager service recovery). The frontend
+          // vm:update handler doesn't move VMs across nodes — emit a
+          // remove+add pair so the tree restructures correctly.
+          events.push({
+            event: 'vm:removed',
+            connId,
+            vmid: r.vmid,
+            node: prev.node!,
+            type: r.type,
+            pool: prev.pool,
+          })
+          events.push({
+            event: 'vm:added',
+            connId,
+            vmid: r.vmid,
+            node: r.node,
+            type: r.type,
+            status: r.status || 'unknown',
+            name: r.name,
+            cpu: r.cpu,
+            mem: r.mem,
+            maxmem: r.maxmem,
+            template: r.template,
+            pool: r.pool,
+          })
         } else if (hasChanged(prev, curr)) {
           events.push({
             event: 'vm:update',
@@ -144,6 +186,7 @@ async function pollConnection(connId: string, connConfig: any): Promise<Inventor
             maxdisk: r.maxdisk,
             uptime: r.uptime,
             name: r.name,
+            pool: r.pool,
           })
         }
 
@@ -179,8 +222,9 @@ async function pollConnection(connId: string, connConfig: any): Promise<Inventor
       }
     }
 
-    // Detect removed VMs
-    if (poller.prevState.size > 0) {
+    // Detect removed VMs — same first-poll guard: bootstrap polls must not
+    // emit vm:removed (prevState was empty at entry, nothing to remove).
+    if (!isFirstPoll) {
       for (const [id, snap] of poller.prevState) {
         if (!currentIds.has(id) && (snap.type === 'qemu' || snap.type === 'lxc')) {
           events.push({
@@ -189,13 +233,20 @@ async function pollConnection(connId: string, connConfig: any): Promise<Inventor
             vmid: snap.vmid!,
             node: snap.node!,
             type: snap.type,
+            pool: snap.pool,
           })
           poller.prevState.delete(id)
         }
       }
     }
+
+    // Mark this poller as bootstrapped so subsequent polls emit real diffs.
+    poller.firstPollComplete = true
   } catch (e: any) {
-    // Connection error — don't crash, just skip this poll cycle
+    // Connection error — don't crash, just skip this poll cycle. Leave
+    // firstPollComplete as-is: a partial/failed bootstrap shouldn't pretend
+    // to be done, otherwise the next successful poll would emit vm:added
+    // for every VM.
     console.error(`[inventory-poller] Error polling ${connId}:`, e?.message)
   }
 
@@ -271,9 +322,22 @@ async function pollAll() {
 // ---------- Auto-HA Handler ----------
 
 async function handleAutoHaEvents(events: InventoryEvent[]) {
+  // Relocations emit a remove+add pair in the same batch (see pollConnection).
+  // Skip Auto-HA for those: the VM is already an HA resource, just moved.
+  // Without this guard the POST /cluster/ha/resources fails with "already
+  // defined" on every failover/migration cycle.
+  const relocatedKeys = new Set<string>()
+  for (const ev of events) {
+    if (ev.event === 'vm:removed') {
+      relocatedKeys.add(`${ev.connId}:${ev.type}/${ev.vmid}`)
+    }
+  }
+
   const addedVms = events.filter(
     (e): e is Extract<InventoryEvent, { event: 'vm:added' }> =>
-      e.event === 'vm:added' && (e as any).template !== 1
+      e.event === 'vm:added' &&
+      (e as any).template !== 1 &&
+      !relocatedKeys.has(`${e.connId}:${e.type}/${e.vmid}`)
   )
 
   if (addedVms.length === 0) return
@@ -288,9 +352,7 @@ async function handleAutoHaEvents(events: InventoryEvent[]) {
 
   for (const [connId, vms] of byConn) {
     try {
-      const db = getDb()
-      const row = db.prepare("SELECT value FROM settings WHERE key = ? AND tenant_id = ?").get(`auto_ha:${connId}`, "default") as any
-      const settings = row?.value ? JSON.parse(row.value) : null
+      const settings = await getSetting<any>(`auto_ha:${connId}`)
       if (!settings?.enabled) continue
 
       const conn = await getConnectionById(connId)

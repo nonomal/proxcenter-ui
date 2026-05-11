@@ -3,7 +3,7 @@ import { NextResponse } from "next/server"
 import { pveFetch } from "@/lib/proxmox/client"
 import { getConnectionById } from "@/lib/connections/getConnection"
 import { checkPermission, buildVmResourceId, PERMISSIONS } from "@/lib/rbac"
-import { getCurrentTenantId } from "@/lib/tenant"
+import { getCurrentTenantId, requireProviderTenant } from "@/lib/tenant"
 import { watchMigrationAndCleanup } from "@/lib/migration/cross-cluster-watcher"
 import { getNodeIp } from "@/lib/ssh/node-ip"
 
@@ -44,6 +44,12 @@ export async function POST(
     const resourceId = buildVmResourceId(id, node, type, vmid)
     const denied = await checkPermission(PERMISSIONS.VM_MIGRATE, "vm", resourceId)
     if (denied) return denied
+
+    // Cross-cluster migration is even more provider-only than same-cluster:
+    // it crosses connection boundaries and the tenant has no notion of the
+    // remote cluster. Mirror the gate from the local /migrate route.
+    const providerOnly = await requireProviderTenant()
+    if (providerOnly) return providerOnly
 
     const body = await req.json()
     const {

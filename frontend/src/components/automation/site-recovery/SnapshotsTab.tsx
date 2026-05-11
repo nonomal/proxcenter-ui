@@ -68,6 +68,13 @@ export default function SnapshotsTab({ connections, vmNameMap }: Props) {
   const [detailLoading, setDetailLoading] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState<MirrorSnapshot[] | null>(null)
   const [deleting, setDeleting] = useState(false)
+  // Per-item progress for the "Delete mirror snapshots" dialog. We delete
+  // sequentially (one POST per snapshot) so the user gets a real-time
+  // counter instead of a blind spinner — orchestrator-side deletion can
+  // take seconds per snapshot when the cluster is busy.
+  const [deleteProgress, setDeleteProgress] = useState<{ done: number; total: number; current: string | null }>({
+    done: 0, total: 0, current: null,
+  })
   const [page, setPage] = useState(0)
   const [rowsPerPage, setRowsPerPage] = useState(25)
 
@@ -165,25 +172,45 @@ export default function SnapshotsTab({ connections, vmNameMap }: Props) {
 
   const runDelete = useCallback(async (items: MirrorSnapshot[]) => {
     setDeleting(true)
-    try {
-      const res = await fetch('/api/v1/orchestrator/replication/snapshots', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          items: items.map(s => ({
-            cluster_id: s.cluster_id, pool: s.pool, image: s.image, snapshot: s.snapshot,
-          })),
-        }),
-      })
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      setSelected(new Set())
-      await load()
-    } catch (e: any) {
-      setError(e?.message || 'Delete failed')
-    } finally {
-      setDeleting(false)
-      setConfirmDelete(null)
+    setDeleteProgress({ done: 0, total: items.length, current: items[0]?.snapshot ?? null })
+    const failures: { item: MirrorSnapshot; reason: string }[] = []
+
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i]
+      setDeleteProgress({ done: i, total: items.length, current: item.snapshot })
+      try {
+        const res = await fetch('/api/v1/orchestrator/replication/snapshots', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            items: [{
+              cluster_id: item.cluster_id,
+              pool: item.pool,
+              image: item.image,
+              snapshot: item.snapshot,
+            }],
+          }),
+        })
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        const json = await res.json().catch(() => ({}))
+        if (Array.isArray(json?.failed) && json.failed.length > 0) {
+          failures.push({ item, reason: json.failed[0]?.error || 'failed' })
+        }
+      } catch (e: any) {
+        failures.push({ item, reason: e?.message || 'failed' })
+      }
     }
+
+    setDeleteProgress({ done: items.length, total: items.length, current: null })
+
+    if (failures.length > 0) {
+      setError(`${failures.length}/${items.length} snapshot(s) failed to delete: ${failures.map(f => f.item.snapshot).join(', ')}`)
+    }
+    setSelected(new Set())
+    await load()
+    setDeleting(false)
+    setConfirmDelete(null)
+    setDeleteProgress({ done: 0, total: 0, current: null })
   }, [load])
 
   const cephConnections = useMemo(() => connections, [connections])
@@ -280,7 +307,7 @@ export default function SnapshotsTab({ connections, vmNameMap }: Props) {
         {filtered.length === 0 && !loading ? (
           <Box sx={{ p: 3 }}>
             <EmptyState
-              icon='ri-camera-line'
+              icon=''
               title={t('siteRecovery.snapshots.none')}
               description={(snaps || []).length === 0 ? t('siteRecovery.snapshots.noneDesc') : t('siteRecovery.snapshots.noneMatchingDesc')}
               size='medium'
@@ -491,6 +518,24 @@ export default function SnapshotsTab({ connections, vmNameMap }: Props) {
               <Alert severity='error' sx={{ py: 1.5 }}>
                 {t('siteRecovery.snapshots.confirmDeleteActiveWarn')}
               </Alert>
+            )}
+            {deleting && deleteProgress.total > 0 && (
+              <Box>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', mb: 0.5, gap: 2 }}>
+                  <Typography variant='caption' color='text.secondary' noWrap sx={{ flex: 1, minWidth: 0 }}>
+                    {deleteProgress.current
+                      ? t('siteRecovery.snapshots.deletingItem', { name: deleteProgress.current })
+                      : t('common.deleting')}
+                  </Typography>
+                  <Typography variant='caption' color='text.secondary' sx={{ flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>
+                    {deleteProgress.done}/{deleteProgress.total}
+                  </Typography>
+                </Box>
+                <LinearProgress
+                  variant='determinate'
+                  value={(deleteProgress.done / Math.max(deleteProgress.total, 1)) * 100}
+                />
+              </Box>
             )}
           </Stack>
         </DialogContent>

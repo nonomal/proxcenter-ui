@@ -303,6 +303,11 @@ setup_proxcenter() {
     APP_SECRET=$(openssl rand -hex 32)
     NEXTAUTH_SECRET=$(openssl rand -hex 32)
     ORCHESTRATOR_API_KEY=$(openssl rand -hex 32)
+    # Postgres password is required by the compose file (it uses the
+    # `${VAR:?msg}` form); generate one here so docker compose up doesn't
+    # bail. POSTGRES_USER/DB stay defaulted via the compose ${VAR:-default}
+    # pattern, so we don't need to write them.
+    POSTGRES_PASSWORD=$(openssl rand -hex 24)
 
     # Get server IP
     SERVER_IP=$(hostname -I | awk '{print $1}' | head -1)
@@ -332,20 +337,34 @@ LICENSE_KEY=${LICENSE_KEY:-}
 # Orchestrator
 ORCHESTRATOR_URL=http://orchestrator:8080
 ORCHESTRATOR_API_KEY=$ORCHESTRATOR_API_KEY
+
+# Postgres
+POSTGRES_PASSWORD=$POSTGRES_PASSWORD
 EOF
 
-    # Create orchestrator config
+    # Create orchestrator config. The compose file injects
+    # PROXCENTER_DATABASE_DRIVER + PROXCENTER_DATABASE_DSN as env vars,
+    # which override these defaults — they're only here so an operator
+    # editing the file by hand sees a coherent, Postgres-shaped baseline.
     cat > "$INSTALL_DIR/config/orchestrator.yaml" << EOF
 # ProxCenter Orchestrator Configuration
-server:
-  port: 8080
-  mode: production
+api:
+  address: ":8080"
+  read_timeout: 30s
+  write_timeout: 30s
 
 database:
-  path: /app/data/orchestrator.db
+  # Postgres-only since step 3 of the SQLite → Postgres migration. The
+  # compose file overrides these via env vars; values are shown here as
+  # documentation.
+  driver: postgres
+  dsn: "postgres://proxcenter:\${POSTGRES_PASSWORD}@postgres:5432/proxcenter?sslmode=disable"
 
 proxmox:
-  proxcenter_db_path: /app/shared_data/proxcenter.db
+  # Must match APP_SECRET from .env
+  app_secret: "$APP_SECRET"
+  # Frontend volume mounted read-only for white-label branding logos.
+  shared_data_path: /app/shared_data
 
 license:
   key: "${LICENSE_KEY:-}"
@@ -395,6 +414,19 @@ refresh_compose() {
         rm -f docker-compose.yml.new
         log_success "Compose already up-to-date"
     fi
+
+    # Backfill any required env vars introduced by newer compose revisions.
+    # The SQLite → Postgres release made POSTGRES_PASSWORD mandatory; legacy
+    # installs lack it, and the compose `${VAR:?…}` form would otherwise
+    # block `docker compose up`. We generate a fresh password — the SQLite
+    # → Postgres switch is a clean install per the changelog, no data
+    # carries over.
+    if ! grep -q '^POSTGRES_PASSWORD=' .env; then
+        local pg_pass
+        pg_pass=$(openssl rand -hex 24)
+        printf '\n# Postgres (added by upgrade)\nPOSTGRES_PASSWORD=%s\n' "$pg_pass" >> .env
+        log_info "Added POSTGRES_PASSWORD to .env (fresh Postgres on first boot)"
+    fi
 }
 
 # ============================================
@@ -410,25 +442,24 @@ pull_and_init() {
     docker compose pull 2>&1 | tail -5
     log_success "Images pulled"
 
-    # Create volumes
+    # Create volumes. postgres_data is declared external in the compose
+    # file (so docker compose up won't auto-create it); missing this line
+    # is what made fresh installs fail.
     docker volume create proxcenter_data > /dev/null 2>&1 || true
     docker volume create orchestrator_data > /dev/null 2>&1 || true
+    docker volume create postgres_data > /dev/null 2>&1 || true
     docker volume create influxdb_data > /dev/null 2>&1 || true
 
-    # Init data directory — bypass entrypoint, pass dummy NEXTAUTH_SECRET to suppress warning
+    # Init the frontend data directory so the non-root container user
+    # (uid 1001) can write into it. Postgres + Prisma migrations run on
+    # first boot via the frontend entrypoint (`prisma migrate deploy` +
+    # `prisma/seed.js`); no SQLite bootstrap is needed anymore.
     docker run --rm --user root --entrypoint "" \
         -v proxcenter_data:/app/data \
         "$FRONTEND_IMAGE" \
         sh -c "mkdir -p /app/data && chown -R 1001:1001 /app/data" > /dev/null 2>&1
 
-    # Run Prisma migrations — bypass entrypoint
-    docker run --rm --entrypoint "" \
-        -v proxcenter_data:/app/data \
-        -e DATABASE_URL="file:/app/data/proxcenter.db" \
-        "$FRONTEND_IMAGE" \
-        sh -c "prisma db push --schema /app/prisma/schema.migrate.prisma --accept-data-loss --skip-generate" > /dev/null 2>&1 || true
-
-    log_success "Database initialized"
+    log_success "Volumes initialized"
 }
 
 # ============================================

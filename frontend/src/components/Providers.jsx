@@ -4,7 +4,9 @@ import { getLocale } from 'next-intl/server'
 import { VerticalNavProvider } from '@menu/contexts/verticalNavContext'
 import { SettingsProvider } from '@core/contexts/settingsContext'
 import ThemeProvider from '@components/theme'
-import AuthProvider from '@components/AuthProvider'
+// AuthProvider (SessionProvider) is mounted at the root layout so that
+// BrandingProvider — also at the root — can react to session changes and
+// fetch the right tenant's white-label on login / tenant switch.
 import { RBACProvider } from '@/contexts/RBACContext'
 import { PageTitleProvider } from '@/contexts/PageTitleContext'
 import { LocaleProvider } from '@/contexts/LocaleContext'
@@ -28,8 +30,7 @@ const Providers = async props => {
   const locale = await getLocale()
 
   return (
-    <AuthProvider>
-      <TenantProvider>
+    <TenantProvider>
       <RBACProvider>
         <LicenseProvider>
           <LocaleProvider initialLocale={locale}>
@@ -47,8 +48,7 @@ const Providers = async props => {
           </LocaleProvider>
         </LicenseProvider>
       </RBACProvider>
-      </TenantProvider>
-    </AuthProvider>
+    </TenantProvider>
   )
 }
 

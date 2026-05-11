@@ -4,6 +4,10 @@ import { pveFetch } from "@/lib/proxmox/client"
 import { isVmConfigNotFoundError, locateVmInCluster, type GuestType } from "@/lib/proxmox/locateVm"
 import { getConnectionById } from "@/lib/connections/getConnection"
 import { checkPermission, buildVmResourceId, PERMISSIONS } from "@/lib/rbac"
+import { getCurrentTenantId } from "@/lib/tenant"
+import { resolveVdcForTenant, checkVdcQuota } from "@/lib/vdc/quota"
+import { getAllowedBridgesForTenant, parseBridgeFromNet } from "@/lib/vdc/vnets"
+import { syncIpamForVmConfig, IpamHintUnavailableError, IpamExhaustedError } from "@/lib/vdc/ipamSync"
 
 export const runtime = "nodejs"
 
@@ -159,6 +163,67 @@ export async function PUT(
 
     const conn = await getConnectionById(id)
 
+    // ── vDC Quota Check (CPU/RAM increases) ──
+    const tenantId = await getCurrentTenantId()
+    try {
+      const vdcInfo = await resolveVdcForTenant(tenantId, id, node)
+
+      if (vdcInfo && (body.cores || body.sockets || body.memory)) {
+        // Fetch current VM config from PVE to compute deltas
+        const currentConfig = await pveFetch<any>(
+          conn,
+          `/nodes/${encodeURIComponent(node)}/${type}/${encodeURIComponent(vmid)}/config`
+        )
+
+        const currentVcpus = (currentConfig?.cores || 1) * (currentConfig?.sockets || 1)
+        const newCores = body.cores ? parseInt(String(body.cores)) : (currentConfig?.cores || 1)
+        const newSockets = body.sockets ? parseInt(String(body.sockets)) : (currentConfig?.sockets || 1)
+        const newVcpus = newCores * newSockets
+        const vcpuDelta = newVcpus - currentVcpus
+
+        const currentRamMb = currentConfig?.memory || 512
+        const newRamMb = body.memory ? parseInt(String(body.memory)) : currentRamMb
+        const ramDelta = newRamMb - currentRamMb
+
+        // Only enforce quota when resources are INCREASING (decreases are always allowed)
+        if (vcpuDelta > 0 || ramDelta > 0) {
+          const quotaCheck = await checkVdcQuota(id, vdcInfo.poolName, vdcInfo.quota, {
+            type: 'config',
+            addVcpus: Math.max(0, vcpuDelta),
+            addRamMb: Math.max(0, ramDelta),
+            addVms: 0,
+          })
+
+          if (!quotaCheck.allowed) {
+            return NextResponse.json({
+              error: 'Quota exceeded',
+              violations: quotaCheck.violations,
+            }, { status: 409 })
+          }
+        }
+      }
+    } catch (e: any) {
+      if (e?.message === 'NODE_NOT_AUTHORIZED') {
+        return NextResponse.json({ error: 'This node is not authorized for your vDC' }, { status: 403 })
+      }
+      throw e
+    }
+
+    // Phase 4b: Enforce bridge whitelist
+    const allowedBridges = await getAllowedBridgesForTenant(tenantId, id)
+    if (allowedBridges !== null) {
+      for (const key of Object.keys(body || {})) {
+        if (!/^net\d+$/.test(key)) continue
+        const bridge = parseBridgeFromNet(String(body[key] || ""))
+        if (bridge && !allowedBridges.has(bridge)) {
+          return NextResponse.json(
+            { error: `Bridge "${bridge}" is not authorized for this vDC. Allowed: ${Array.from(allowedBridges).join(", ")}` },
+            { status: 403 }
+          )
+        }
+      }
+    }
+
     // Sélectionner les champs autorisés selon le type
     const allowedFields = type === 'qemu' ? ALLOWED_QEMU_FIELDS : ALLOWED_LXC_FIELDS
 
@@ -194,18 +259,67 @@ export async function PUT(
       return NextResponse.json({ error: "No valid fields to update" }, { status: 400 })
     }
 
-    // Proxmox: PUT /nodes/{node}/{qemu|lxc}/{vmid}/config
-    const result = await pveFetch<any>(
-      conn,
-      `/nodes/${encodeURIComponent(node)}/${type}/${encodeURIComponent(vmid)}/config`,
-      { 
-        method: "PUT",
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded'
-        },
-        body: formData.toString()
+    // ── IPAM sync (qemu only) ──
+    // Reconcile our IPAM DB with the netN/ipconfigN changes the user is
+    // about to push. The helper handles the no-op case (no IPAM-managed
+    // bridge involved) cheaply, so this is safe to call unconditionally.
+    let ipamRollback: (() => void) | null = null
+    if (type === 'qemu') {
+      const before = await pveFetch<any>(
+        conn,
+        `/nodes/${encodeURIComponent(node)}/${type}/${encodeURIComponent(vmid)}/config`
+      )
+      // Build the after-snapshot the helper compares against. body is a
+      // sparse patch — fields not in body inherit from before.
+      const after = { ...before, ...body }
+      try {
+        const sync = await syncIpamForVmConfig({
+          before,
+          after,
+          conn,
+          connectionId: id,
+          vmid: Number(vmid),
+          hostname: typeof body.name === 'string' ? body.name : (before?.name ?? null),
+        })
+        ipamRollback = sync.rollback
+        // Patch the PVE PUT body with any ipconfigN corrections the
+        // allocator emitted (auto-pick, hint conflict resolution).
+        for (const [k, v] of Object.entries(sync.bodyOverrides)) {
+          formData.set(k, v)
+        }
+      } catch (err: any) {
+        if (err instanceof IpamHintUnavailableError) {
+          return NextResponse.json({ error: `IP unavailable: ${err.hint}` }, { status: 409 })
+        }
+        if (err instanceof IpamExhaustedError) {
+          return NextResponse.json({ error: `Subnet is full — no free IP available` }, { status: 409 })
+        }
+        throw err
       }
-    )
+    }
+
+    // Proxmox: PUT /nodes/{node}/{qemu|lxc}/{vmid}/config
+    let result: any
+    try {
+      result = await pveFetch<any>(
+        conn,
+        `/nodes/${encodeURIComponent(node)}/${type}/${encodeURIComponent(vmid)}/config`,
+        {
+          method: "PUT",
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded'
+          },
+          body: formData.toString()
+        }
+      )
+    } catch (err) {
+      // PVE rejected the write — undo the IPAM mutations so the DB doesn't
+      // drift away from the unchanged qm config.
+      if (ipamRollback) {
+        try { ipamRollback() } catch { /* tolerate */ }
+      }
+      throw err
+    }
 
     // Audit
     const { audit } = await import("@/lib/audit")

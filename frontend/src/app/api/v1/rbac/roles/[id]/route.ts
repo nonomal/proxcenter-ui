@@ -5,14 +5,24 @@ import { NextRequest, NextResponse } from "next/server"
 import { getServerSession } from "next-auth"
 
 import { authOptions } from "@/lib/auth/config"
-import { getDb } from "@/lib/db/sqlite"
+import { prisma } from "@/lib/db/prisma"
 import { audit } from "@/lib/audit"
-import { hasPermission } from "@/lib/rbac"
+import { isUserSuperAdmin, PROTECTED_ROLE_IDS } from "@/lib/rbac"
 import { getCurrentTenantId } from "@/lib/tenant"
 import { demoResponse } from "@/lib/demo/demo-api"
 
 interface RouteContext {
   params: Promise<{ id: string }>
+}
+
+/** Hide protected wildcard roles from non-super-admin callers. 404 rather than 403 to avoid leaking existence. */
+async function denyIfProtectedRoleAndCallerIsNot(
+  roleId: string,
+  callerUserId: string | undefined
+): Promise<NextResponse | null> {
+  if (!(PROTECTED_ROLE_IDS as readonly string[]).includes(roleId)) return null
+  if (callerUserId && (await isUserSuperAdmin(callerUserId))) return null
+  return NextResponse.json({ error: "Rôle non trouvé" }, { status: 404 })
 }
 
 // GET /api/v1/rbac/roles/[id] - Détails d'un rôle
@@ -28,58 +38,66 @@ export async function GET(req: NextRequest, context: RouteContext) {
     }
 
     const { id } = await context.params
-    const db = getDb()
+    const superAdminBlock = await denyIfProtectedRoleAndCallerIsNot(id, session.user.id)
+    if (superAdminBlock) return superAdminBlock
 
-    const role = db.prepare(`
-      SELECT id, name, description, is_system, color, created_at, updated_at
-      FROM rbac_roles WHERE id = ?
-    `).get(id) as any
+    const tenantId = await getCurrentTenantId()
+
+    const role = await prisma.rbacRole.findUnique({
+      where: { id },
+      include: {
+        permissions: {
+          include: { permission: true },
+          orderBy: [{ permission: { category: "asc" } }, { permission: { name: "asc" } }],
+        },
+        userRoles: {
+          where: { tenantId },
+          include: {
+            user: { select: { id: true, email: true, name: true } },
+            grantedBy: { select: { email: true } },
+          },
+          orderBy: { grantedAt: "desc" },
+        },
+      },
+    })
 
     if (!role) {
       return NextResponse.json({ error: "Rôle non trouvé" }, { status: 404 })
     }
 
-    // Récupérer les permissions
-    const permissions = db.prepare(`
-      SELECT p.id, p.name, p.category, p.description, p.is_dangerous
-      FROM rbac_role_permissions rp
-      JOIN rbac_permissions p ON p.id = rp.permission_id
-      WHERE rp.role_id = ?
-      ORDER BY p.category, p.name
-    `).all(id)
-
-    // Récupérer les utilisateurs assignés à ce rôle (scoped by tenant)
-    const tenantId = await getCurrentTenantId()
-    const users = db.prepare(`
-      SELECT
-        ur.id as assignment_id,
-        ur.scope_type,
-        ur.scope_target,
-        ur.granted_at,
-        ur.expires_at,
-        u.id as user_id,
-        u.email,
-        u.name,
-        g.email as granted_by_email
-      FROM rbac_user_roles ur
-      JOIN users u ON u.id = ur.user_id
-      LEFT JOIN users g ON g.id = ur.granted_by
-      WHERE ur.role_id = ? AND ur.tenant_id = ?
-      ORDER BY ur.granted_at DESC
-    `).all(id, tenantId)
-
     return NextResponse.json({
       data: {
-        ...role,
-        is_system: role.is_system === 1,
-        permissions,
-        users
-      }
+        id: role.id,
+        name: role.name,
+        description: role.description,
+        is_system: role.isSystem,
+        color: role.color,
+        created_at: role.createdAt.toISOString(),
+        updated_at: role.updatedAt.toISOString(),
+        permissions: role.permissions.map(rp => ({
+          id: rp.permission.id,
+          name: rp.permission.name,
+          category: rp.permission.category,
+          description: rp.permission.description,
+          is_dangerous: rp.permission.isDangerous,
+        })),
+        users: role.userRoles.map(ur => ({
+          assignment_id: ur.id,
+          scope_type: ur.scopeType,
+          scope_target: ur.scopeTarget,
+          granted_at: ur.grantedAt.toISOString(),
+          expires_at: ur.expiresAt?.toISOString() ?? null,
+          user_id: ur.user.id,
+          email: ur.user.email,
+          name: ur.user.name,
+          granted_by_email: ur.grantedBy?.email ?? null,
+        })),
+      },
     })
 
   } catch (error: any) {
     console.error("GET /api/v1/rbac/roles/[id] error:", error)
-    
+
 return NextResponse.json(
       { error: error.message || "Erreur serveur" },
       { status: 500 }
@@ -99,61 +117,67 @@ export async function PATCH(req: NextRequest, context: RouteContext) {
       return NextResponse.json({ error: "Non autorisé" }, { status: 401 })
     }
 
-    const tenantId = await getCurrentTenantId()
-    if (!hasPermission({ userId: session.user.id, permission: 'admin.rbac', tenantId })) {
+    // Modifying or deleting a role (including its permission set) is reserved
+    // to super admins — otherwise a tenant admin with admin.rbac could swap
+    // their role's perms for wildcard and self-escalate.
+    if (!(await isUserSuperAdmin(session.user.id))) {
       return NextResponse.json({ error: "Droits administrateur requis" }, { status: 403 })
     }
 
     const { id } = await context.params
-    const db = getDb()
+    const superAdminBlock = await denyIfProtectedRoleAndCallerIsNot(id, session.user.id)
+    if (superAdminBlock) return superAdminBlock
 
-    const role = db.prepare("SELECT * FROM rbac_roles WHERE id = ?").get(id) as any
+    const role = await prisma.rbacRole.findUnique({ where: { id } })
 
     if (!role) {
       return NextResponse.json({ error: "Rôle non trouvé" }, { status: 404 })
     }
 
-    if (role.is_system === 1) {
+    if (role.isSystem) {
       return NextResponse.json({ error: "Impossible de modifier un rôle système" }, { status: 400 })
     }
 
     const body = await req.json()
     const { name, description, color, permissions } = body
-    const now = new Date().toISOString()
+    const now = new Date()
 
     // Vérifier l'unicité du nom si modifié
     if (name && name !== role.name) {
-      const existing = db.prepare("SELECT id FROM rbac_roles WHERE name = ? AND id != ?").get(name, id)
+      const existing = await prisma.rbacRole.findFirst({
+        where: { name, NOT: { id } },
+        select: { id: true },
+      })
 
       if (existing) {
         return NextResponse.json({ error: "Un rôle avec ce nom existe déjà" }, { status: 400 })
       }
     }
 
-    // Mettre à jour le rôle
-    db.prepare(`
-      UPDATE rbac_roles 
-      SET name = COALESCE(?, name),
-          description = COALESCE(?, description),
-          color = COALESCE(?, color),
-          updated_at = ?
-      WHERE id = ?
-    `).run(name || null, description, color || null, now, id)
-
-    // Mettre à jour les permissions si fournies
-    if (Array.isArray(permissions)) {
-      // Supprimer les anciennes
-      db.prepare("DELETE FROM rbac_role_permissions WHERE role_id = ?").run(id)
-      
-      // Ajouter les nouvelles
-      const insertPerm = db.prepare(
-        "INSERT OR IGNORE INTO rbac_role_permissions (role_id, permission_id) VALUES (?, ?)"
-      )
-
-      for (const permId of permissions) {
-        insertPerm.run(id, permId)
-      }
+    const updateData: { name?: string; description?: string | null; color?: string; updatedAt: Date } = {
+      updatedAt: now,
     }
+    if (name !== undefined) updateData.name = name
+    if (description !== undefined) updateData.description = description
+    if (color !== undefined) updateData.color = color
+
+    const replacePermissions = Array.isArray(permissions)
+    const permIds: string[] = replacePermissions ? permissions.filter((p: any) => typeof p === "string") : []
+
+    // Mettre à jour le rôle + remplacer les permissions atomiquement si fournies
+    await prisma.$transaction(async tx => {
+      await tx.rbacRole.update({ where: { id }, data: updateData })
+
+      if (replacePermissions) {
+        await tx.rbacRolePermission.deleteMany({ where: { roleId: id } })
+        if (permIds.length > 0) {
+          await tx.rbacRolePermission.createMany({
+            data: permIds.map(permissionId => ({ roleId: id, permissionId })),
+            skipDuplicates: true,
+          })
+        }
+      }
+    })
 
     // Audit
     await audit({
@@ -169,21 +193,37 @@ export async function PATCH(req: NextRequest, context: RouteContext) {
     })
 
     // Retourner le rôle mis à jour
-    const updatedRole = db.prepare("SELECT * FROM rbac_roles WHERE id = ?").get(id)
+    const updated = await prisma.rbacRole.findUnique({
+      where: { id },
+      include: { permissions: { include: { permission: true } } },
+    })
 
-    const rolePermissions = db.prepare(`
-      SELECT p.* FROM rbac_role_permissions rp
-      JOIN rbac_permissions p ON p.id = rp.permission_id
-      WHERE rp.role_id = ?
-    `).all(id)
+    if (!updated) {
+      return NextResponse.json({ error: "Rôle non trouvé" }, { status: 404 })
+    }
 
     return NextResponse.json({
-      data: { ...updatedRole, permissions: rolePermissions }
+      data: {
+        id: updated.id,
+        name: updated.name,
+        description: updated.description,
+        is_system: updated.isSystem,
+        color: updated.color,
+        created_at: updated.createdAt.toISOString(),
+        updated_at: updated.updatedAt.toISOString(),
+        permissions: updated.permissions.map(rp => ({
+          id: rp.permission.id,
+          name: rp.permission.name,
+          category: rp.permission.category,
+          description: rp.permission.description,
+          is_dangerous: rp.permission.isDangerous,
+        })),
+      },
     })
 
   } catch (error: any) {
     console.error("PATCH /api/v1/rbac/roles/[id] error:", error)
-    
+
 return NextResponse.json(
       { error: error.message || "Erreur serveur" },
       { status: 500 }
@@ -203,37 +243,39 @@ export async function DELETE(req: NextRequest, context: RouteContext) {
       return NextResponse.json({ error: "Non autorisé" }, { status: 401 })
     }
 
-    const tenantId = await getCurrentTenantId()
-    if (!hasPermission({ userId: session.user.id, permission: 'admin.rbac', tenantId })) {
+    // Modifying or deleting a role (including its permission set) is reserved
+    // to super admins — otherwise a tenant admin with admin.rbac could swap
+    // their role's perms for wildcard and self-escalate.
+    if (!(await isUserSuperAdmin(session.user.id))) {
       return NextResponse.json({ error: "Droits administrateur requis" }, { status: 403 })
     }
 
     const { id } = await context.params
-    const db = getDb()
+    const superAdminBlock = await denyIfProtectedRoleAndCallerIsNot(id, session.user.id)
+    if (superAdminBlock) return superAdminBlock
 
-    const role = db.prepare("SELECT * FROM rbac_roles WHERE id = ?").get(id) as any
+    const role = await prisma.rbacRole.findUnique({ where: { id } })
 
     if (!role) {
       return NextResponse.json({ error: "Rôle non trouvé" }, { status: 404 })
     }
 
-    if (role.is_system === 1) {
+    if (role.isSystem) {
       return NextResponse.json({ error: "Impossible de supprimer un rôle système" }, { status: 400 })
     }
 
-    // Vérifier si des utilisateurs utilisent ce rôle (dans le tenant courant)
-    const userCount = db.prepare(
-      "SELECT COUNT(*) as count FROM rbac_user_roles WHERE role_id = ? AND tenant_id = ?"
-    ).get(id, tenantId) as any
+    // Vérifier si des utilisateurs utilisent ce rôle (tous tenants confondus,
+    // car la suppression est globale).
+    const userCount = await prisma.rbacUserRole.count({ where: { roleId: id } })
 
-    if (userCount.count > 0) {
-      return NextResponse.json({ 
-        error: `Ce rôle est assigné à ${userCount.count} utilisateur(s). Retirez les assignations d'abord.` 
+    if (userCount > 0) {
+      return NextResponse.json({
+        error: `Ce rôle est assigné à ${userCount} utilisateur(s). Retirez les assignations d'abord.`
       }, { status: 400 })
     }
 
     // Supprimer le rôle (les permissions liées seront supprimées par CASCADE)
-    db.prepare("DELETE FROM rbac_roles WHERE id = ?").run(id)
+    await prisma.rbacRole.delete({ where: { id } })
 
     // Audit
     await audit({
@@ -251,7 +293,7 @@ export async function DELETE(req: NextRequest, context: RouteContext) {
 
   } catch (error: any) {
     console.error("DELETE /api/v1/rbac/roles/[id] error:", error)
-    
+
 return NextResponse.json(
       { error: error.message || "Erreur serveur" },
       { status: 500 }

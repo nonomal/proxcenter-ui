@@ -23,21 +23,13 @@ export async function PATCH(req: Request) {
 
     const tags = body.tags ? String(body.tags) : null
 
-    // Find or create the ManagedHost, then update tags
-    let host = await prisma.managedHost.findUnique({
+    const host = await prisma.managedHost.upsert({
       where: { connectionId_node: { connectionId: body.connectionId, node: body.node } },
+      update: { tags },
+      create: { connectionId: body.connectionId, node: body.node, tags },
     })
 
-    if (!host) {
-      host = await prisma.managedHost.create({
-        data: { connectionId: body.connectionId, node: body.node },
-      })
-    }
-
-    // Update tags via raw SQL to avoid Prisma client cache issues
-    await prisma.$executeRawUnsafe('UPDATE "ManagedHost" SET tags = ? WHERE id = ?', tags, host.id)
-
-    return NextResponse.json({ data: { id: host.id, tags } })
+    return NextResponse.json({ data: { id: host.id, tags: host.tags } })
   } catch (e: any) {
     return NextResponse.json({ error: e?.message || String(e) }, { status: 500 })
   }

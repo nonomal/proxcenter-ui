@@ -3,11 +3,13 @@
 import { useEffect } from 'react'
 
 import { useTranslations } from 'next-intl'
-import { Alert, Box, Button } from '@mui/material'
+import { useRouter } from 'next/navigation'
+import { Alert, Box, Button, CircularProgress } from '@mui/material'
 
 import WidgetGrid from '@/components/dashboard/WidgetGrid'
 import { usePageTitle } from '@/contexts/PageTitleContext'
 import { useDashboard } from '@/hooks/useDashboard'
+import { useMyVdcs } from '@/hooks/useMyVdcs'
 
 function useTimeAgo() {
   const t = useTranslations('time')
@@ -30,6 +32,15 @@ export default function HomePage() {
   const timeAgo = useTimeAgo()
   const { setPageInfo } = usePageTitle()
 
+  const router = useRouter()
+  const { hasVdc, loading: vdcLoading } = useMyVdcs()
+
+  useEffect(() => {
+    if (!vdcLoading && hasVdc) {
+      router.replace('/my-vdc')
+    }
+  }, [vdcLoading, hasVdc, router])
+
   const { data: dashboardResponse, error, isLoading, isValidating, mutate } = useDashboard()
   const data = dashboardResponse?.data ?? null
   const loading = isLoading
@@ -44,6 +55,14 @@ export default function HomePage() {
   useEffect(() => {
     return () => setPageInfo('', '', '')
   }, [setPageInfo])
+
+  if (vdcLoading || hasVdc) {
+    return (
+      <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '60vh' }}>
+        <CircularProgress />
+      </Box>
+    )
+  }
 
   if (error && !data) {
     return (

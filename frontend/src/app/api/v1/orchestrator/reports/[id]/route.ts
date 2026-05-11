@@ -2,21 +2,13 @@
 import { NextRequest, NextResponse } from 'next/server'
 
 import { orchestratorFetch } from '@/lib/orchestrator'
-import { getTenantConnectionIds } from '@/lib/tenant'
 import { checkPermission, PERMISSIONS } from '@/lib/rbac'
 
 export const runtime = 'nodejs'
 
-async function verifyReportBelongsToTenant(id: string): Promise<{ data: any; allowed: boolean }> {
-  const data = await orchestratorFetch(`/reports/${id}`) as any
-  if (data?.connection_id) {
-    const tenantConnectionIds = await getTenantConnectionIds()
-    if (!tenantConnectionIds.has(data.connection_id)) {
-      return { data, allowed: false }
-    }
-  }
-  return { data, allowed: true }
-}
+// Tenant ownership is enforced by the orchestrator via the X-Tenant-ID
+// header (cross-tenant ids return 404). The local connection_id-based guard
+// that lived here used the wrong field name (singular vs persisted array).
 
 // GET /api/v1/orchestrator/reports/[id] - Get a single report
 export async function GET(
@@ -28,9 +20,7 @@ export async function GET(
     if (denied) return denied
 
     const { id } = await params
-    const { data, allowed } = await verifyReportBelongsToTenant(id)
-    if (!allowed) return NextResponse.json({ error: 'Report not found' }, { status: 404 })
-
+    const data = await orchestratorFetch(`/reports/${id}`)
     return NextResponse.json(data)
   } catch (error: any) {
     if ((error as any)?.code !== 'ORCHESTRATOR_UNAVAILABLE') {
@@ -53,9 +43,6 @@ export async function DELETE(
     if (denied) return denied
 
     const { id } = await params
-    const { allowed } = await verifyReportBelongsToTenant(id)
-    if (!allowed) return NextResponse.json({ error: 'Report not found' }, { status: 404 })
-
     const data = await orchestratorFetch(`/reports/${id}`, {
       method: 'DELETE'
     })

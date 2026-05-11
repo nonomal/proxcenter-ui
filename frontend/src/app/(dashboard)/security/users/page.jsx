@@ -38,7 +38,7 @@ import { DataGrid } from '@mui/x-data-grid'
 
 import { usePageTitle } from '@/contexts/PageTitleContext'
 import { useLicense, Features } from '@/contexts/LicenseContext'
-import { useUsers, useRbacRoles, useRbacAssignments } from '@/hooks/useUsers'
+import { useUsers, useRbacRoles, useRbacAssignments, useTenants } from '@/hooks/useUsers'
 import EmptyState from '@/components/EmptyState'
 import { TableSkeleton } from '@/components/skeletons'
 
@@ -64,23 +64,42 @@ return t ? t('time.daysAgo', { count: Math.floor(diff / 86400) }) : `${Math.floo
 -------------------------------- */
 
 function RoleChip({ roles, t }) {
-  const role = roles?.[0]
-
-  if (!role) {
+  const list = Array.isArray(roles) ? roles : []
+  if (list.length === 0) {
     return <Chip size='small' label={t ? t('usersPage.noRole') : 'No role'} variant='outlined' sx={{ opacity: 0.5 }} />
   }
 
+  // Same role on every membership → single chip (the common MSP case).
+  // Divergent roles (e.g. tenant_admin on tenant-1 + tenant_viewer on
+  // tenant-2) get a Multiple chip whose tooltip lists the breakdown so
+  // the operator notices and audits without leaving the row.
+  const distinctRoleIds = new Set(list.map(r => r.id).filter(Boolean))
+  if (distinctRoleIds.size <= 1) {
+    const role = list[0]
+    return (
+      <Chip
+        size='small'
+        label={t && role.is_system ? t(`rbac.roles.${role.id}`) : role.name}
+        sx={{
+          bgcolor: role.color ? `${role.color}20` : undefined,
+          color: role.color || undefined,
+          borderColor: role.color || undefined,
+        }}
+        variant='outlined'
+      />
+    )
+  }
+  const breakdown = list.map(r => `${r.tenant_name || r.tenant_id || '?'}: ${r.name}`).join(' · ')
   return (
-    <Chip
-      size='small'
-      label={t && role.is_system ? t(`rbac.roles.${role.id}`) : role.name}
-      sx={{
-        bgcolor: role.color ? `${role.color}20` : undefined,
-        color: role.color || undefined,
-        borderColor: role.color || undefined,
-      }}
-      variant='outlined'
-    />
+    <Tooltip title={breakdown}>
+      <Chip
+        size='small'
+        label={t ? t('usersPage.rolesMixed', { count: distinctRoleIds.size }) : `${distinctRoleIds.size} roles`}
+        variant='outlined'
+        color='warning'
+        icon={<i className='ri-error-warning-line' style={{ fontSize: 14 }} />}
+      />
+    </Tooltip>
   )
 }
 
@@ -97,24 +116,66 @@ return <Chip size='small' label={t('usersPage.localAuth')} variant='outlined' ic
    User Dialog - Création/Modification
 -------------------------------- */
 
-function UserDialog({ open, onClose, user, onSave, rbacRoles, t, showRbac = true }) {
+// Roles that must NEVER be assigned in a non-default tenant. Mirrors
+// TENANT_FORBIDDEN_ROLE_IDS in /security/rbac and the backend whitelist
+// (PROVIDER_ONLY_ROLE_IDS + PROTECTED_ROLE_IDS in src/lib/rbac/index.ts).
+//
+// Reason: legacy "global" roles (operator / vm_admin / viewer / vm_user)
+// grant automation.view which unlocks DRS / Site Recovery / Network
+// Security / Resources — pages Tenant Admin explicitly excludes. Protected
+// wildcards (super_admin / provider_admin) are provider-scope by design;
+// binding them under a tenant is either meaningless (super_admin is
+// cross-tenant) or an escalation surface (provider_admin → tenant_admin++).
+const TENANT_FORBIDDEN_ROLE_IDS = new Set([
+  'role_super_admin',
+  'role_provider_admin',
+  'role_operator',
+  'role_vm_admin',
+  'role_viewer',
+  'role_vm_user',
+])
+
+function UserDialog({ open, onClose, user, onSave, rbacRoles, t, showRbac = true, currentUserId, currentSessionTenantId = 'default', enableTenantMgmt = false, tenantsList = [] }) {
+  // Self-protection: the current user cannot change their own role or disable
+  // their own account (matches the backend guards in /users/[id] and
+  // /rbac/assignments). Hide those controls in the edit dialog.
+  const isSelf = !!user?.id && user.id === currentUserId
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [enabled, setEnabled] = useState(true)
   const [selectedRole, setSelectedRole] = useState(null)
+  const [selectedTenants, setSelectedTenants] = useState([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [showPassword, setShowPassword] = useState(false)
 
   const isEdit = !!user
+  // Super admins are pinned to every tenant by design — disable the
+  // multi-select but still display their current memberships so the
+  // operator sees the rule rather than an empty field.
+  const tenantPickerDisabled = isEdit && !!user?.is_super_admin
+  // Detect role divergence across tenants. Used in provider view to
+  // warn that saving a single role propagates to every membership and
+  // overwrites per-tenant differences (typically set via the per-tenant
+  // user list at Settings → Tenants → <X> → users).
+  const rolesAreDivergent = isEdit && Array.isArray(user?.roles)
+    ? new Set(user.roles.map(r => r.id).filter(Boolean)).size > 1
+    : false
 
   useEffect(() => {
     if (user) {
       setName(user.name || '')
       setEmail(user.email || '')
-      setEnabled(user.enabled === 1)
-      setSelectedRole(user.roles?.[0] || null)
+      // user.enabled is a Postgres boolean since the SQLite cutover; the
+      // legacy int comparison (=== 1) was always false and pinned the
+      // Switch off regardless of the row's real state.
+      setEnabled(!!user.enabled)
+      // Divergent roles → leave the picker empty so the operator must
+      // pick a role explicitly (and acknowledge the propagation).
+      const distinctIds = new Set((user.roles || []).map(r => r.id).filter(Boolean))
+      setSelectedRole(distinctIds.size > 1 ? null : (user.roles?.[0] || null))
+      setSelectedTenants(Array.isArray(user.tenants) ? user.tenants.map(t2 => t2.id) : [])
       setPassword('')
     } else {
       setName('')
@@ -122,10 +183,29 @@ function UserDialog({ open, onClose, user, onSave, rbacRoles, t, showRbac = true
       setPassword('')
       setEnabled(true)
       setSelectedRole(null)
+      setSelectedTenants([])
     }
 
     setError('')
   }, [user, open])
+
+  // Clear the role state when the selected tenants make the current role
+  // tenant-forbidden. Without this, the role disappears from the dropdown
+  // (filtered visually) but stays in component state and rides along on
+  // submit — the backend would still refuse, but with a non-obvious 400
+  // toast far from where the operator made the change.
+  useEffect(() => {
+    if (!selectedRole) return
+    const targetTenantIds = enableTenantMgmt
+      ? (selectedTenants.length > 0
+          ? selectedTenants
+          : (user?.tenants?.map(tn => tn.id) ?? []))
+      : [currentSessionTenantId]
+    const hasNonDefaultTarget = targetTenantIds.some(id => id !== 'default')
+    if (hasNonDefaultTarget && TENANT_FORBIDDEN_ROLE_IDS.has(selectedRole.id)) {
+      setSelectedRole(null)
+    }
+  }, [selectedTenants, selectedRole, enableTenantMgmt, currentSessionTenantId, user])
 
   const handleSave = async () => {
     setError('')
@@ -148,13 +228,45 @@ return
 return
     }
 
+    // On create from the provider view, the user MUST land in at least
+    // one tenant — the auth safety net refuses login for tenant-orphan
+    // users with no super_admin role. Stop here so we don't 400 round-
+    // trip to the server.
+    if (!isEdit && enableTenantMgmt && selectedTenants.length === 0) {
+      setError(t ? t('usersPage.tenantsRequired') : 'Select at least one tenant')
+
+return
+    }
+
     setLoading(true)
 
     try {
-      // Créer/Modifier l'utilisateur
+      // Créer/Modifier l'utilisateur. Tenant assignments are sent in the
+      // same payload only from the provider view (enableTenantMgmt). On
+      // edit, the server still enforces the SUPER_ADMIN_PROTECTED and
+      // LAST_TENANT guards via removeUserFromTenant. On create, the
+      // server uses the list as the seed memberships (first id becomes
+      // the default), refusing an empty list to keep the auth safety
+      // net's "every user has at least one tenant" invariant.
+      //
+      // RBAC role: in provider view we send `roleId` so the server
+      // propagates it to every membership atomically (and the per-tenant
+      // DELETE-then-POST loop below is skipped). In tenant-scoped view
+      // we keep the per-tenant assignment flow further down.
       const userBody = isEdit
-        ? { name, enabled: enabled ? 1 : 0, ...(password ? { password } : {}) }
-        : { email, password, name }
+        ? {
+            name,
+            enabled: enabled ? 1 : 0,
+            ...(password ? { password } : {}),
+            ...(enableTenantMgmt && !tenantPickerDisabled ? { tenantIds: selectedTenants } : {}),
+            ...(enableTenantMgmt && showRbac && !isSelf ? { roleId: selectedRole?.id ?? null } : {}),
+          }
+        : {
+            email,
+            password,
+            name,
+            ...(enableTenantMgmt ? { tenantIds: selectedTenants } : {}),
+          }
 
       const res = await fetch(isEdit ? `/api/v1/users/${user.id}` : '/api/v1/users', {
         method: isEdit ? 'PATCH' : 'POST',
@@ -172,30 +284,36 @@ return
 
       const userId = isEdit ? user.id : data.data.id
 
-      // Mettre à jour le rôle RBAC
-      // D'abord supprimer l'ancien rôle de l'utilisateur
-      if (isEdit && user.roles) {
-        for (const role of user.roles) {
-          if (role.assignment_id) {
-            await fetch(`/api/v1/rbac/assignments/${role.assignment_id}`, {
-              method: 'DELETE'
-            })
+      // Provider view (default tenant + Enterprise) handled the role
+      // propagation server-side via the PATCH `roleId` field above.
+      // Skip the per-assignment fallback to avoid double writes.
+      if (!(isEdit && enableTenantMgmt)) {
+        // Tenant-scoped view (or create): drop existing assignments
+        // visible to this caller and create a fresh one in the current
+        // tenant. Same behaviour as before — still one role per tenant
+        // for non-provider operators.
+        if (isEdit && user.roles) {
+          for (const role of user.roles) {
+            if (role.assignment_id) {
+              await fetch(`/api/v1/rbac/assignments/${role.assignment_id}`, {
+                method: 'DELETE'
+              })
+            }
           }
         }
-      }
 
-      // Ensuite assigner le nouveau rôle
-      if (selectedRole) {
-        await fetch('/api/v1/rbac/assignments', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            user_id: userId,
-            role_id: selectedRole.id,
-            scope_type: 'global',
-            scope_target: null
+        if (selectedRole) {
+          await fetch('/api/v1/rbac/assignments', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              user_id: userId,
+              role_id: selectedRole.id,
+              scope_type: 'global',
+              scope_target: null
+            })
           })
-        })
+        }
       }
 
       onSave()
@@ -264,9 +382,41 @@ return
           }}
         />
 
-        {showRbac && (
+        {showRbac && !isSelf && enableTenantMgmt && rolesAreDivergent && (
+          <Alert severity='warning' sx={{ mb: 2 }} icon={<i className='ri-error-warning-line' />}>
+            {t ? t('usersPage.rolesDivergentWarning') : 'Roles differ across this user\'s tenants. Saving a role here will overwrite every per-tenant assignment.'}
+            <Box component='span' sx={{ display: 'block', fontSize: '0.75rem', mt: 0.5, opacity: 0.85 }}>
+              {(user?.roles || []).map(r => `${r.tenant_name || r.tenant_id || '?'}: ${r.name}`).join(' · ')}
+            </Box>
+          </Alert>
+        )}
+
+        {showRbac && !isSelf && (() => {
+          // Filter roles by the tenants this assignment will land on:
+          //  - Provider view (enableTenantMgmt): the role propagates to every
+          //    selected tenant via PATCH `roleId`, so if any of those tenants
+          //    is non-default, exclude tenant-forbidden roles. Falls back to
+          //    the user's existing memberships when nothing is selected yet
+          //    (edit flow before the operator touches the picker).
+          //  - Tenant-scoped view: assignment lands in the current session
+          //    tenant; if that's non-default, exclude forbidden roles.
+          //
+          // When the user is a member of `default` (in addition to others),
+          // we still hide forbidden roles — the backend would 400 on the
+          // tenant-scoped propagation, so surfacing the option misleads.
+          const targetTenantIds = enableTenantMgmt
+            ? (selectedTenants.length > 0
+                ? selectedTenants
+                : (user?.tenants?.map(tn => tn.id) ?? []))
+            : [currentSessionTenantId]
+          const hasNonDefaultTarget = targetTenantIds.some(id => id !== 'default')
+          const visibleRoles = hasNonDefaultTarget
+            ? rbacRoles.filter(r => !TENANT_FORBIDDEN_ROLE_IDS.has(r.id))
+            : rbacRoles
+
+          return (
           <Autocomplete
-            options={rbacRoles}
+            options={visibleRoles}
             value={selectedRole}
             onChange={(_, newValue) => setSelectedRole(newValue)}
             getOptionLabel={(option) => t && option.is_system ? t(`rbac.roles.${option.id}`) : option.name}
@@ -299,9 +449,10 @@ return
             )}
             sx={{ mb: 2 }}
           />
-        )}
+          )
+        })()}
 
-        {isEdit && (
+        {isEdit && !isSelf && (
           <FormControlLabel
             control={
               <Switch
@@ -310,6 +461,40 @@ return
               />
             }
             label={t ? t('usersPage.accountActive') : 'Account active'}
+          />
+        )}
+
+        {enableTenantMgmt && (
+          <Autocomplete
+            multiple
+            options={tenantsList}
+            value={tenantsList.filter(tt => selectedTenants.includes(tt.id))}
+            onChange={(_, newValue) => setSelectedTenants(newValue.map(v => v.id))}
+            getOptionLabel={option => option.name}
+            isOptionEqualToValue={(option, value) => option.id === value.id}
+            disabled={tenantPickerDisabled}
+            renderTags={(value, getTagProps) =>
+              value.map((option, index) => (
+                <Chip
+                  size='small'
+                  label={option.name}
+                  {...getTagProps({ index })}
+                  key={option.id}
+                />
+              ))
+            }
+            renderInput={params => (
+              <TextField
+                {...params}
+                label={t ? t('usersPage.tenantsLabel') : 'Tenants'}
+                placeholder={tenantPickerDisabled ? '' : (t ? t('usersPage.tenantsPlaceholder') : 'Select tenants...')}
+                helperText={tenantPickerDisabled
+                  ? (t ? t('usersPage.tenantsAllTooltip') : 'Super admin — access to every tenant')
+                  : (t ? t('usersPage.tenantsHelper') : 'The user will be a member of every selected tenant')}
+                required={!isEdit}
+              />
+            )}
+            sx={{ mt: 2 }}
           />
         )}
       </DialogContent>
@@ -405,6 +590,13 @@ export default function UsersPage() {
   const t = useTranslations()
   const { hasFeature } = useLicense()
   const showRbac = hasFeature(Features.RBAC)
+  const showTenants = hasFeature(Features.MULTI_TENANCY)
+  // Cross-tenant management (list every user, edit memberships from the
+  // user dialog) is only allowed from the provider tenant. Tenant-scoped
+  // sessions stay limited to their own scope. Community editions never
+  // load the tenants list.
+  const isInDefaultTenant = (session?.user?.tenantId || 'default') === 'default'
+  const enableTenantMgmt = showTenants && isInDefaultTenant
   const [activeTab, setActiveTab] = useState(0)
 
   const { setPageInfo } = usePageTitle()
@@ -419,6 +611,8 @@ return () => setPageInfo('', '', '')
   const { data: usersData, error: usersError, isLoading: usersLoading, mutate: mutateUsers } = useUsers()
   const { data: assignmentsData, mutate: mutateAssignments } = useRbacAssignments()
   const { data: rolesData } = useRbacRoles(showRbac)
+  const { data: tenantsData } = useTenants(enableTenantMgmt)
+  const tenantsList = tenantsData?.data || []
 
   // Combine users with their RBAC role assignments
   const users = useMemo(() => {
@@ -434,6 +628,8 @@ return () => setPageInfo('', '', '')
           id: a.role?.id || a.role_id,
           name: a.role?.name || a.role_name,
           color: a.role?.color || a.role_color,
+          tenant_id: a.tenant_id || null,
+          tenant_name: a.tenant_name || null,
           assignment_id: a.id,
           scope_type: a.scope_type,
           scope_target: a.scope_target
@@ -481,11 +677,28 @@ return () => setPageInfo('', '', '')
         flex: 1,
         minWidth: 200,
         renderCell: params => (
-          <Box sx={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', minWidth: 0 }}>
-            <Typography variant='body2' noWrap sx={{ fontWeight: 600, lineHeight: 1.3 }}>{params.row.email}</Typography>
-            {params.row.name && (
-              <Typography variant='caption' noWrap sx={{ opacity: 0.6, lineHeight: 1.2 }}>{params.row.name}</Typography>
-            )}
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, minWidth: 0, width: '100%' }}>
+            <Box
+              sx={{
+                width: 32,
+                height: 32,
+                borderRadius: '50%',
+                bgcolor: 'action.hover',
+                color: 'text.secondary',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                flexShrink: 0,
+              }}
+            >
+              <i className='ri-user-line' style={{ fontSize: 16 }} />
+            </Box>
+            <Box sx={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', minWidth: 0 }}>
+              <Typography variant='body2' noWrap sx={{ fontWeight: 600, lineHeight: 1.3 }}>{params.row.email}</Typography>
+              {params.row.name && (
+                <Typography variant='caption' noWrap sx={{ opacity: 0.6, lineHeight: 1.2 }}>{params.row.name}</Typography>
+              )}
+            </Box>
           </Box>
         ),
       },
@@ -495,6 +708,63 @@ return () => setPageInfo('', '', '')
         headerName: t('navigation.rbacRoles'),
         width: 200,
         renderCell: params => <RoleChip roles={params.row.roles} t={t} />,
+      }] : []),
+      // Tenants (multi-tenancy view) - Enterprise only.
+      ...(showTenants ? [{
+        field: 'tenants',
+        headerName: t('usersPage.tenantsHeader'),
+        width: 240,
+        sortable: false,
+        renderCell: params => {
+          // Super admins are members of every tenant by design — listing
+          // 1 000 chips would cripple the row. Render a single capped chip
+          // that conveys the rule, and skip the per-tenant breakdown.
+          if (params.row.is_super_admin) {
+            return (
+              <Tooltip title={t('usersPage.tenantsAllTooltip')}>
+                <Chip
+                  size='small'
+                  label={t('usersPage.tenantsAll')}
+                  color='primary'
+                  variant='filled'
+                  icon={<i className='ri-shield-keyhole-line' style={{ fontSize: 14 }} />}
+                />
+              </Tooltip>
+            )
+          }
+          const list = Array.isArray(params.row.tenants) ? params.row.tenants : []
+          if (list.length === 0) {
+            return <Typography variant='body2' sx={{ opacity: 0.5, fontStyle: 'italic' }}>{t('usersPage.tenantsNone')}</Typography>
+          }
+          // Cap chip rendering at 3 to keep row height stable — anything
+          // beyond gets folded into a "+N" chip whose tooltip lists the
+          // overflow names so you can still inspect on demand.
+          const visible = list.slice(0, 3)
+          const overflow = list.slice(3)
+          return (
+            <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap', alignItems: 'center', minWidth: 0 }}>
+              {visible.map(t2 => (
+                <Chip
+                  key={t2.id}
+                  size='small'
+                  label={t2.name}
+                  color={t2.isDefault ? 'primary' : 'default'}
+                  variant={t2.isDefault ? 'filled' : 'outlined'}
+                />
+              ))}
+              {overflow.length > 0 && (
+                <Tooltip title={overflow.map(t2 => t2.name).join(', ')}>
+                  <Chip
+                    size='small'
+                    label={`+${overflow.length}`}
+                    variant='outlined'
+                    sx={{ opacity: 0.8 }}
+                  />
+                </Tooltip>
+              )}
+            </Box>
+          )
+        },
       }] : []),
       {
         field: 'auth_provider',
@@ -547,20 +817,23 @@ return () => setPageInfo('', '', '')
                 <i className='ri-edit-line' />
               </IconButton>
             </Tooltip>
-            <Tooltip title={t('common.delete')}>
-              <IconButton
-                size='small'
-                color='error'
-                onClick={() => handleDelete(params.row)}
-              >
-                <i className='ri-delete-bin-line' />
-              </IconButton>
-            </Tooltip>
+            {/* Hide delete on your own row — self-delete is refused by the backend */}
+            {params.row.id !== session?.user?.id && (
+              <Tooltip title={t('common.delete')}>
+                <IconButton
+                  size='small'
+                  color='error'
+                  onClick={() => handleDelete(params.row)}
+                >
+                  <i className='ri-delete-bin-line' />
+                </IconButton>
+              </Tooltip>
+            )}
           </Box>
         ),
       },
     ],
-    [t, showRbac]
+    [t, showRbac, showTenants, session?.user?.id]
   )
 
   return (
@@ -605,18 +878,14 @@ return () => setPageInfo('', '', '')
                     loading={loading}
                     pageSizeOptions={[10, 25, 50]}
                     disableRowSelectionOnClick
-                    density='compact'
+                    rowHeight={52}
+                    columnHeaderHeight={40}
                     sx={{
                       border: 'none',
-                      '& .MuiDataGrid-row': {
-                        minHeight: '40px !important',
-                        maxHeight: '40px !important',
-                      },
                       '& .MuiDataGrid-cell': {
                         display: 'flex',
                         alignItems: 'center',
                         overflow: 'hidden',
-                        py: 0.5,
                       },
                       '& .MuiDataGrid-columnHeaders': {
                         borderBottom: '1px solid',
@@ -640,6 +909,10 @@ return () => setPageInfo('', '', '')
         rbacRoles={rbacRoles}
         t={t}
         showRbac={showRbac}
+        currentUserId={session?.user?.id}
+        currentSessionTenantId={session?.user?.tenantId || 'default'}
+        enableTenantMgmt={enableTenantMgmt}
+        tenantsList={tenantsList}
       />
 
       <DeleteDialog

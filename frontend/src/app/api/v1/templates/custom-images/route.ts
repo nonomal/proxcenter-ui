@@ -2,10 +2,11 @@
 import { NextResponse } from "next/server"
 import { getServerSession } from "next-auth"
 
-import { getSessionPrisma, getCurrentTenantId } from "@/lib/tenant"
+import { getSessionPrisma, getCurrentTenantId, DEFAULT_TENANT_ID } from "@/lib/tenant"
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
 import { authOptions } from "@/lib/auth/config"
 import { createCustomImageSchema } from "@/lib/schemas"
+import { prisma as basePrisma } from "@/lib/db/prisma"
 
 export const runtime = "nodejs"
 
@@ -55,11 +56,26 @@ export async function POST(req: Request) {
 
     const tenantId = await getCurrentTenantId()
 
+    // Only the provider (tenant 'default') can publish a shared catalogue
+    // entry. For any other tenant we silently force isShared=false.
+    const wantShared = !!(body as any).isShared
+    const isShared = wantShared && tenantId === DEFAULT_TENANT_ID
+
+    // Resolve tenant slug for namespacing the image: a custom image uploaded
+    // by tenant `acme` becomes `custom-acme-<image>` so the file ends up
+    // namespaced on shared PVE storage too (the deploy pipeline derives the
+    // PVE volume name from this slug). Shared catalogue entries skip the
+    // tenant prefix to keep them clean (e.g. `custom-ubuntu-cloud`).
+    const tenantRow = !isShared
+      ? await basePrisma.tenant.findUnique({ where: { id: tenantId }, select: { slug: true } })
+      : null
+    const tenantSlug = tenantRow?.slug || tenantId.replace(/[^a-z0-9-]/gi, '').toLowerCase()
+
     // Generate unique slug
-    let baseSlug = slugify(body.name)
-    if (!baseSlug) baseSlug = 'custom-image'
-    // Prefix with "custom-" to avoid collision with built-in slugs
-    baseSlug = `custom-${baseSlug}`
+    const nameSlug = slugify(body.name) || 'custom-image'
+    const baseSlug = isShared
+      ? `custom-${nameSlug}`
+      : `custom-${tenantSlug}-${nameSlug}`
     let slug = baseSlug
     let suffix = 0
     while (await prisma.customImage.findUnique({ where: { tenantId_slug: { tenantId, slug } } })) {
@@ -86,6 +102,7 @@ export async function POST(req: Request) {
         recommendedCores: body.recommendedCores,
         ostype: body.ostype,
         tags: body.tags || null,
+        isShared,
         createdBy: session?.user?.id || null,
       },
     })

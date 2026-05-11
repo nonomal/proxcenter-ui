@@ -2,7 +2,6 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslations } from 'next-intl'
-import { useRouter } from 'next/navigation'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { isSharedStorage } from '@/lib/proxmox/storage'
 
@@ -51,7 +50,9 @@ const PowerSettingsNewIcon = (props: any) => <i className="ri-shut-down-line" st
 /* PauseIcon, TerminalIcon, MoveUpIcon, ContentCopyIcon, DescriptionIcon → ./components/TreeDialogs */
 
 import EntityTagManager from './components/EntityTagManager'
+import { useRBAC } from '@/contexts/RBACContext'
 import { useTagColors } from '@/contexts/TagColorContext'
+import { useTenant } from '@/contexts/TenantContext'
 import { useTaskTracker } from '@/hooks/useTaskTracker'
 import { MigrateVmDialog, CrossClusterMigrateParams } from '@/components/MigrateVmDialog'
 import { CloneVmDialog } from '@/components/hardware/CloneVmDialog'
@@ -77,6 +78,9 @@ export type InventorySelection =
   | { type: 'extvm'; id: string } // id = connectionId:vmid (external hypervisor VM)
   | { type: 'storage-root'; id: 'storage-root' }
   | { type: 'network-root'; id: 'network-root' }
+  /** Tenant-only: SDN VNet selected from the Network tree.
+   *  id = `tvnet:<vdcId>:<displayName>` */
+  | { type: 'tvnet'; id: string }
   | { type: 'backup-root'; id: 'backup-root' }
   | { type: 'migration-root'; id: 'migration-root' }
 
@@ -415,6 +419,10 @@ function selectionFromItemId(itemId: string): InventorySelection | null {
     return { type: type as any, id } as InventorySelection
   }
 
+  if (type === 'tvnet') {
+    return { type: 'tvnet', id } as InventorySelection
+  }
+
 return null
 }
 
@@ -426,7 +434,13 @@ function safeJson<T>(x: any): T {
 export default function InventoryTree({ selected, onSelect, onRefreshRef, onOptimisticVmStatusRef, onOptimisticVmTagsRef, viewMode: controlledViewMode, onViewModeChange, onAllVmsChange, onHostsChange, onPoolsChange, onTagsChange, onPbsServersChange, favorites: propFavorites, onToggleFavorite, migratingVmIds, pendingActionVmIds, onRefresh, refreshLoading, onCollapse, isCollapsed, allowedViewModes, onCreateVm, onCreateLxc, onNodeAction, onStoragesChange, onExternalHypervisorsChange, showVmId, onToggleShowVmId }: Props) {
   const t = useTranslations()
   const theme = useTheme()
-  const router = useRouter()
+  const { isAdmin } = useRBAC()
+  // Tenants other than the provider get the cloud-style abstraction —
+  // shared storages on a multi-tenant cluster would leak other tenants'
+  // VMID metadata, so we hide the STORAGES section from them entirely
+  // (see also vDC strategy: dedicated storage per tenant for full isolation).
+  const { currentTenant, loading: tenantLoading } = useTenant()
+  const isProviderTenant = !tenantLoading && currentTenant?.id === 'default'
   const { trackTask } = useTaskTracker()
   const { getColor: getTagColor, loadConnection } = useTagColors()
   const [loading, setLoading] = useState(true)
@@ -2259,6 +2273,22 @@ return favorites.has(vmKey)
   const [networkData, setNetworkData] = useState<VmNetData[]>([])
   const [networkLoading, setNetworkLoading] = useState(false)
   const networkFetchedRef = useRef(false)
+
+  // Tenant VNet view — replaces the conn/node/VLAN/VM walk for non-provider
+  // tenants in the Network tree. Each entry mirrors what VnetsSection
+  // already fetches via /api/v1/vdcs/{id}/vnets.
+  type TenantVnetItem = {
+    vdcId: string
+    vdcName: string
+    displayName: string
+    pveName: string
+    description?: string | null
+    firewall?: boolean
+    subnet?: { cidr: string; gateway: string; dnsServers: string[] } | null
+  }
+  const [tenantVnets, setTenantVnets] = useState<TenantVnetItem[]>([])
+  const [tenantVnetsLoading, setTenantVnetsLoading] = useState(false)
+  const tenantVnetsFetchedRef = useRef(false)
   // Network sub-items: inverted logic — collapsed by default, expanded when added to this set
   const [expandedNetSections, setExpandedNetSections] = useState<Set<string>>(new Set())
   // Network tree expanded items (not persisted — data is lazy-loaded)
@@ -2272,6 +2302,41 @@ return favorites.has(vmKey)
     })
   }, [])
   const networkCacheRef = useRef<{ connIds: string; data: VmNetData[] } | null>(null)
+
+  // Fetch the tenant's VNets (display + subnet info) — only meaningful for
+  // non-provider tenants. Provider keeps the legacy bridge/VLAN walk.
+  const fetchTenantVnets = useCallback(async () => {
+    setTenantVnetsLoading(true)
+    try {
+      const vdcsRes = await fetch('/api/v1/vdcs')
+      const vdcsJson = await vdcsRes.json()
+      const allVdcs: Array<{ id: string; name: string; connectionId?: string }> = Array.isArray(vdcsJson?.data) ? vdcsJson.data : []
+      const out: TenantVnetItem[] = []
+      await Promise.all(allVdcs.map(async (v) => {
+        try {
+          const r = await fetch(`/api/v1/vdcs/${encodeURIComponent(v.id)}/vnets`)
+          if (!r.ok) return
+          const j = await r.json()
+          const list: any[] = Array.isArray(j?.data) ? j.data : []
+          for (const vnet of list) {
+            out.push({
+              vdcId: v.id,
+              vdcName: v.name,
+              displayName: vnet.displayName ?? vnet.pveName,
+              pveName: vnet.pveName,
+              description: vnet.description ?? null,
+              firewall: !!vnet.firewall,
+              subnet: vnet.subnet ?? null,
+            })
+          }
+        } catch { /* skip vDC on transient error */ }
+      }))
+      out.sort((a, b) => a.vdcName.localeCompare(b.vdcName) || a.displayName.localeCompare(b.displayName))
+      setTenantVnets(out)
+    } finally {
+      setTenantVnetsLoading(false)
+    }
+  }, [])
 
   // Fetch networks when section is expanded
   const fetchNetworks = useCallback(() => {
@@ -2518,11 +2583,6 @@ return favorites.has(vmKey)
               </IconButton>
             </Tooltip>
           )}
-          <Tooltip title={t('settings.connections')}>
-            <IconButton size='small' onClick={() => router.push('/settings?tab=connections')}>
-              <i className='ri-add-circle-line' style={{ fontSize: 18 }} />
-            </IconButton>
-          </Tooltip>
           {onCollapse && (
             <Tooltip title={isCollapsed ? t('common.showMore') : t('common.showLess')}>
               <IconButton
@@ -2642,6 +2702,35 @@ return favorites.has(vmKey)
       {/* Mode VMs : liste à plat de toutes les VMs */}
       {viewMode === 'vms' ? (
         <Box sx={{ display: 'flex', flexDirection: 'column' }}>
+          {/* PROXMOX VE section header — keeps visual parity with the
+              STORAGES / BACKUP sections rendered below in the same mode.
+              Gated on `clusters.length` so an empty vDC (zero VMs) still
+              shows the header above the empty-state message instead of
+              the message floating with no context. */}
+          {clusters.length > 0 && (
+            <Box
+              onClick={() => onSelect({ type: 'root', id: 'root' })}
+              sx={{
+                display: 'flex', alignItems: 'center', gap: 1, px: 1.5, py: 0.75,
+                bgcolor: theme.palette.mode === 'dark' ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)',
+                borderTop: '1px solid', borderBottom: '1px solid', borderColor: 'divider',
+                cursor: 'pointer',
+                '&:hover': { bgcolor: theme.palette.mode === 'dark' ? 'rgba(255,255,255,0.09)' : 'rgba(0,0,0,0.09)' },
+              }}
+            >
+              <img
+                src={theme.palette.mode === 'dark' ? '/images/proxmox-logo-dark.svg' : '/images/proxmox-logo.svg'}
+                alt=""
+                style={{ width: 14, height: 14 }}
+              />
+              <Typography variant="body2" sx={{ fontWeight: 700 }}>
+                {t('inventory.headerProxmoxVe')}
+              </Typography>
+              <Typography variant="caption" sx={{ opacity: 0.5 }}>
+                ({displayVms.length} VM{displayVms.length > 1 ? 's' : ''})
+              </Typography>
+            </Box>
+          )}
           {displayVms.length === 0 ? (
             <Box sx={{ p: 2, textAlign: 'center' }}>
               <Typography variant='body2' sx={{ opacity: 0.6 }}>
@@ -3126,8 +3215,11 @@ return (
         {filteredClusters.length > 0 && (
           <Box
             onClick={() => {
-              toggleSection('pve')
+              // Single-click UX: select the root (right panel updates to
+              // the all-VMs view) AND toggle expand. Same rationale as
+              // the NETWORK section above.
               onSelect({ type: 'root', id: 'root' })
+              toggleSection('pve')
             }}
             sx={{
               display: 'flex', alignItems: 'center', gap: 1, px: 1.5, py: 0.75,
@@ -3136,7 +3228,11 @@ return (
               cursor: 'pointer', '&:hover': { bgcolor: theme.palette.mode === 'dark' ? 'rgba(255,255,255,0.09)' : 'rgba(0,0,0,0.09)' },
             }}
           >
-            <i className={collapsedSections.has('pve') ? 'ri-add-line' : 'ri-subtract-line'} style={{ fontSize: 14, opacity: 0.7 }} />
+            {/* Visual-only +/- — full-row click target above. */}
+            <i
+              className={collapsedSections.has('pve') ? 'ri-add-line' : 'ri-subtract-line'}
+              style={{ fontSize: 14, opacity: 0.7 }}
+            />
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
               <img src={theme.palette.mode === 'dark' ? '/images/proxmox-logo-dark.svg' : '/images/proxmox-logo.svg'} alt="" style={{ width: 14, height: 14 }} />
               <Typography variant="body2" sx={{ fontWeight: 700 }}>{t('inventory.headerProxmoxVe')}</Typography>
@@ -3192,8 +3288,10 @@ return (
           }}
         >
         {filteredClusters.map(clu => {
-          // Pour un standalone (1 seul node), on affiche directement le node sans niveau cluster
-          if (!clu.isCluster && clu.nodes.length === 1) {
+          // Flatten when only 1 node is visible (standalone host, or tenant
+          // scoped to a single node of a cluster) — no intermediate cluster
+          // root in either case.
+          if (clu.nodes.length === 1) {
             const n = clu.nodes[0]
 
             
@@ -3278,6 +3376,78 @@ return (
                 })}
               </TreeItem>
             )
+          }
+
+          // Pour un tenant vDC (non-admin), on n'affiche pas le noeud cluster,
+          // on rend les nodes directement au premier niveau
+          if (!isAdmin) {
+            return clu.nodes.map(n => (
+              <TreeItem
+                key={`${clu.connId}:${n.node}`}
+                itemId={`node:${clu.connId}:${n.node}`}
+                onContextMenu={(e) => handleNodeContextMenu(e, clu.connId, n.node, n.maintenance, clu.sshEnabled)}
+                label={
+                  <Tooltip
+                    title={<NodeTooltipContent name={n.node} status={n.status} cpu={n.cpu} mem={n.mem} maxmem={n.maxmem} maintenance={n.maintenance} />}
+                    enterDelay={1000} enterNextDelay={1000} placement="right" slotProps={tooltipSlotProps}
+                  >
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
+                    <NodeIcon status={n.status} maintenance={n.maintenance} size={16} />
+                    <span style={{ fontSize: 13 }}>{n.node}</span>
+                    <span style={{ opacity: 0.5, fontSize: 11 }}>({n.vms.length})</span>
+                  </Box>
+                  </Tooltip>
+                }
+              >
+                {n.vms.map(vm => {
+                  const vmKey = `${clu.connId}:${n.node}:${vm.type}:${vm.vmid}`
+                  const isMigrating = isVmMigrating(clu.connId, vm.vmid)
+                  const vmContent = (
+                  <TreeItem
+                    key={vmKey}
+                    itemId={`vm:${clu.connId}:${n.node}:${vm.type}:${vm.vmid}`}
+                    disabled={isMigrating}
+                    onContextMenu={(e) => !isMigrating && handleContextMenu(e, clu.connId, n.node, vm.type, vm.vmid, vm.name, vm.status, clu.isCluster, vm.template, clu.sshEnabled)}
+                    sx={{
+                      opacity: isMigrating ? 0.5 : 1,
+                      '& > .MuiTreeItem-content': {
+                        cursor: isMigrating ? 'not-allowed' : 'pointer',
+                      }
+                    }}
+                    label={
+                      <VmItem
+                        vmKey={vmKey}
+                        connId={clu.connId}
+                        connName={clu.name}
+                        node={n.node}
+                        vmType={vm.type}
+                        vmid={vm.vmid}
+                        name={vm.name}
+                        status={vm.status}
+                        cpu={vm.cpu}
+                        mem={vm.mem}
+                        maxmem={vm.maxmem}
+                        template={vm.template}
+                        isCluster={clu.isCluster}
+                        isSelected={false}
+                        isMigrating={isMigrating}
+                        isPendingAction={isVmPendingAction(clu.connId, vm.vmid)}
+                        isFavorite={favorites.has(vmKey)}
+                        onFavoriteToggle={() => toggleFavorite(clu.connId, n.node, vm.type, vm.vmid, vm.name)}
+                        onClick={() => {}}
+                        onDoubleClick={() => openConsoleWindow(clu.connId, n.node, vm.type, vm.vmid)}
+                        onContextMenu={() => {}}
+                        variant="tree"
+                        t={t}
+                        tags={vm.tags ? String(vm.tags).split(';').filter(Boolean) : undefined}
+                      />
+                    }
+                  />
+                  )
+                  return isMigrating ? <Tooltip key={vmKey} title={t('audit.actions.migrate') + "..."} placement="right">{vmContent}</Tooltip> : vmContent
+                })}
+              </TreeItem>
+            ))
           }
 
           // Pour un cluster (multi-nodes), on affiche le cluster puis les nodes
@@ -3390,14 +3560,13 @@ return (
       </>
       )}
 
-      {/* ── Proxmox Storage Section ── */}
-      {viewMode === 'tree' && clusterStorages.length > 0 && (
+      {/* ── Proxmox Storage Section ── Hidden for tenants on shared clusters
+          to avoid leaking other tenants' VMID metadata via shared Ceph / NFS
+          / ZFS volume listings. Provider keeps full visibility. */}
+      {(viewMode === 'tree' || (viewMode === 'vms' && isProviderTenant)) && clusterStorages.length > 0 && (
         <>
           <Box
-            onClick={(e) => {
-              toggleSection('storage')
-              onSelect({ type: 'storage-root', id: 'storage-root' })
-            }}
+            onClick={() => onSelect({ type: 'storage-root', id: 'storage-root' })}
             sx={{
               display: 'flex', alignItems: 'center', gap: 1, px: 1.5, py: 0.75,
               bgcolor: theme.palette.mode === 'dark' ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)',
@@ -3405,7 +3574,12 @@ return (
               cursor: 'pointer', '&:hover': { bgcolor: theme.palette.mode === 'dark' ? 'rgba(255,255,255,0.09)' : 'rgba(0,0,0,0.09)' },
             }}
           >
-            <i className={collapsedSections.has('storage') ? 'ri-add-line' : 'ri-subtract-line'} style={{ fontSize: 14, opacity: 0.7 }} />
+            <Box
+              onClick={(e) => { e.stopPropagation(); toggleSection('storage') }}
+              sx={{ display: 'flex', alignItems: 'center', cursor: 'pointer', p: 0.25, mr: -0.25 }}
+            >
+              <i className={collapsedSections.has('storage') ? 'ri-add-line' : 'ri-subtract-line'} style={{ fontSize: 14, opacity: 0.7 }} />
+            </Box>
             <i className="ri-database-2-fill" style={{ fontSize: 14, opacity: 0.7 }} />
             <Typography variant="body2" sx={{ fontWeight: 700 }}>STORAGE</Typography>
             <Typography variant="caption" sx={{ opacity: 0.5 }}>
@@ -3472,94 +3646,75 @@ return (
               </Box>
             )
 
-            // Standalone (1 node) : flatten — no intermediate node level
-            if (!cs.isCluster && cs.nodes.length <= 1) {
-              const allStorages = [...cs.sharedStorages, ...(cs.nodes[0]?.storages || [])]
-              const nodeStatus = cs.nodes[0]?.status
-              return (
+            // STORAGE section is flat: one root entry per node (no cluster
+            // wrapper), matching native Proxmox VE storage tree. Shared
+            // cluster storages are shown once, before the per-node list.
+            const sharedItems = cs.sharedStorages.map(s => (
+              <TreeItem
+                key={`storage:${cs.connId}:${s.storage}`}
+                itemId={`storage:${cs.connId}:${s.storage}`}
+                label={storageLabel(s)}
+              />
+            ))
+            // Per-node sub-trees expose host names — only render in 'tree'
+            // mode (provider view). The 'vms' mode (tenant or flat) keeps
+            // shared storages only, consistent with the node abstraction.
+            const nodeItems = viewMode === 'tree'
+              ? cs.nodes.filter(n => n.storages.length > 0).map(n => (
                 <TreeItem
-                  key={`storage-cluster:${cs.connId}`}
-                  itemId={`storage-cluster:${cs.connId}`}
+                  key={`storage-node:${cs.connId}:${n.node}`}
+                  itemId={`storage-node:${cs.connId}:${n.node}`}
                   label={
                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
-                      <NodeIcon status={nodeStatus} size={16} />
-                      <span style={{ fontSize: 13 }}>{cs.connName}</span>
-                      <span style={{ opacity: 0.4, fontSize: 11 }}>({allStorages.length})</span>
+                      <NodeIcon status={n.status} size={16} />
+                      <span style={{ fontSize: 13, opacity: n.status === 'online' ? 1 : 0.5 }}>{n.node}</span>
+                      <span style={{ opacity: 0.4, fontSize: 11 }}>({n.storages.length})</span>
                     </Box>
                   }
                 >
-                  {allStorages.map(s => (
+                  {n.storages.map(s => (
                     <TreeItem
-                      key={`storage:${cs.connId}:${s.storage}:${s.node}`}
-                      itemId={`storage:${cs.connId}:${s.storage}:${s.node}`}
+                      key={`storage:${cs.connId}:${s.storage}:${n.node}`}
+                      itemId={`storage:${cs.connId}:${s.storage}:${n.node}`}
                       label={storageLabel(s)}
                     />
                   ))}
                 </TreeItem>
-              )
-            }
-
-            // Cluster (multi-nodes) : cluster > shared + per-node local storages
-            return (
-              <TreeItem
-                key={`storage-cluster:${cs.connId}`}
-                itemId={`storage-cluster:${cs.connId}`}
-                label={
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
-                    <ClusterIcon nodes={cs.nodes} />
-                    <span style={{ fontSize: 13 }}>{cs.connName}</span>
-                  </Box>
-                }
-              >
-                {/* Shared storages at cluster level */}
-                {cs.sharedStorages.map(s => (
-                  <TreeItem
-                    key={`storage:${cs.connId}:${s.storage}`}
-                    itemId={`storage:${cs.connId}:${s.storage}`}
-                    label={storageLabel(s)}
-                  />
-                ))}
-                {/* Per-node local storages */}
-                {cs.nodes.filter(n => n.storages.length > 0).map(n => (
-                  <TreeItem
-                    key={`storage-node:${cs.connId}:${n.node}`}
-                    itemId={`storage-node:${cs.connId}:${n.node}`}
-                    label={
-                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
-                        <NodeIcon status={n.status} size={16} />
-                        <span style={{ fontSize: 13, opacity: n.status === 'online' ? 1 : 0.5 }}>{n.node}</span>
-                        <span style={{ opacity: 0.4, fontSize: 11 }}>({n.storages.length})</span>
-                      </Box>
-                    }
-                  >
-                    {n.storages.map(s => (
-                      <TreeItem
-                        key={`storage:${cs.connId}:${s.storage}:${n.node}`}
-                        itemId={`storage:${cs.connId}:${s.storage}:${n.node}`}
-                        label={storageLabel(s)}
-                      />
-                    ))}
-                  </TreeItem>
-                ))}
-              </TreeItem>
-            )
+              ))
+              : []
+            return [...sharedItems, ...nodeItems]
           })}
           </SimpleTreeView>
           </Collapse>
         </>
       )}
 
-      {/* ── Network Section ── */}
-      {viewMode === 'tree' && clusters.length > 0 && (
+      {/* ── Network Section ── visible to tenants too (hosts the VNets
+           management UI; bridge/VLAN topology underneath stays scoped to
+           connections the caller can access). 'vms' mode is the default for
+           non-provider tenants since infra modes are hidden by useRBAC-
+           ScopeProfile, so we accept both 'tree' and 'vms'. */}
+      {(viewMode === 'tree' || viewMode === 'vms') && clusters.length > 0 && (
         <>
           <Box
             onClick={() => {
-              toggleNetSection('network')
-              if (!expandedNetSections.has('network') && !networkFetchedRef.current) {
-                networkFetchedRef.current = true
-                fetchNetworks()
+              // Single-click UX: clicking anywhere on the header does both
+              // (a) select the network root so the right panel updates, and
+              // (b) toggle the expand state. The previous design split these
+              // (header click = select only, separate +/- icon = toggle) but
+              // the +/- click target was small and inconsistent — users had
+              // to "click elsewhere" to make expansion catch up.
+              if (isProviderTenant) {
+                if (!networkFetchedRef.current) {
+                  networkFetchedRef.current = true
+                  fetchNetworks()
+                }
+              } else if (!tenantVnetsFetchedRef.current) {
+                tenantVnetsFetchedRef.current = true
+                void fetchTenantVnets()
               }
               onSelect({ type: 'network-root', id: 'network-root' })
+              toggleNetSection('network')
             }}
             sx={{
               display: 'flex', alignItems: 'center', gap: 1, px: 1.5, py: 0.75,
@@ -3568,17 +3723,78 @@ return (
               cursor: 'pointer', '&:hover': { bgcolor: theme.palette.mode === 'dark' ? 'rgba(255,255,255,0.09)' : 'rgba(0,0,0,0.09)' },
             }}
           >
-            <i className={expandedNetSections.has('network') ? 'ri-subtract-line' : 'ri-add-line'} style={{ fontSize: 14, opacity: 0.7 }} />
+            {/* Visual-only +/- indicator — the click target is the entire
+                header (parent Box), no inner click region anymore. */}
+            <i
+              className={expandedNetSections.has('network') ? 'ri-subtract-line' : 'ri-add-line'}
+              style={{ fontSize: 14, opacity: 0.7 }}
+            />
             <i className="ri-router-fill" style={{ fontSize: 14, opacity: 0.7 }} />
             <Typography variant="body2" sx={{ fontWeight: 700 }}>NETWORK</Typography>
-            {networkData.length > 0 && (
+            {isProviderTenant && networkData.length > 0 && (
               <Typography variant="caption" sx={{ opacity: 0.5 }}>
                 ({new Set(networkData.flatMap(v => v.nets.filter(n => n.tag != null).map(n => n.tag))).size} VLANs)
               </Typography>
             )}
+            {!isProviderTenant && tenantVnets.length > 0 && (
+              <Typography variant="caption" sx={{ opacity: 0.5 }}>
+                ({tenantVnets.length} VNet{tenantVnets.length > 1 ? 's' : ''})
+              </Typography>
+            )}
           </Box>
           <Collapse in={expandedNetSections.has('network')}>
-            {networkLoading ? (
+            {/* Tenant view: skip the bridge / VLAN walk and show VNets only.
+                Each VNet is a direct leaf under the Network section, optionally
+                grouped by vDC name when there are multiple vDCs. */}
+            {!isProviderTenant ? (
+              tenantVnetsLoading ? (
+                <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', py: 2 }}>
+                  <CircularProgress size={16} />
+                  <Typography variant="caption" sx={{ ml: 1, opacity: 0.5 }}>Loading VNets...</Typography>
+                </Box>
+              ) : tenantVnets.length === 0 && tenantVnetsFetchedRef.current ? (
+                <Box sx={{ py: 2, textAlign: 'center' }}>
+                  <Typography variant="caption" sx={{ opacity: 0.4 }}>No VNets yet</Typography>
+                </Box>
+              ) : (
+                <SimpleTreeView
+                  expansionTrigger="iconContainer"
+                  slots={{ expandIcon: () => <i className="ri-add-line" style={{ fontSize: 14, opacity: 0.5 }} />, collapseIcon: () => <i className="ri-subtract-line" style={{ fontSize: 14, opacity: 0.5 }} /> }}
+                  selectedItems={selectedItemId || ''}
+                  expandedItems={networkTreeExpandedItems}
+                  onExpandedItemsChange={(_event, itemIds) => {
+                    setNetworkTreeExpandedItems(itemIds)
+                    expandingRef.current = true
+                    requestAnimationFrame(() => { expandingRef.current = false })
+                  }}
+                  onSelectedItemsChange={(_event, ids) => {
+                    if (expandingRef.current) return
+                    const picked = Array.isArray(ids) ? ids[0] : ids
+                    if (!picked) return
+                    const sel = selectionFromItemId(String(picked))
+                    if (sel) onSelect(sel)
+                  }}
+                >
+                  {tenantVnets.map((v) => (
+                    <TreeItem
+                      key={`tvnet:${v.vdcId}:${v.displayName}`}
+                      itemId={`tvnet:${v.vdcId}:${v.displayName}`}
+                      label={
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, py: 0.25 }}>
+                          <i className="ri-git-branch-line" style={{ fontSize: 14, opacity: 0.55 }} />
+                          <Typography variant="body2" sx={{ fontSize: 13, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {v.displayName}
+                          </Typography>
+                          {v.subnet && (
+                            <span style={{ opacity: 0.45, fontSize: 11 }}>{v.subnet.cidr}</span>
+                          )}
+                        </Box>
+                      }
+                    />
+                  ))}
+                </SimpleTreeView>
+              )
+            ) : networkLoading ? (
               <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', py: 2 }}>
                 <CircularProgress size={16} />
                 <Typography variant="caption" sx={{ ml: 1, opacity: 0.5 }}>Loading networks...</Typography>
@@ -3684,13 +3900,10 @@ return (
       )}
 
       {/* ── PBS / Backup Section ── */}
-      {viewMode === 'tree' && pbsServers.length > 0 && (
+      {(viewMode === 'tree' || viewMode === 'vms') && pbsServers.length > 0 && (
         <>
           <Box
-            onClick={() => {
-              toggleSection('pbs')
-              onSelect({ type: 'backup-root', id: 'backup-root' })
-            }}
+            onClick={() => onSelect({ type: 'backup-root', id: 'backup-root' })}
             sx={{
               display: 'flex', alignItems: 'center', gap: 1, px: 1.5, py: 0.75,
               bgcolor: theme.palette.mode === 'dark' ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)',
@@ -3698,7 +3911,12 @@ return (
               cursor: 'pointer', '&:hover': { bgcolor: theme.palette.mode === 'dark' ? 'rgba(255,255,255,0.09)' : 'rgba(0,0,0,0.09)' },
             }}
           >
-            <i className={collapsedSections.has('pbs') ? 'ri-add-line' : 'ri-subtract-line'} style={{ fontSize: 14, opacity: 0.7 }} />
+            <Box
+              onClick={(e) => { e.stopPropagation(); toggleSection('pbs') }}
+              sx={{ display: 'flex', alignItems: 'center', cursor: 'pointer', p: 0.25, mr: -0.25 }}
+            >
+              <i className={collapsedSections.has('pbs') ? 'ri-add-line' : 'ri-subtract-line'} style={{ fontSize: 14, opacity: 0.7 }} />
+            </Box>
             <i className="ri-hard-drive-2-fill" style={{ fontSize: 14, opacity: 0.7 }} />
             <Typography variant="body2" sx={{ fontWeight: 700 }}>BACKUP</Typography>
             <Typography variant="caption" sx={{ opacity: 0.5 }}>
@@ -3847,10 +4065,7 @@ return (
         return (
           <>
             <Box
-              onClick={() => {
-                toggleSection('migrate-ext')
-                onSelect({ type: 'migration-root', id: 'migration-root' })
-              }}
+              onClick={() => onSelect({ type: 'migration-root', id: 'migration-root' })}
               sx={{
                 display: 'flex', alignItems: 'center', gap: 1, px: 1.5, py: 0.75,
                 bgcolor: theme.palette.mode === 'dark' ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)',
@@ -3858,7 +4073,12 @@ return (
                 cursor: 'pointer', '&:hover': { bgcolor: theme.palette.mode === 'dark' ? 'rgba(255,255,255,0.09)' : 'rgba(0,0,0,0.09)' },
               }}
             >
-              <i className={collapsedSections.has('migrate-ext') ? 'ri-add-line' : 'ri-subtract-line'} style={{ fontSize: 14, opacity: 0.7 }} />
+              <Box
+                onClick={(e) => { e.stopPropagation(); toggleSection('migrate-ext') }}
+                sx={{ display: 'flex', alignItems: 'center', cursor: 'pointer', p: 0.25, mr: -0.25 }}
+              >
+                <i className={collapsedSections.has('migrate-ext') ? 'ri-add-line' : 'ri-subtract-line'} style={{ fontSize: 14, opacity: 0.7 }} />
+              </Box>
               <i className="ri-swap-box-line" style={{ fontSize: 14, opacity: 0.7 }} />
               <Typography variant="body2" sx={{ fontWeight: 700 }}>MIGRATIONS</Typography>
               <Typography variant="caption" sx={{ opacity: 0.5 }}>
@@ -4171,6 +4391,7 @@ return (
         onCreateLxc={onCreateLxc}
         onNodeAction={onNodeAction}
         clusters={clusters}
+        isAdmin={isAdmin}
         maintenanceBusy={maintenanceBusy}
         maintenanceTarget={maintenanceTarget}
         setMaintenanceTarget={setMaintenanceTarget}

@@ -1,7 +1,9 @@
 // src/lib/auth/oidc.ts
-// OIDC/SSO authentication helpers
+// OIDC / SSO config helpers. NextAuth's OIDC provider is built on the values
+// returned here at request time, so the singleton row in `oidc_config` is
+// the canonical source of truth (encrypted client secret + claim mappings).
 
-import { getDb } from "@/lib/db/sqlite"
+import { prisma } from "@/lib/db/prisma"
 import { decryptSecret } from "@/lib/crypto/secret"
 
 export interface OidcConfig {
@@ -22,84 +24,71 @@ export interface OidcConfig {
   groupRoleMapping: Record<string, string>
 }
 
-/**
- * Checks if OIDC is enabled
- */
-export function isOidcEnabled(): boolean {
-  const db = getDb()
-
-  const config = db
-    .prepare("SELECT enabled FROM oidc_config WHERE id = 'default'")
-    .get() as { enabled: number } | undefined
-
-  return config?.enabled === 1
+/** Cheap "is OIDC turned on" probe — see isLdapEnabled for the rationale. */
+export async function isOidcEnabled(): Promise<boolean> {
+  const row = await prisma.oidcConfig.findUnique({
+    where: { id: "default" },
+    select: { enabled: true },
+  })
+  return row?.enabled === true
 }
 
-/**
- * Reads the full OIDC config from the database, decrypts the client secret
- */
-export function getOidcConfig(): OidcConfig | null {
-  const db = getDb()
-
-  const config = db
-    .prepare("SELECT * FROM oidc_config WHERE id = 'default'")
-    .get() as any
-
-  if (!config) return null
+/** Reads the full OIDC config + decrypts the client secret. */
+export async function getOidcConfig(): Promise<OidcConfig | null> {
+  const row = await prisma.oidcConfig.findUnique({ where: { id: "default" } })
+  if (!row) return null
 
   let clientSecret: string | null = null
-
-  if (config.client_secret_enc) {
+  if (row.clientSecretEnc) {
     try {
-      clientSecret = decryptSecret(config.client_secret_enc)
+      clientSecret = decryptSecret(row.clientSecretEnc)
     } catch (e) {
       console.error("Error decrypting OIDC client secret:", e)
     }
   }
 
-  let groupRoleMapping: Record<string, string> = {}
-
-  try {
-    groupRoleMapping = JSON.parse(config.group_role_mapping || '{}')
-  } catch {
-    // Invalid JSON, use empty mapping
-  }
+  // group_role_mapping is JSONB → already an object. Coerce defensively in
+  // case an older row was migrated as something unexpected.
+  const groupRoleMapping: Record<string, string> =
+    row.groupRoleMapping && typeof row.groupRoleMapping === "object" && !Array.isArray(row.groupRoleMapping)
+      ? (row.groupRoleMapping as Record<string, string>)
+      : {}
 
   return {
-    enabled: config.enabled === 1,
-    providerName: config.provider_name || 'SSO',
-    issuerUrl: config.issuer_url,
-    clientId: config.client_id,
+    enabled: row.enabled,
+    providerName: row.providerName || "SSO",
+    issuerUrl: row.issuerUrl,
+    clientId: row.clientId,
     clientSecret,
-    scopes: config.scopes || 'openid profile email',
-    authorizationUrl: config.authorization_url || null,
-    tokenUrl: config.token_url || null,
-    userinfoUrl: config.userinfo_url || null,
-    claimEmail: config.claim_email || 'email',
-    claimName: config.claim_name || 'name',
-    claimGroups: config.claim_groups || null,
-    autoProvision: config.auto_provision === 1,
-    defaultRole: config.default_role || 'viewer',
+    scopes: row.scopes || "openid profile email",
+    authorizationUrl: row.authorizationUrl,
+    tokenUrl: row.tokenUrl,
+    userinfoUrl: row.userinfoUrl,
+    claimEmail: row.claimEmail || "email",
+    claimName: row.claimName || "name",
+    claimGroups: row.claimGroups,
+    autoProvision: row.autoProvision,
+    defaultRole: row.defaultRole || "viewer",
     groupRoleMapping,
   }
 }
 
 /**
- * Resolves the ProxCenter role based on IdP groups and the group-to-role mapping.
- * Returns the mapped role if a group matches, otherwise the default role.
+ * Resolve the ProxCenter role from an OIDC ID-token's groups claim.
+ * First match wins; falls back to config.defaultRole when no group matches.
+ * (LDAP and OIDC differ here: OIDC always returns the default, while LDAP
+ * returns null to preserve manually-assigned roles.)
  */
 export function resolveOidcRole(
   groups: string[] | undefined,
-  config: OidcConfig
+  config: OidcConfig,
 ): string {
   if (!groups || groups.length === 0 || !config.groupRoleMapping) {
     return config.defaultRole
   }
 
-  // Check each group against the mapping (first match wins)
   for (const group of groups) {
     const mappedRole = config.groupRoleMapping[group]
-
     if (mappedRole) {
       return mappedRole
     }

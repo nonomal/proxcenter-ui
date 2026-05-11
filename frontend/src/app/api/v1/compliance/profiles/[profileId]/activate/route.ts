@@ -26,17 +26,17 @@ export async function POST(
     // Special case: deactivate all
     if (profileId === 'none') {
       const body = await req.json().catch(() => ({}))
-      deactivateProfiles(body.connection_id, tenantId)
+      await deactivateProfiles(body.connection_id, tenantId)
       return NextResponse.json({ success: true })
     }
 
-    const existing = getProfile(profileId, tenantId)
+    const existing = await getProfile(profileId, tenantId)
     if (!existing) {
       return NextResponse.json({ error: 'Profile not found' }, { status: 404 })
     }
 
     const body = await req.json().catch(() => ({}))
-    setActiveProfile(profileId, body.connection_id, tenantId)
+    await setActiveProfile(profileId, body.connection_id, tenantId)
 
     return NextResponse.json({ success: true })
   } catch (e: any) {

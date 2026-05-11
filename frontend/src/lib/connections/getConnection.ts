@@ -69,9 +69,16 @@ export async function getConnectionById(id: string, tenantId?: string): Promise<
 
   if (!c) throw new Error(`Connection not found: ${id}`)
 
-  // Tenant isolation: always verify the connection belongs to the requesting tenant
+  // Tenant isolation: verify the connection belongs to the requesting tenant
+  // OR the tenant has a vDC assignment on this connection
   if (c.tenantId !== resolvedTenantId) {
-    throw new Error(`Connection not found: ${id}`)
+    const vdcAccess = await prisma.vdc.findFirst({
+      where: { tenantId: resolvedTenantId, connectionId: id, enabled: true },
+      select: { id: true },
+    })
+    if (!vdcAccess) {
+      throw new Error(`Connection not found: ${id}`)
+    }
   }
 
   if (!c.baseUrl) throw new Error(`Connection ${id} has no baseUrl`)
@@ -84,6 +91,54 @@ export async function getConnectionById(id: string, tenantId?: string): Promise<
     apiToken: decryptSecret(c.apiTokenEnc),
     insecureDev: !!c.insecureTLS,
     behindProxy: !!c.behindProxy,
+  }
+
+  connectionCache.set(cacheKey, { data: result, expiry: Date.now() + CACHE_TTL })
+
+  return result
+}
+
+/**
+ * Loads a PBS connection by id WITHOUT tenant ownership check.
+ *
+ * Use only when the caller has already validated the requester's right to
+ * reach this PBS via another mechanism (e.g. presence of a vDC binding on
+ * (pbsConnectionId, datastore, namespace) for the current tenant). The
+ * regular getPbsConnectionById rejects cross-tenant lookups, which breaks
+ * vDC tenants who legitimately read backups from a provider-owned PBS.
+ */
+export async function getPbsConnectionByIdUnscoped(id: string): Promise<PbsConn> {
+  if (!id) throw new Error("Missing PBS connection id")
+
+  const cacheKey = `pbs-unscoped:${id}`
+  const cached = connectionCache.get(cacheKey)
+  if (cached && cached.expiry > Date.now()) {
+    return cached.data as PbsConn
+  }
+
+  const c = await prisma.connection.findUnique({
+    where: { id },
+    select: {
+      id: true,
+      name: true,
+      type: true,
+      baseUrl: true,
+      insecureTLS: true,
+      apiTokenEnc: true,
+    },
+  })
+
+  if (!c) throw new Error(`PBS Connection not found: ${id}`)
+  if (c.type !== 'pbs') throw new Error(`Connection ${id} is not a PBS connection`)
+  if (!c.baseUrl) throw new Error(`PBS Connection ${id} has no baseUrl`)
+  if (!c.apiTokenEnc) throw new Error(`PBS Connection ${id} has no apiTokenEnc`)
+
+  const result: PbsConn = {
+    id: c.id,
+    name: c.name,
+    baseUrl: c.baseUrl,
+    apiToken: decryptSecret(c.apiTokenEnc),
+    insecureDev: !!c.insecureTLS,
   }
 
   connectionCache.set(cacheKey, { data: result, expiry: Date.now() + CACHE_TTL })
@@ -117,9 +172,16 @@ export async function getPbsConnectionById(id: string, tenantId?: string): Promi
 
   if (!c) throw new Error(`PBS Connection not found: ${id}`)
 
-  // Tenant isolation: always verify the connection belongs to the requesting tenant
+  // Tenant isolation: the connection must either belong to the requesting
+  // tenant OR be referenced by one of its vDC PBS bindings. The latter lets
+  // tenants reach provider-owned PBS connections through their vDC scope
+  // (mirrors the assertVdcPbsAccess pattern used in the backups route).
   if (c.tenantId !== resolvedTenantId) {
-    throw new Error(`PBS Connection not found: ${id}`)
+    const { getVdcScope } = await import('@/lib/vdc/scope')
+    const scope = await getVdcScope(resolvedTenantId)
+    if (!scope || !scope.pbsConnectionIds.has(id)) {
+      throw new Error(`PBS Connection not found: ${id}`)
+    }
   }
 
   if (c.type !== 'pbs') throw new Error(`Connection ${id} is not a PBS connection`)

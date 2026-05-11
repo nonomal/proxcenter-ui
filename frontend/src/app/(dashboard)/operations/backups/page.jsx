@@ -25,6 +25,7 @@ import {
   ListItemButton,
   ListItemIcon,
   ListItemText,
+  ListSubheader,
   MenuItem,
   Select,
   Stack,
@@ -44,6 +45,9 @@ import BackupJobsTabs from './BackupJobsTabs'
 import BackupTrendsChart from './BackupTrendsChart'
 import EmptyState from '@/components/EmptyState'
 import { TableSkeleton } from '@/components/skeletons'
+import RestoreVmDialog from '@/components/backup/RestoreVmDialog'
+import { useTenant } from '@/contexts/TenantContext'
+import { useToast } from '@/contexts/ToastContext'
 
 /* -----------------------------
   Helpers
@@ -78,6 +82,46 @@ const VerifyChip = ({ verified, t }) => {
   if (verified) return <Chip size='small' color='success' label={`✓ ${t('backups.verified')}`} variant='outlined' />
 
 return <Chip size='small' color='default' label={t('backups.notVerified')} variant='outlined' sx={{ opacity: 0.5 }} />
+}
+
+// Compact state icon for the table column. Three distinct states:
+//   - ok      : row.verified true (= verification.state === 'ok' on PBS)
+//   - failed  : verification record exists but state !== 'ok'
+//   - none    : no verification record at all → never verified
+//
+// We anchor on `row.verified` (computed by the backend) for the OK case
+// rather than re-deriving from row.verification.state — the cache layer
+// can lose nested fields if PBS's payload shape evolves, but the boolean
+// is precomputed and matches the verifiedCount stat shown in the KPIs.
+const VerifyStateIcon = ({ row, t }) => {
+  if (row.verified) {
+    const tooltip = row.verifiedAt
+      ? t('backups.verifiedOn', { date: row.verifiedAt })
+      : t('backups.verified')
+    return (
+      <Tooltip title={tooltip} arrow>
+        <i className='ri-checkbox-circle-fill' style={{ fontSize: 18, color: '#4caf50' }} />
+      </Tooltip>
+    )
+  }
+  // verification.state set but not 'ok' → failure path. The state can
+  // legitimately be 'failed', 'none', or other PBS-internal markers.
+  const failState = row.verification?.state
+  if (failState && failState !== 'ok') {
+    const tooltip = row.verifiedAt
+      ? t('backups.verifyFailedOn', { date: row.verifiedAt })
+      : t('backups.verifyFailed')
+    return (
+      <Tooltip title={tooltip} arrow>
+        <i className='ri-error-warning-fill' style={{ fontSize: 18, color: '#f44336' }} />
+      </Tooltip>
+    )
+  }
+  return (
+    <Tooltip title={t('backups.notVerified')} arrow>
+      <i className='ri-subtract-line' style={{ fontSize: 18, opacity: 0.35 }} />
+    </Tooltip>
+  )
 }
 
 // Icône selon le type de fichier
@@ -122,6 +166,12 @@ export default function BackupsPage() {
   const theme = useTheme()
   const { setPageInfo } = usePageTitle()
   const timeAgo = useTimeAgo(t)
+  // Tenant-vDC users get a simpler drawer: the Explorer tab exposes raw
+  // PBS internals (catalog browse, .blob downloads of the qm config, etc.)
+  // that don't map onto the abstraction we sell to tenants. Provider /
+  // 'default' tenant keeps both tabs.
+  const { currentTenant, loading: tenantLoading } = useTenant()
+  const isVdcTenant = !tenantLoading && !!currentTenant && currentTenant.id !== 'default'
 
   useEffect(() => {
     setPageInfo(t('backups.title'), t('backups.subtitle'), 'ri-file-copy-fill')
@@ -149,6 +199,11 @@ return () => setPageInfo('', '', '')
   // Available namespaces (from API response)
   const [availableNamespaces, setAvailableNamespaces] = useState([])
 
+  // (datastore, namespace) -> vDC bindings, used to group namespaces by vDC.
+  // Populated from /api/v1/pbs/[id]/backups response. Tenant callers see only
+  // their own vDCs; super-admins see bindings across every tenant.
+  const [bindings, setBindings] = useState([])
+
   // Filters
   const [search, setSearch] = useState('')
   const [datastoreFilter, setDatastoreFilter] = useState('all')
@@ -159,6 +214,21 @@ return () => setPageInfo('', '', '')
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [selectedBackup, setSelectedBackup] = useState(null)
   const [drawerTab, setDrawerTab] = useState(0) // 0 = Infos, 1 = Explorer
+
+  // Restore dialog (cross-PVE — user picks target cluster + node).
+  const [restoreOpen, setRestoreOpen] = useState(false)
+
+  // Verify (single snapshot re-check) + Delete (with double-click guard
+  // to prevent accidental destruction of a backup).
+  const toast = useToast()
+  const [verifying, setVerifying] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  const [deleteAwaitingConfirm, setDeleteAwaitingConfirm] = useState(false)
+
+  // Reset the destructive-confirm guard whenever the user opens a
+  // different backup so the "Confirm delete" state can't leak across
+  // snapshots.
+  useEffect(() => { setDeleteAwaitingConfirm(false) }, [selectedBackup?.id])
 
   // File explorer state
   const [explorerLoading, setExplorerLoading] = useState(false)
@@ -283,6 +353,84 @@ return () => setPageInfo('', '', '')
     setDrawerTab(0)
   }, [selectedBackup?.id])
 
+  // Tenant guard: if the user was on the Explorer tab when their tenant
+  // role flipped (rare but cheap to defend against), bounce them back to
+  // the Information tab so they don't see an empty panel.
+  useEffect(() => {
+    if (isVdcTenant && drawerTab !== 0) setDrawerTab(0)
+  }, [isVdcTenant, drawerTab])
+
+  // Force refresh — increment to bypass server cache on next fetch only.
+  // Declared before the verify/delete handlers so they can call it
+  // without tripping the JS TDZ at component instantiation time.
+  const [refreshToken, setRefreshToken] = useState(0)
+  const noCacheRef = useRef(false)
+
+  const handleRefresh = useCallback(() => {
+    noCacheRef.current = true
+    setRefreshToken(n => n + 1)
+  }, [])
+
+  // Verify: trigger a re-verification on PBS. Returns a UPID; we don't
+  // wire a live progress drawer here, just toast and let the user reload.
+  // The verify status chip will update on the next list refresh.
+  const handleVerify = useCallback(async () => {
+    if (!selectedBackup || !selectedPbs) return
+    setVerifying(true)
+    try {
+      const params = new URLSearchParams()
+      if (selectedBackup.namespace) params.set('ns', selectedBackup.namespace)
+      const res = await fetch(
+        `/api/v1/pbs/${encodeURIComponent(selectedPbs)}/backups/${encodeURIComponent(selectedBackup.id)}/verify?${params}`,
+        { method: 'POST' }
+      )
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        toast.error(json?.error || `HTTP ${res.status}`)
+      } else {
+        toast.success(t('backups.verifyStarted'))
+      }
+    } catch (e) {
+      toast.error(e?.message || 'Verify failed')
+    } finally {
+      setVerifying(false)
+    }
+  }, [selectedBackup, selectedPbs, toast, t])
+
+  // Delete: two-click guard. First click flips the button into a
+  // warning-coloured "Confirm delete"; second click actually deletes.
+  const handleDelete = useCallback(async () => {
+    if (!selectedBackup || !selectedPbs) return
+    if (!deleteAwaitingConfirm) {
+      setDeleteAwaitingConfirm(true)
+      return
+    }
+    setDeleting(true)
+    try {
+      const params = new URLSearchParams()
+      if (selectedBackup.namespace) params.set('ns', selectedBackup.namespace)
+      const res = await fetch(
+        `/api/v1/pbs/${encodeURIComponent(selectedPbs)}/backups/${encodeURIComponent(selectedBackup.id)}?${params}`,
+        { method: 'DELETE' }
+      )
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        toast.error(json?.error || `HTTP ${res.status}`)
+        setDeleteAwaitingConfirm(false)
+      } else {
+        toast.success(t('backups.deleteSuccess'))
+        setDrawerOpen(false)
+        setSelectedBackup(null)
+        handleRefresh()
+      }
+    } catch (e) {
+      toast.error(e?.message || 'Delete failed')
+      setDeleteAwaitingConfirm(false)
+    } finally {
+      setDeleting(false)
+    }
+  }, [selectedBackup, selectedPbs, deleteAwaitingConfirm, toast, t, handleRefresh])
+
   // Charger les connexions PBS
   useEffect(() => {
     const loadPbsConnections = async () => {
@@ -361,14 +509,6 @@ return () => setPageInfo('', '', '')
     loadPbsMetadata()
   }, [selectedPbs])
 
-  // Force refresh — increment to bypass server cache on next fetch only
-  const [refreshToken, setRefreshToken] = useState(0)
-  const noCacheRef = useRef(false)
-
-  const handleRefresh = useCallback(() => {
-    noCacheRef.current = true
-    setRefreshToken(n => n + 1)
-  }, [])
 
   // Charger les backups avec pagination côté serveur
   useEffect(() => {
@@ -406,6 +546,7 @@ return () => setPageInfo('', '', '')
           setTotalRows(json?.data?.pagination?.totalItems || 0)
           setWarnings(json?.data?.warnings || [])
           setAvailableNamespaces(json?.data?.namespaces || [])
+          setBindings(json?.data?.bindings || [])
         } else {
           const errJson = await res.json().catch(() => ({}))
 
@@ -430,9 +571,48 @@ return () => setPageInfo('', '', '')
       setPaginationModel(prev => ({ ...prev, page: 0 })) // Reset page on search
     }, 300)
 
-    
+
 return () => clearTimeout(timer)
   }, [searchInput])
+
+  // Exact (datastore, namespace) → vDC mapping for the table column.
+  const vdcByPair = useMemo(() => {
+    const m = new Map()
+    for (const b of bindings) {
+      m.set(`${b.datastore}|${b.namespace}`, { vdcName: b.vdcName, vdcId: b.vdcId, tenantName: b.tenantName })
+    }
+    return m
+  }, [bindings])
+
+  // Group available namespaces by vDC for the filter dropdown. A namespace can
+  // appear in several vDCs if bound on multiple datastores; in that case it
+  // shows under each vDC group. Namespaces with no binding fall into "Unassigned".
+  const dropdownGroups = useMemo(() => {
+    const groups = new Map() // vdcName -> Set<namespace>
+    const orphans = new Set()
+    for (const ns of availableNamespaces) {
+      const matches = bindings.filter(b => b.namespace === ns)
+      if (matches.length === 0) {
+        orphans.add(ns)
+        continue
+      }
+      const vdcNames = new Set(matches.map(m => m.vdcName))
+      for (const vdcName of vdcNames) {
+        const list = groups.get(vdcName) || new Set()
+        list.add(ns)
+        groups.set(vdcName, list)
+      }
+    }
+    return {
+      groups: Array.from(groups.entries())
+        .sort((a, b) => a[0].localeCompare(b[0]))
+        .map(([vdcName, nss]) => ({
+          vdcName,
+          namespaces: Array.from(nss).sort((a, b) => (a === '' ? -1 : b === '' ? 1 : a.localeCompare(b))),
+        })),
+      orphans: Array.from(orphans).sort((a, b) => (a === '' ? -1 : b === '' ? 1 : a.localeCompare(b))),
+    }
+  }, [availableNamespaces, bindings])
 
   // Colonnes du DataGrid
   const columns = useMemo(() => [
@@ -482,6 +662,38 @@ return () => clearTimeout(timer)
       )
     },
     {
+      field: 'vdc',
+      headerName: t('backups.vdc'),
+      width: 150,
+      sortable: true,
+      valueGetter: (_, row) => vdcByPair.get(`${row.datastore}|${row.namespace}`)?.vdcName || '',
+      renderCell: params => {
+        const info = vdcByPair.get(`${params.row.datastore}|${params.row.namespace}`)
+        if (!info) {
+          return (
+            <Box sx={{ display: 'flex', alignItems: 'center', height: '100%' }}>
+              <Typography variant='body2' sx={{ opacity: 0.4 }}>--</Typography>
+            </Box>
+          )
+        }
+        const tooltip = info.tenantName ? `${info.vdcName} • ${info.tenantName}` : info.vdcName
+        return (
+          <Box sx={{ display: 'flex', alignItems: 'center', height: '100%' }}>
+            <Tooltip title={tooltip} arrow>
+              <Chip
+                size='small'
+                label={info.vdcName}
+                color='primary'
+                variant='outlined'
+                icon={<Box component='i' className='ri-cloud-line' sx={{ fontSize: 13, ml: '6px !important' }} />}
+                sx={{ height: 22, cursor: 'default' }}
+              />
+            </Tooltip>
+          </Box>
+        )
+      },
+    },
+    {
       field: 'namespace',
       headerName: 'Namespace',
       width: 130,
@@ -521,10 +733,12 @@ return () => clearTimeout(timer)
     {
       field: 'verified',
       headerName: t('backups.verified'),
-      width: 120,
+      width: 80,
+      align: 'center',
+      headerAlign: 'center',
       renderCell: params => (
-        <Box sx={{ display: 'flex', alignItems: 'center', height: '100%' }}>
-          <VerifyChip verified={params.value} t={t} />
+        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
+          <VerifyStateIcon row={params.row} t={t} />
         </Box>
       )
     },
@@ -545,10 +759,10 @@ return () => clearTimeout(timer)
     {
       field: 'actions',
       headerName: '',
-      width: 80,
+      width: 110,
       sortable: false,
       renderCell: params => (
-        <Box sx={{ display: 'flex', alignItems: 'center', height: '100%' }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', height: '100%', gap: 0.25 }}>
           <Tooltip title={t('common.details')}>
             <IconButton size='small' onClick={() => {
               setSelectedBackup(params.row)
@@ -557,10 +771,24 @@ return () => clearTimeout(timer)
               <i className='ri-eye-line' style={{ fontSize: 16 }} />
             </IconButton>
           </Tooltip>
+          {params.row.backupType !== 'host' && (
+            <Tooltip title={t('audit.actions.restore')}>
+              <IconButton
+                size='small'
+                onClick={(ev) => {
+                  ev.stopPropagation()
+                  setSelectedBackup(params.row)
+                  setRestoreOpen(true)
+                }}
+              >
+                <i className='ri-history-line' style={{ fontSize: 16 }} />
+              </IconButton>
+            </Tooltip>
+          )}
         </Box>
       )
     }
-  ], [t])
+  ], [t, vdcByPair])
 
   // KPI values
   const currentPbs = pbsConnections.find(p => p.id === selectedPbs)
@@ -645,8 +873,12 @@ return () => clearTimeout(timer)
       {/* Graphiques de tendances */}
       {selectedPbs && <BackupTrendsChart pbsId={selectedPbs} />}
 
-      {/* Jobs de sauvegarde PVE et PBS avec onglets */}
-      {(pveConnections.length > 0 || pbsConnections.length > 0) && (
+      {/* Jobs de sauvegarde PVE et PBS avec onglets.
+          Masqué en mode vDC tenant : la politique de sauvegarde est gérée
+          par le super admin (offre managée). Les tenants gardent les
+          backups ponctuels par VM dans /infrastructure/inventory et le
+          quota maxBackups s'applique sur ces backups ad-hoc. */}
+      {!isVdcTenant && (pveConnections.length > 0 || pbsConnections.length > 0) && (
         <BackupJobsTabs pveConnections={pveConnections} pbsConnections={pbsConnections} />
       )}
 
@@ -660,25 +892,31 @@ return () => clearTimeout(timer)
             </Box>
 
             <Box sx={{ display: 'flex', alignItems: 'center', mb: 2, flexWrap: 'wrap', gap: 1 }}>
-              <FormControl size='small' sx={{ minWidth: 200 }}>
-                <InputLabel>{t('backups.pbsServer')}</InputLabel>
-                <Select
-                  value={selectedPbs}
-                  onChange={e => {
-                    setSelectedPbs(e.target.value)
-                    setNamespaceFilter('all')
-                    setAvailableNamespaces([])
-                  }}
-                  label={t('backups.pbsServer')}
-                  disabled={pbsLoading || pbsConnections.length === 0}
-                >
-                  {pbsConnections.map(pbs => (
-                    <MenuItem key={pbs.id} value={pbs.id}>{pbs.name}</MenuItem>
-                  ))}
-                </Select>
-              </FormControl>
+              {/* PBS picker is hidden in tenant (vDC) mode — a tenant
+                  always sees a single PBS connection (the one their vDC
+                  is bound to), so a 1-option dropdown is just noise.
+                  Provider keeps the picker for cross-PBS browsing. */}
+              {!isVdcTenant && (
+                <FormControl size='small' sx={{ minWidth: 200 }}>
+                  <InputLabel>{t('backups.pbsServer')}</InputLabel>
+                  <Select
+                    value={selectedPbs}
+                    onChange={e => {
+                      setSelectedPbs(e.target.value)
+                      setNamespaceFilter('all')
+                      setAvailableNamespaces([])
+                    }}
+                    label={t('backups.pbsServer')}
+                    disabled={pbsLoading || pbsConnections.length === 0}
+                  >
+                    {pbsConnections.map(pbs => (
+                      <MenuItem key={pbs.id} value={pbs.id}>{pbs.name}</MenuItem>
+                    ))}
+                  </Select>
+                </FormControl>
+              )}
               {availableNamespaces.length > 1 && (
-                <FormControl size='small' sx={{ minWidth: 160 }}>
+                <FormControl size='small' sx={{ minWidth: 200 }}>
                   <InputLabel>Namespace</InputLabel>
                   <Select
                     value={namespaceFilter}
@@ -689,11 +927,46 @@ return () => clearTimeout(timer)
                     label='Namespace'
                   >
                     <MenuItem value='all'>{t('backups.allNamespaces')}</MenuItem>
-                    {availableNamespaces.map(ns => (
-                      <MenuItem key={ns} value={ns}>
-                        {ns || t('backups.rootNamespace')}
-                      </MenuItem>
-                    ))}
+                    {bindings.length === 0
+                      ? availableNamespaces.map(ns => (
+                          <MenuItem key={ns} value={ns}>
+                            {ns || t('backups.rootNamespace')}
+                          </MenuItem>
+                        ))
+                      : [
+                          ...dropdownGroups.groups.flatMap(g => [
+                            <ListSubheader
+                              key={`hdr-${g.vdcName}`}
+                              disableSticky
+                              sx={{ lineHeight: '28px', bgcolor: 'transparent', display: 'flex', alignItems: 'center', gap: 0.5, fontSize: 11, fontWeight: 700, opacity: 0.65, textTransform: 'uppercase' }}
+                            >
+                              <Box component='i' className='ri-cloud-line' sx={{ fontSize: 13 }} />
+                              {t('backups.vdc')}: {g.vdcName}
+                            </ListSubheader>,
+                            ...g.namespaces.map(ns => (
+                              <MenuItem key={`${g.vdcName}-${ns}`} value={ns} sx={{ pl: 3 }}>
+                                {ns || t('backups.rootNamespace')}
+                              </MenuItem>
+                            )),
+                          ]),
+                          ...(dropdownGroups.orphans.length > 0
+                            ? [
+                                <ListSubheader
+                                  key='hdr-unassigned'
+                                  disableSticky
+                                  sx={{ lineHeight: '28px', bgcolor: 'transparent', display: 'flex', alignItems: 'center', gap: 0.5, fontSize: 11, fontWeight: 700, opacity: 0.65, textTransform: 'uppercase' }}
+                                >
+                                  <Box component='i' className='ri-question-line' sx={{ fontSize: 13 }} />
+                                  {t('backups.unassigned')}
+                                </ListSubheader>,
+                                ...dropdownGroups.orphans.map(ns => (
+                                  <MenuItem key={`orphan-${ns}`} value={ns} sx={{ pl: 3 }}>
+                                    {ns || t('backups.rootNamespace')}
+                                  </MenuItem>
+                                )),
+                              ]
+                            : []),
+                        ]}
                   </Select>
                 </FormControl>
               )}
@@ -863,7 +1136,9 @@ return () => clearTimeout(timer)
                 {/* Tabs */}
                 <Tabs value={drawerTab} onChange={(e, v) => setDrawerTab(v)} sx={{ mt: 1 }}>
                   <Tab label={t('backups.informations')} icon={<i className='ri-information-line' />} iconPosition='start' />
-                  <Tab label={t('backups.explorer')} icon={<i className='ri-folder-open-line' />} iconPosition='start' />
+                  {!isVdcTenant && (
+                    <Tab label={t('backups.explorer')} icon={<i className='ri-folder-open-line' />} iconPosition='start' />
+                  )}
                 </Tabs>
               </Box>
 
@@ -929,28 +1204,61 @@ return () => clearTimeout(timer)
                     <Box>
                       <Typography variant='overline' sx={{ opacity: 0.7 }}>{t('common.actions')}</Typography>
                       <Box sx={{ display: 'flex', gap: 1, mt: 1, flexWrap: 'wrap' }}>
-                        <Button size='small' variant='contained' disabled>
+                        <Button
+                          size='small'
+                          variant='contained'
+                          disabled={selectedBackup.backupType === 'host'}
+                          onClick={() => setRestoreOpen(true)}
+                          startIcon={<i className='ri-history-line' />}
+                        >
                           {t('audit.actions.restore')}
                         </Button>
-                        <Button size='small' variant='outlined' disabled>
-                          {t('backups.verified')}
+                        <Button
+                          size='small'
+                          variant='outlined'
+                          onClick={handleVerify}
+                          disabled={verifying}
+                          startIcon={verifying
+                            ? <CircularProgress size={14} />
+                            : <i className='ri-shield-check-line' />}
+                        >
+                          {t('backups.verifyAction')}
                         </Button>
-                        <Button size='small' variant='outlined' disabled>
-                          {t('common.download')}
-                        </Button>
-                        <Button size='small' variant='outlined' color='error' disabled>
-                          {t('common.delete')}
+                        <Button
+                          size='small'
+                          variant='outlined'
+                          color={deleteAwaitingConfirm ? 'warning' : 'error'}
+                          onClick={handleDelete}
+                          disabled={deleting || selectedBackup.protected}
+                          startIcon={deleting
+                            ? <CircularProgress size={14} />
+                            : <i className={deleteAwaitingConfirm ? 'ri-alert-line' : 'ri-delete-bin-line'} />}
+                        >
+                          {deleteAwaitingConfirm
+                            ? t('backups.deleteConfirmButton')
+                            : t('common.delete')}
                         </Button>
                       </Box>
-                      <Typography variant='caption' sx={{ opacity: 0.5, display: 'block', mt: 1 }}>
-                        {t('backups.actionsAvailableSoon')}
-                      </Typography>
+                      {selectedBackup.protected && (
+                        <Typography variant='caption' sx={{ display: 'block', mt: 1, opacity: 0.7 }}>
+                          {t('backups.deleteProtectedHint')}
+                        </Typography>
+                      )}
+                      {deleteAwaitingConfirm && !deleting && (
+                        <Alert severity='warning' sx={{ mt: 1 }} icon={<i className='ri-alert-line' style={{ fontSize: 18 }} />}>
+                          {t('backups.deleteConfirm', {
+                            name: selectedBackup.vmName || selectedBackup.backupId,
+                            id: selectedBackup.backupId,
+                            date: selectedBackup.backupTimeFormatted,
+                          })}
+                        </Alert>
+                      )}
                     </Box>
                   </Stack>
                 )}
 
                 {/* Onglet Explorer */}
-                {drawerTab === 1 && (
+                {drawerTab === 1 && !isVdcTenant && (
                   <Box>
                     {explorerLoading && (
                       <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
@@ -969,27 +1277,66 @@ return () => clearTimeout(timer)
                           {t('backups.backupArchives')}
                         </Typography>
                         <List dense>
-                          {explorerArchives.map((file, idx) => (
+                          {explorerArchives.map((file, idx) => {
+                            // .blob → direct download via /file-download
+                            // .pxar.didx → browsable
+                            // .img.fidx → "Use file restore" hint (no inline download — the index alone is useless)
+                            const isBlob = typeof file.name === 'string' && file.name.endsWith('.blob')
+                            const isImgIdx = typeof file.name === 'string' && file.name.endsWith('.img.fidx')
+                            const handleClick = () => {
+                              if (file.browsable) {
+                                browseArchive(file.name, '/')
+                              } else if (isBlob) {
+                                // Trigger the browser download. The route streams
+                                // the bytes with Content-Disposition: attachment.
+                                const params = new URLSearchParams({ file: file.name })
+                                if (selectedBackup?.namespace) params.set('ns', selectedBackup.namespace)
+                                const href = `/api/v1/pbs/${encodeURIComponent(selectedPbs)}/backups/${encodeURIComponent(selectedBackup.id)}/download?${params}`
+                                window.open(href, '_blank', 'noopener')
+                              }
+                            }
+                            const secondary = file.browsable
+                              ? t('backups.clickToExplore')
+                              : isBlob
+                                ? t('backups.clickToDownload')
+                                : isImgIdx
+                                  ? t('backups.useFileRestore')
+                                  : t('backups.notExplorable')
+                            const trailingIcon = file.browsable
+                              ? 'ri-arrow-right-s-line'
+                              : isBlob
+                                ? 'ri-download-2-line'
+                                : null
+                            return (
                             <ListItem key={idx} disablePadding>
                               <ListItemButton
-                                onClick={() => file.browsable && browseArchive(file.name, '/')}
-                                disabled={!file.browsable}
+                                onClick={handleClick}
+                                disabled={!file.browsable && !isBlob}
                               >
                                 <ListItemIcon sx={{ minWidth: 36 }}>
                                   <FileIcon type={file.type} name={file.name} />
                                 </ListItemIcon>
                                 <ListItemText
                                   primary={file.name}
-                                  secondary={file.browsable ? t('backups.clickToExplore') : t('backups.notExplorable')}
+                                  secondary={secondary}
                                   primaryTypographyProps={{ variant: 'body2' }}
                                   secondaryTypographyProps={{ variant: 'caption' }}
                                 />
-                                {file.browsable && (
-                                  <i className='ri-arrow-right-s-line' style={{ opacity: 0.5 }} />
+                                {file.sizeFormatted && file.sizeFormatted !== '-' && (
+                                  <Typography
+                                    variant='caption'
+                                    sx={{ opacity: 0.6, fontFamily: 'monospace', mr: 1, whiteSpace: 'nowrap' }}
+                                  >
+                                    {file.sizeFormatted}
+                                  </Typography>
+                                )}
+                                {trailingIcon && (
+                                  <i className={trailingIcon} style={{ opacity: 0.5 }} />
                                 )}
                               </ListItemButton>
                             </ListItem>
-                          ))}
+                            )
+                          })}
                           {explorerArchives.length === 0 && !explorerLoading && (
                             <Typography variant='body2' sx={{ opacity: 0.5, py: 2, textAlign: 'center' }}>
                               {t('backups.noArchiveFound')}
@@ -1080,6 +1427,30 @@ return () => clearTimeout(timer)
           )}
         </Box>
       </Drawer>
+
+      {restoreOpen && selectedBackup && (() => {
+        // Compose backupPath from the row fields. The /api/v1/pbs/[id]/backups
+        // payload doesn't include it directly (unlike /guests/...) so we
+        // build it client-side: backup/<type>/<id>/<isoTime>.
+        const backupPath = `backup/${selectedBackup.backupType}/${selectedBackup.backupId}/${selectedBackup.backupTimeIso}`
+        const restoreType = selectedBackup.backupType === 'ct' ? 'lxc' : 'qemu'
+        return (
+          <RestoreVmDialog
+            open
+            onClose={() => setRestoreOpen(false)}
+            type={restoreType}
+            sourceVmid={Number(selectedBackup.backupId) || 0}
+            backup={{
+              pbsId: selectedPbs,
+              datastore: selectedBackup.datastore,
+              namespace: selectedBackup.namespace || '',
+              backupPath,
+              backupTimeFormatted: selectedBackup.backupTimeFormatted,
+              vmName: selectedBackup.vmName,
+            }}
+          />
+        )
+      })()}
     </Box>
   )
 }

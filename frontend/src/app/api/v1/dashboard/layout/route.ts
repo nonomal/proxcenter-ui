@@ -57,7 +57,7 @@ export async function GET(req: Request) {
         return NextResponse.json({
           data: {
             id: layout.id, name: layout.name,
-            widgets: JSON.parse(layout.widgets),
+            widgets: layout.widgets,
             isActive: layout.isActive, updatedAt: layout.updatedAt,
           }
         })
@@ -83,7 +83,7 @@ export async function GET(req: Request) {
       return NextResponse.json({
         data: {
           id: layout.id, name: displayName,
-          widgets: JSON.parse(layout.widgets),
+          widgets: layout.widgets,
           isActive: layout.isActive, updatedAt: layout.updatedAt,
         }
       })
@@ -127,14 +127,14 @@ export async function PUT(req: Request) {
 
     const layout = await prisma.dashboardLayout.upsert({
       where: { userId_name: { userId, name } },
-      create: { userId, name, widgets: JSON.stringify(widgets), isActive: true },
-      update: { widgets: JSON.stringify(widgets), isActive: true, updatedAt: new Date() },
+      create: { userId, name, widgets, isActive: true },
+      update: { widgets, isActive: true, updatedAt: new Date() },
     })
 
     return NextResponse.json({
       data: {
         id: layout.id, name: layout.name,
-        widgets: JSON.parse(layout.widgets),
+        widgets: layout.widgets,
         isActive: layout.isActive, updatedAt: layout.updatedAt,
       }
     })
@@ -195,7 +195,7 @@ export async function POST(req: Request) {
       data: {
         userId,
         name: name.trim(),
-        widgets: JSON.stringify(widgets || DEFAULT_LAYOUT),
+        widgets: widgets || DEFAULT_LAYOUT,
         isActive: true,
         sortOrder: (maxOrder._max.sortOrder ?? -1) + 1,
       },
@@ -204,7 +204,7 @@ export async function POST(req: Request) {
     return NextResponse.json({
       data: {
         id: layout.id, name: layout.name,
-        widgets: JSON.parse(layout.widgets),
+        widgets: layout.widgets,
         isActive: layout.isActive, updatedAt: layout.updatedAt,
       }
     })

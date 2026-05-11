@@ -9,6 +9,7 @@ import { getLocale, getMessages } from 'next-intl/server'
 
 // Context Imports
 import { BrandingProvider } from '@/contexts/BrandingContext'
+import AuthProvider from '@components/AuthProvider'
 
 // Util Imports
 import { getSystemMode } from '@core/utils/serverHelpers'
@@ -41,9 +42,16 @@ const RootLayout = async props => {
       <body className='flex is-full min-bs-full flex-auto flex-col'>
         <InitColorSchemeScript attribute='data' defaultMode={systemMode} />
         <NextIntlClientProvider locale={locale} messages={messages}>
-          <BrandingProvider>
-            {children}
-          </BrandingProvider>
+          {/* SessionProvider lives at the root so BrandingProvider (which now
+              subscribes to the session to refetch on login / tenant switch)
+              has access to it. The dashboard's Providers no longer wraps an
+              AuthProvider — the single instance here covers /login, /setup,
+              and the authenticated dashboard tree alike. */}
+          <AuthProvider>
+            <BrandingProvider>
+              {children}
+            </BrandingProvider>
+          </AuthProvider>
         </NextIntlClientProvider>
       </body>
     </html>

@@ -2,8 +2,9 @@ import { NextResponse } from "next/server"
 
 import { demoResponse } from "@/lib/demo/demo-api"
 import { pbsFetch } from "@/lib/proxmox/pbs-client"
-import { getPbsConnectionById } from "@/lib/connections/getConnection"
+import { getPbsConnectionById, getPbsConnectionByIdUnscoped } from "@/lib/connections/getConnection"
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
+import { assertVdcPbsAccess } from "@/lib/vdc/scope"
 
 export const runtime = "nodejs"
 
@@ -24,18 +25,39 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> |
     const denied = await checkPermission(PERMISSIONS.BACKUP_VIEW, "pbs", id)
     if (denied) return denied
 
+    const access = await assertVdcPbsAccess(id)
+    if (access instanceof Response) return access
+
     const url = new URL(req.url)
     const days = Math.min(Number.parseInt(url.searchParams.get('days') || '30', 10), 90)
 
-    const conn = await getPbsConnectionById(id)
+    const conn = access.kind === 'admin'
+      ? await getPbsConnectionById(id)
+      : await getPbsConnectionByIdUnscoped(id)
 
     // Fetch all datastores
     const datastores = await pbsFetch<any[]>(conn, "/admin/datastore")
 
+    // For vDC tenants, restrict to bound (datastore, namespace) tuples.
+    const allowedNsByStore = access.kind === 'tenant'
+      ? access.allowed.reduce((acc, a) => {
+          const set = acc.get(a.datastore) ?? new Set<string>()
+          set.add(a.namespace)
+          acc.set(a.datastore, set)
+          return acc
+        }, new Map<string, Set<string>>())
+      : null
+
+    const visibleDatastores = (datastores || []).filter((ds: any) => {
+      if (!allowedNsByStore) return true
+      const name = ds.store || ds.name
+      return name && allowedNsByStore.has(name)
+    })
+
     // Fetch all snapshots from all datastores
     const allBackups: any[] = []
 
-    const dsPromises = (datastores || []).map(async (ds) => {
+    const dsPromises = visibleDatastores.map(async (ds) => {
       const storeName = ds.store || ds.name
       if (!storeName) return []
 
@@ -47,6 +69,12 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> |
             namespaces = ['', ...nsData.map(n => n.ns || '').filter(Boolean)]
           }
         } catch { /* older PBS */ }
+
+        // Restrict namespaces to the ones the tenant is bound to.
+        const allowedSet = allowedNsByStore?.get(storeName)
+        if (allowedSet) {
+          namespaces = namespaces.filter(ns => allowedSet.has(ns))
+        }
 
         const nsPromises = namespaces.map(async (ns) => {
           const nsParam = ns ? `?ns=${encodeURIComponent(ns)}` : ''

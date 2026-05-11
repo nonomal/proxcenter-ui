@@ -1,7 +1,9 @@
 // src/app/api/v1/connections/route.ts
 import { NextResponse } from "next/server"
 
-import { getSessionPrisma } from "@/lib/tenant"
+import { getSessionPrisma, getCurrentTenantId } from "@/lib/tenant"
+import { prisma as globalPrisma } from "@/lib/db/prisma"
+import { getVdcScope } from "@/lib/vdc/scope"
 import { encryptSecret } from "@/lib/crypto/secret"
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
 import { createConnectionSchema } from "@/lib/schemas"
@@ -9,6 +11,7 @@ import { pbsFetch } from "@/lib/proxmox/pbs-client"
 import { pveFetch } from "@/lib/proxmox/client"
 import { orchestratorFetch } from "@/lib/orchestrator/client"
 import { discoverNodeIps } from "@/lib/proxmox/discoverNodeIps"
+import { captureFingerprint } from "@/lib/proxmox/pbsFingerprint"
 
 export const runtime = "nodejs"
 
@@ -31,7 +34,26 @@ export async function GET(req: Request) {
     if (typeFilter) where.type = typeFilter
     if (hasCephFilter === 'true') where.hasCeph = true
 
-    const prisma = await getSessionPrisma()
+    // vDC-aware: tenant's connections belong to the provider, use vDC scope to filter
+    const tenantId = await getCurrentTenantId()
+    const vdcScope = await getVdcScope(tenantId)
+    const prisma = vdcScope ? globalPrisma : await getSessionPrisma()
+
+    // For vDC tenants, restrict to connections referenced by their vDCs.
+    // PVE connections come from vdcs.connection_id (→ scope.connectionIds);
+    // PBS connections come from vdc_pbs_namespaces (→ scope.pbsConnectionIds).
+    // When the caller asks for both (no type filter), allow either set.
+    if (vdcScope) {
+      const pveIds = [...vdcScope.connectionIds]
+      const pbsIds = [...vdcScope.pbsConnectionIds]
+      const allowedIds = typeFilter === 'pbs'
+        ? pbsIds
+        : typeFilter === 'pve'
+          ? pveIds
+          : [...pveIds, ...pbsIds]
+      where.id = { in: allowedIds }
+    }
+
     const connections = await prisma.connection.findMany({
       where: Object.keys(where).length > 0 ? where : undefined,
       orderBy: { createdAt: "desc" },
@@ -46,6 +68,8 @@ export async function GET(req: Request) {
         latitude: true,
         longitude: true,
         locationLabel: true,
+        country: true,
+        fingerprint: true,
         // SSH fields (sans les secrets)
         sshEnabled: true,
         sshPort: true,
@@ -106,7 +130,7 @@ export async function POST(req: Request) {
     const {
       name, type, baseUrl, behindProxy, insecureTLS, hasCeph, apiToken,
       subType, vmwareUser, vmwarePassword, vmwareDatacenter, hypervShareName,
-      latitude, longitude, locationLabel,
+      latitude, longitude, locationLabel, country,
       sshEnabled, sshPort, sshUser, sshAuthMethod,
       sshKey, sshPassphrase, sshPassword, sshUseSudo,
     } = parseResult.data
@@ -122,6 +146,7 @@ export async function POST(req: Request) {
       latitude: latitude ?? null,
       longitude: longitude ?? null,
       locationLabel: locationLabel ?? null,
+      country: country ?? null,
     }
 
     if (type === 'vmware' || type === 'xcpng' || type === 'hyperv' || type === 'nutanix') {
@@ -269,6 +294,21 @@ export async function POST(req: Request) {
       }
     }
 
+    // Best-effort PBS TLS fingerprint capture at create time. Without it,
+    // the vDC binding selector hides the connection in auto-mode (which
+    // needs the fingerprint to authenticate the API calls that
+    // provision the namespace, sub-token and ACL on PBS). If the host
+    // is unreachable or the cert probe fails, the connection is still
+    // saved with fingerprint=null and the user can re-capture later via
+    // ConnectionDialog → "Capture fingerprint".
+    if (type === 'pbs') {
+      try {
+        data.fingerprint = await captureFingerprint(baseUrl)
+      } catch (e: any) {
+        console.warn(`[connections] PBS fingerprint capture failed for ${baseUrl}: ${e?.message ?? e}`)
+      }
+    }
+
     const prisma = await getSessionPrisma()
     const created = await prisma.connection.create({
       data,
@@ -283,6 +323,7 @@ export async function POST(req: Request) {
         latitude: true,
         longitude: true,
         locationLabel: true,
+        country: true,
         sshEnabled: true,
         sshPort: true,
         sshUser: true,

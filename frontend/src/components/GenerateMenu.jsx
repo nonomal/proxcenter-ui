@@ -13,14 +13,26 @@ import { useRBAC } from '@/contexts/RBACContext'
 // License Hook
 import { useLicense } from '@/contexts/LicenseContext'
 
+// VDC Hook
+import { useMyVdcs } from '@/hooks/useMyVdcs'
+
+// Tenant Hook
+import { useTenant } from '@/contexts/TenantContext'
+
 // Generate a menu from the menu data array
 export const GenerateVerticalMenu = ({ menuData }) => {
   const { hasAnyPermission, loading } = useRBAC()
   const { hasFeature, loading: licenseLoading } = useLicense()
+  const { hasVdc, loading: vdcLoading } = useMyVdcs()
+  const { currentTenant, loading: tenantLoading } = useTenant()
+  const isProviderTenant = currentTenant?.id === 'default'
 
   // Fonction pour vérifier si un item doit être affiché (RBAC)
   const canView = (item) => {
-    if (loading) return true // Afficher pendant le chargement
+    if (loading || vdcLoading || tenantLoading) return true // Afficher pendant le chargement
+    if (item.requires?.hasVdc === true && !hasVdc) return false
+    if (item.requires?.hasVdc === false && hasVdc) return false
+    if (item.requires?.isProviderTenant === true && !isProviderTenant) return false
     if (!item.permissions || item.permissions.length === 0) return true
 
     return hasAnyPermission(item.permissions)
@@ -104,7 +116,7 @@ export const GenerateVerticalMenu = ({ menuData }) => {
       }
 
       // If the current item is neither a section nor a sub menu, return a MenuItem component
-      const { label, icon, prefix, suffix, permissions, requiredFeature, ...rest } = menuItem
+      const { label, icon, prefix, suffix, permissions, requiredFeature, requires, ...rest } = menuItem
 
       const Icon = icon ? <i className={icon} /> : null
       const menuItemPrefix = prefix && prefix.label ? <Chip size='small' {...prefix} /> : prefix
@@ -131,9 +143,15 @@ export const GenerateVerticalMenu = ({ menuData }) => {
 export const GenerateHorizontalMenu = ({ menuData }) => {
   const { hasAnyPermission, loading } = useRBAC()
   const { hasFeature, loading: licenseLoading } = useLicense()
+  const { hasVdc, loading: vdcLoading } = useMyVdcs()
+  const { currentTenant, loading: tenantLoading } = useTenant()
+  const isProviderTenant = currentTenant?.id === 'default'
 
   const canView = (item) => {
-    if (loading) return true
+    if (loading || vdcLoading || tenantLoading) return true // Afficher pendant le chargement
+    if (item.requires?.hasVdc === true && !hasVdc) return false
+    if (item.requires?.hasVdc === false && hasVdc) return false
+    if (item.requires?.isProviderTenant === true && !isProviderTenant) return false
     if (!item.permissions || item.permissions.length === 0) return true
 
     return hasAnyPermission(item.permissions)
@@ -188,7 +206,7 @@ export const GenerateHorizontalMenu = ({ menuData }) => {
       }
 
       // If the current item is not a sub menu, return a MenuItem component
-      const { label, icon, prefix, suffix, permissions, requiredFeature, ...rest } = menuItem
+      const { label, icon, prefix, suffix, permissions, requiredFeature, requires, ...rest } = menuItem
 
       const Icon = icon ? <i className={icon} /> : null
       const menuItemPrefix = prefix && prefix.label ? <Chip size='small' {...prefix} /> : prefix

@@ -1,8 +1,7 @@
 import { NextResponse } from "next/server"
 
-import { getSessionPrisma } from "@/lib/tenant"
 import { pveFetch } from "@/lib/proxmox/client"
-import { decryptSecret } from "@/lib/crypto/secret"
+import { getConnectionById } from "@/lib/connections/getConnection"
 
 export const runtime = "nodejs"
 
@@ -26,28 +25,12 @@ function parseVmKey(vmKey: string) {
 }
 
 async function getConnection(id: string) {
-  const prisma = await getSessionPrisma()
-  const connection = await prisma.connection.findUnique({
-    where: { id },
-    select: {
-      id: true,
-      name: true,
-      baseUrl: true,
-      insecureTLS: true,
-      apiTokenEnc: true,
-    }
-  })
-
-  if (!connection || !connection.apiTokenEnc) {
+  // Use the shared helper so vDC tenants reach provider-owned connections
+  // through their vDC scope instead of getting a tenant-scoped 404.
+  try {
+    return await getConnectionById(id)
+  } catch {
     return null
-  }
-
-  return {
-    id: connection.id,
-    name: connection.name,
-    baseUrl: connection.baseUrl,
-    apiToken: decryptSecret(connection.apiTokenEnc),
-    insecureDev: !!connection.insecureTLS,
   }
 }
 

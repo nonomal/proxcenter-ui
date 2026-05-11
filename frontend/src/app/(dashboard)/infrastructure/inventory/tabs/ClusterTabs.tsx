@@ -75,6 +75,7 @@ import { useLicense, Features } from '@/contexts/LicenseContext'
 import { useToast } from '@/contexts/ToastContext'
 import { useRollingUpdates } from '@/contexts/RollingUpdateContext'
 import { useDRSStatus, useDRSMetrics, useDRSSettings, useDRSRecommendations } from '@/hooks/useDRS'
+import { useRBAC } from '@/contexts/RBACContext'
 import { computeDrsHealthScore } from '@/lib/utils/drs-health'
 
 function HaResourceChips({ resources, allVms }: { resources: string; allVms: any[] }) {
@@ -199,11 +200,13 @@ export default function ClusterTabs(props: any) {
   const t = useTranslations()
   const router = useRouter()
   const { hasFeature, loading: licenseLoading } = useLicense()
+  const { hasPermission } = useRBAC()
   const isEnterprise = !licenseLoading && hasFeature(Features.DRS)
-  const { data: drsStatus } = useDRSStatus(isEnterprise)
-  const { data: metricsData } = useDRSMetrics(isEnterprise)
-  const { data: drsSettings } = useDRSSettings(isEnterprise)
-  const { data: drsRecommendations, mutate: mutateRecs } = useDRSRecommendations(isEnterprise)
+  const drsEnabled = isEnterprise && hasPermission('automation.view')
+  const { data: drsStatus } = useDRSStatus(drsEnabled)
+  const { data: metricsData } = useDRSMetrics(drsEnabled)
+  const { data: drsSettings } = useDRSSettings(drsEnabled)
+  const { data: drsRecommendations, mutate: mutateRecs } = useDRSRecommendations(drsEnabled)
   const [evaluating, setEvaluating] = useState(false)
   const [recsExpanded, setRecsExpanded] = useState(false)
   const [executingRecId, setExecutingRecId] = useState<string | null>(null)
@@ -775,98 +778,38 @@ export default function ClusterTabs(props: any) {
                   }
                 />
                 <Tab
-                  disabled={!rollingUpdateAvailable}
+                  sx={!rollingUpdateAvailable ? { display: 'none' } : undefined}
                   label={
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, opacity: rollingUpdateAvailable ? 1 : 0.4 }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
                       <i className="ri-refresh-line" style={{ fontSize: 16 }} />
                       {t('inventory.tabRollingUpdate')}
-                      {!rollingUpdateAvailable && (
-                        <Chip
-                          size="small"
-                          label="Enterprise"
-                          sx={{
-                            height: 18,
-                            fontSize: '0.6rem',
-                            fontWeight: 600,
-                            bgcolor: 'primary.main',
-                            color: 'primary.contrastText',
-                            ml: 0.5,
-                            '& .MuiChip-label': { px: 0.75 }
-                          }}
-                        />
-                      )}
                     </Box>
                   }
                 />
                 <Tab
-                  disabled={!cveAvailable}
+                  sx={!cveAvailable ? { display: 'none' } : undefined}
                   label={
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, opacity: cveAvailable ? 1 : 0.4 }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
                       <i className="ri-shield-cross-line" style={{ fontSize: 16 }} />
                       CVE
-                      {!cveAvailable && (
-                        <Chip
-                          size="small"
-                          label="Enterprise"
-                          sx={{
-                            height: 18,
-                            fontSize: '0.6rem',
-                            fontWeight: 600,
-                            bgcolor: 'primary.main',
-                            color: 'primary.contrastText',
-                            ml: 0.5,
-                            '& .MuiChip-label': { px: 0.75 }
-                          }}
-                        />
-                      )}
                     </Box>
                   }
                 />
                 <Tab
-                  disabled={!hasFeature(Features.CHANGE_TRACKING)}
+                  sx={!hasFeature(Features.CHANGE_TRACKING) ? { display: 'none' } : undefined}
                   label={
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, opacity: hasFeature(Features.CHANGE_TRACKING) ? 1 : 0.4 }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
                       <i className="ri-git-commit-line" style={{ fontSize: 16 }} />
                       {t('inventory.tabChangeTracking')}
-                      {!hasFeature(Features.CHANGE_TRACKING) && (
-                        <Chip
-                          size="small"
-                          label="Enterprise"
-                          sx={{
-                            height: 18,
-                            fontSize: '0.6rem',
-                            fontWeight: 600,
-                            bgcolor: 'primary.main',
-                            color: 'primary.contrastText',
-                            ml: 0.5,
-                            '& .MuiChip-label': { px: 0.75 }
-                          }}
-                        />
-                      )}
                     </Box>
                   }
                 />
                 <Tab
-                  disabled={!hasFeature(Features.COMPLIANCE)}
+                  sx={!hasFeature(Features.COMPLIANCE) ? { display: 'none' } : undefined}
                   label={
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, opacity: hasFeature(Features.COMPLIANCE) ? 1 : 0.4 }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
                       <i className="ri-shield-check-line" style={{ fontSize: 16 }} />
                       {t('inventory.tabCompliance')}
-                      {!hasFeature(Features.COMPLIANCE) && (
-                        <Chip
-                          size="small"
-                          label="Enterprise"
-                          sx={{
-                            height: 18,
-                            fontSize: '0.6rem',
-                            fontWeight: 600,
-                            bgcolor: 'primary.main',
-                            color: 'primary.contrastText',
-                            ml: 0.5,
-                            '& .MuiChip-label': { px: 0.75 }
-                          }}
-                        />
-                      )}
                     </Box>
                   }
                 />

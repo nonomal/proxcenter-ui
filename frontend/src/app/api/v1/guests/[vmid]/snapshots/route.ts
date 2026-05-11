@@ -1,11 +1,12 @@
 import { NextResponse } from "next/server"
 import { cookies } from "next/headers"
 
-import { getSessionPrisma } from "@/lib/tenant"
 import { pveFetch } from "@/lib/proxmox/client"
-import { decryptSecret } from "@/lib/crypto/secret"
+import { getConnectionById } from "@/lib/connections/getConnection"
 import { checkPermission, buildVmResourceId, PERMISSIONS } from "@/lib/rbac"
 import { getDateLocale } from "@/lib/i18n/date"
+import { getCurrentTenantId } from "@/lib/tenant"
+import { resolveVdcForTenant, checkVdcQuota } from "@/lib/vdc/quota"
 
 export const runtime = "nodejs"
 
@@ -30,28 +31,12 @@ return {
 }
 
 async function getConnection(id: string) {
-  const prisma = await getSessionPrisma()
-  const connection = await prisma.connection.findUnique({
-    where: { id },
-    select: {
-      id: true,
-      name: true,
-      baseUrl: true,
-      insecureTLS: true,
-      apiTokenEnc: true,
-    }
-  })
-
-  if (!connection || !connection.apiTokenEnc) {
+  // Use the shared helper so vDC tenants reach provider-owned connections
+  // through their vDC scope instead of getting a tenant-scoped 404.
+  try {
+    return await getConnectionById(id)
+  } catch {
     return null
-  }
-
-  return {
-    id: connection.id,
-    name: connection.name,
-    baseUrl: connection.baseUrl,
-    apiToken: decryptSecret(connection.apiTokenEnc),
-    insecureDev: !!connection.insecureTLS,
   }
 }
 
@@ -151,6 +136,29 @@ export async function POST(
 
     if (!conn) {
       return NextResponse.json({ error: "Connection not found" }, { status: 404 })
+    }
+
+    // ── vDC quota: enforce maxSnapshots across the tenant's pool ──
+    const tenantId = await getCurrentTenantId()
+    try {
+      const vdcInfo = await resolveVdcForTenant(tenantId, connId, node)
+      if (vdcInfo) {
+        const quotaCheck = await checkVdcQuota(connId, vdcInfo.poolName, vdcInfo.quota, {
+          type: 'snapshot',
+          addSnapshots: 1,
+        })
+        if (!quotaCheck.allowed) {
+          return NextResponse.json({
+            error: 'Quota exceeded',
+            violations: quotaCheck.violations,
+          }, { status: 409 })
+        }
+      }
+    } catch (e: any) {
+      if (e?.message === 'NODE_NOT_AUTHORIZED') {
+        return NextResponse.json({ error: 'This node is not authorized for your vDC' }, { status: 403 })
+      }
+      throw e
     }
 
     const apiPath = `/nodes/${encodeURIComponent(node)}/${type}/${vmid}/snapshot`

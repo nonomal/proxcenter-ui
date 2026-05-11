@@ -12,15 +12,19 @@ import {
   DialogContent,
   DialogTitle,
   FormControl,
+  FormControlLabel,
   InputLabel,
   MenuItem,
   Select,
   Stack,
+  Switch,
   TextField,
   ToggleButton,
   ToggleButtonGroup,
   Typography,
 } from '@mui/material'
+
+import { useTenant } from '@/contexts/TenantContext'
 
 interface CustomImageDialogProps {
   open: boolean
@@ -30,6 +34,8 @@ interface CustomImageDialogProps {
 
 export default function CustomImageDialog({ open, onClose, editData }: CustomImageDialogProps) {
   const t = useTranslations()
+  const { currentTenant, loading: tenantLoading } = useTenant()
+  const isProviderTenant = !tenantLoading && currentTenant?.id === 'default'
   const isEdit = !!editData
 
   // Form state
@@ -49,6 +55,8 @@ export default function CustomImageDialog({ open, onClose, editData }: CustomIma
   const [recommendedCores, setRecommendedCores] = useState(2)
   const [ostype, setOstype] = useState('l26')
   const [tags, setTags] = useState('')
+  // Provider-only: publish to the shared catalogue (visible to every tenant).
+  const [isShared, setIsShared] = useState(false)
 
   // Volume browser state
   const [connections, setConnections] = useState<any[]>([])
@@ -86,6 +94,7 @@ export default function CustomImageDialog({ open, onClose, editData }: CustomIma
       setRecommendedCores(editData.recommendedCores || 2)
       setOstype(editData.ostype || 'l26')
       setTags(editData.tags || '')
+      setIsShared(!!(editData as any).isShared)
     } else {
       setName('')
       setVendor('custom')
@@ -103,6 +112,7 @@ export default function CustomImageDialog({ open, onClose, editData }: CustomIma
       setRecommendedCores(2)
       setOstype('l26')
       setTags('')
+      setIsShared(false)
     }
   }, [open, editData])
 
@@ -173,6 +183,7 @@ export default function CustomImageDialog({ open, onClose, editData }: CustomIma
       volumeId: sourceType === 'volume' ? volumeId : null,
       defaultDiskSize, minMemory, recommendedMemory, minCores, recommendedCores,
       ostype, tags: tags || null,
+      isShared,
     }
 
     try {
@@ -217,27 +228,39 @@ export default function CustomImageDialog({ open, onClose, editData }: CustomIma
         <Stack spacing={2.5} sx={{ mt: 1 }}>
           {error && <Alert severity="error">{error}</Alert>}
 
-          {/* Source type toggle */}
-          <Box>
-            <Typography variant="caption" sx={{ opacity: 0.6, mb: 0.5, display: 'block' }}>
-              {t('templates.catalog.sourceType')}
-            </Typography>
-            <ToggleButtonGroup
-              size="small"
-              value={sourceType}
-              exclusive
-              onChange={(_, v) => v && setSourceType(v)}
-            >
-              <ToggleButton value="url" sx={{ gap: 0.5 }}>
-                <i className="ri-link" style={{ fontSize: 16 }} />
-                {t('templates.catalog.sourceUrl')}
-              </ToggleButton>
-              <ToggleButton value="volume" sx={{ gap: 0.5 }}>
-                <i className="ri-hard-drive-2-line" style={{ fontSize: 16 }} />
-                {t('templates.catalog.sourceVolume')}
-              </ToggleButton>
-            </ToggleButtonGroup>
-          </Box>
+          {format === 'iso' && (
+            <Alert severity="info" icon={<i className="ri-disc-line" style={{ fontSize: 18 }} />}>
+              {t('templates.catalog.isoUploadNote')}
+            </Alert>
+          )}
+
+          {/* Source type toggle. The "PVE volume" mode lets the caller
+              point at an already-uploaded qcow2 on a PVE storage; it's
+              irrelevant for tenants (no storage browser access) and we
+              keep it provider-only. The "URL" mode covers 99% of cases
+              and is the only one shown to tenants. */}
+          {isProviderTenant && (
+            <Box>
+              <Typography variant="caption" sx={{ opacity: 0.6, mb: 0.5, display: 'block' }}>
+                {t('templates.catalog.sourceType')}
+              </Typography>
+              <ToggleButtonGroup
+                size="small"
+                value={sourceType}
+                exclusive
+                onChange={(_, v) => v && setSourceType(v)}
+              >
+                <ToggleButton value="url" sx={{ gap: 0.5 }}>
+                  <i className="ri-link" style={{ fontSize: 16 }} />
+                  {t('templates.catalog.sourceUrl')}
+                </ToggleButton>
+                <ToggleButton value="volume" sx={{ gap: 0.5 }}>
+                  <i className="ri-hard-drive-2-line" style={{ fontSize: 16 }} />
+                  {t('templates.catalog.sourceVolume')}
+                </ToggleButton>
+              </ToggleButtonGroup>
+            </Box>
+          )}
 
           {/* Name + vendor row */}
           <Box sx={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 2 }}>
@@ -406,6 +429,7 @@ export default function CustomImageDialog({ open, onClose, editData }: CustomIma
                 <MenuItem value="raw">raw</MenuItem>
                 <MenuItem value="vmdk">vmdk</MenuItem>
                 <MenuItem value="img">img</MenuItem>
+                <MenuItem value="iso">{t('templates.catalog.formatIso')}</MenuItem>
               </Select>
             </FormControl>
             <FormControl size="small">
@@ -474,6 +498,32 @@ export default function CustomImageDialog({ open, onClose, editData }: CustomIma
             placeholder="cloud-init;lts;custom"
             helperText={t('templates.blueprints.tagsHelp')}
           />
+
+          {/* Shared catalogue toggle — provider only. Tenant uploads stay
+              private to that tenant; the provider can promote an image to
+              the shared catalogue visible by every tenant. */}
+          {isProviderTenant && (
+            <FormControlLabel
+              control={
+                <Switch
+                  checked={isShared}
+                  onChange={e => setIsShared(e.target.checked)}
+                  size="small"
+                />
+              }
+              label={
+                <Box>
+                  <Typography variant="body2" sx={{ fontWeight: 500 }}>
+                    {t('templates.catalog.shareWithTenants')}
+                  </Typography>
+                  <Typography variant="caption" sx={{ opacity: 0.65 }}>
+                    {t('templates.catalog.shareWithTenantsHelp')}
+                  </Typography>
+                </Box>
+              }
+              sx={{ alignItems: 'flex-start', m: 0 }}
+            />
+          )}
         </Stack>
       </DialogContent>
 

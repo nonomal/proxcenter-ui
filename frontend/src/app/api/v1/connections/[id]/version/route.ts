@@ -28,7 +28,7 @@ export async function GET(
     return NextResponse.json({ data: version })
   } catch (e: any) {
     console.error('Error fetching version:', e)
-    
+
 return NextResponse.json({ error: e?.message || String(e) }, { status: 500 })
   }
 }

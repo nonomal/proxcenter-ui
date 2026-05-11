@@ -8,9 +8,9 @@ import { nanoid } from "nanoid"
 
 import { authOptions } from "@/lib/auth/config"
 import { demoResponse } from "@/lib/demo/demo-api"
-import { getDb } from "@/lib/db/sqlite"
+import { prisma } from "@/lib/db/prisma"
 import { audit } from "@/lib/audit"
-import { hasPermission } from "@/lib/rbac"
+import { isUserSuperAdmin, PROTECTED_ROLE_IDS } from "@/lib/rbac"
 import { getCurrentTenantId } from "@/lib/tenant"
 
 // GET /api/v1/rbac/roles - Liste tous les rôles
@@ -25,47 +25,64 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "Non autorisé" }, { status: 401 })
     }
 
-    const db = getDb()
-    
-    // Récupérer tous les rôles
-    const roles = db.prepare(`
-      SELECT id, name, description, is_system, color, created_at, updated_at
-      FROM rbac_roles
-      ORDER BY is_system DESC, name ASC
-    `).all() as any[]
-
-    // Pour chaque rôle, récupérer ses permissions
-    const getPermissions = db.prepare(`
-      SELECT p.id, p.name, p.category, p.description, p.is_dangerous
-      FROM rbac_role_permissions rp
-      JOIN rbac_permissions p ON p.id = rp.permission_id
-      WHERE rp.role_id = ?
-      ORDER BY p.category, p.name
-    `)
-
-    // Compter les utilisateurs par rôle (scoped by tenant)
+    // Hide protected (wildcard) roles from non-super-admin callers so a tenant
+    // admin with admin.rbac can't assign themselves or others full cluster
+    // access.
+    const callerIsSuperAdmin = await isUserSuperAdmin(session.user.id)
     const tenantId = await getCurrentTenantId()
-    const countUsers = db.prepare(`
-      SELECT COUNT(DISTINCT user_id) as count
-      FROM rbac_user_roles
-      WHERE role_id = ? AND tenant_id = ?
-    `)
+
+    const roles = await prisma.rbacRole.findMany({
+      where: callerIsSuperAdmin ? undefined : { id: { notIn: [...PROTECTED_ROLE_IDS] } },
+      select: {
+        id: true,
+        name: true,
+        description: true,
+        isSystem: true,
+        color: true,
+        createdAt: true,
+        updatedAt: true,
+        permissions: {
+          select: {
+            permission: {
+              select: { id: true, name: true, category: true, description: true, isDangerous: true },
+            },
+          },
+        },
+        _count: {
+          select: {
+            userRoles: { where: { tenantId } },
+          },
+        },
+      },
+      orderBy: [{ isSystem: "desc" }, { name: "asc" }],
+    })
 
     const rolesWithDetails = roles.map(role => ({
-      ...role,
-      is_system: role.is_system === 1,
-      permissions: getPermissions.all(role.id),
-      user_count: (countUsers.get(role.id, tenantId) as any)?.count || 0
+      id: role.id,
+      name: role.name,
+      description: role.description,
+      is_system: role.isSystem,
+      color: role.color,
+      created_at: role.createdAt.toISOString(),
+      updated_at: role.updatedAt.toISOString(),
+      permissions: role.permissions.map(rp => ({
+        id: rp.permission.id,
+        name: rp.permission.name,
+        category: rp.permission.category,
+        description: rp.permission.description,
+        is_dangerous: rp.permission.isDangerous,
+      })),
+      user_count: role._count.userRoles,
     }))
 
     return NextResponse.json({
       data: rolesWithDetails,
-      meta: { total: roles.length }
+      meta: { total: rolesWithDetails.length }
     })
 
   } catch (error: any) {
     console.error("GET /api/v1/rbac/roles error:", error)
-    
+
 return NextResponse.json(
       { error: error.message || "Erreur serveur" },
       { status: 500 }
@@ -85,9 +102,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Non autorisé" }, { status: 401 })
     }
 
-    // Vérifier les droits admin
-    const tenantId = await getCurrentTenantId()
-    if (!hasPermission({ userId: session.user.id, permission: 'admin.rbac', tenantId })) {
+    // Creating a role lets the caller bundle any permission — including
+    // provider-only ones — and then assign it. Reserve the ability to a
+    // super admin to prevent tenant admins from shadowing role_super_admin
+    // via a custom wildcard role.
+    if (!(await isUserSuperAdmin(session.user.id))) {
       return NextResponse.json({ error: "Droits administrateur requis" }, { status: 403 })
     }
 
@@ -98,33 +117,41 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Nom du rôle requis" }, { status: 400 })
     }
 
-    const db = getDb()
-    const now = new Date().toISOString()
+    const trimmedName = name.trim()
+    const now = new Date()
     const id = `role_${nanoid(12)}`
 
     // Vérifier que le nom n'existe pas déjà
-    const existing = db.prepare("SELECT id FROM rbac_roles WHERE name = ?").get(name.trim())
+    const existing = await prisma.rbacRole.findUnique({ where: { name: trimmedName }, select: { id: true } })
 
     if (existing) {
       return NextResponse.json({ error: "Un rôle avec ce nom existe déjà" }, { status: 400 })
     }
 
-    // Créer le rôle
-    db.prepare(`
-      INSERT INTO rbac_roles (id, name, description, is_system, color, created_at, updated_at)
-      VALUES (?, ?, ?, 0, ?, ?, ?)
-    `).run(id, name.trim(), description || null, color || "#6366f1", now, now)
+    const permIds: string[] = Array.isArray(permissions) ? permissions.filter((p: any) => typeof p === "string") : []
 
-    // Ajouter les permissions
-    if (Array.isArray(permissions) && permissions.length > 0) {
-      const insertPerm = db.prepare(
-        "INSERT OR IGNORE INTO rbac_role_permissions (role_id, permission_id) VALUES (?, ?)"
-      )
-
-      for (const permId of permissions) {
-        insertPerm.run(id, permId)
-      }
-    }
+    // Créer le rôle + ses permissions atomiquement
+    await prisma.$transaction([
+      prisma.rbacRole.create({
+        data: {
+          id,
+          name: trimmedName,
+          description: description || null,
+          isSystem: false,
+          color: color || "#6366f1",
+          createdAt: now,
+          updatedAt: now,
+        },
+      }),
+      ...(permIds.length > 0
+        ? [
+            prisma.rbacRolePermission.createMany({
+              data: permIds.map(permissionId => ({ roleId: id, permissionId })),
+              skipDuplicates: true,
+            }),
+          ]
+        : []),
+    ])
 
     // Audit
     await audit({
@@ -134,27 +161,46 @@ export async function POST(req: NextRequest) {
       userEmail: session.user.email,
       resourceType: "rbac_role",
       resourceId: id,
-      resourceName: name.trim(),
-      details: { permissions: permissions?.length || 0 },
+      resourceName: trimmedName,
+      details: { permissions: permIds.length },
       status: "success"
     })
 
-    // Retourner le rôle créé
-    const newRole = db.prepare("SELECT * FROM rbac_roles WHERE id = ?").get(id)
+    // Retourner le rôle créé avec ses permissions
+    const newRole = await prisma.rbacRole.findUnique({
+      where: { id },
+      include: {
+        permissions: { include: { permission: true } },
+      },
+    })
 
-    const rolePermissions = db.prepare(`
-      SELECT p.* FROM rbac_role_permissions rp
-      JOIN rbac_permissions p ON p.id = rp.permission_id
-      WHERE rp.role_id = ?
-    `).all(id)
+    if (!newRole) {
+      return NextResponse.json({ error: "Erreur lors de la création" }, { status: 500 })
+    }
 
     return NextResponse.json({
-      data: { ...newRole, permissions: rolePermissions, user_count: 0 }
+      data: {
+        id: newRole.id,
+        name: newRole.name,
+        description: newRole.description,
+        is_system: newRole.isSystem,
+        color: newRole.color,
+        created_at: newRole.createdAt.toISOString(),
+        updated_at: newRole.updatedAt.toISOString(),
+        permissions: newRole.permissions.map(rp => ({
+          id: rp.permission.id,
+          name: rp.permission.name,
+          category: rp.permission.category,
+          description: rp.permission.description,
+          is_dangerous: rp.permission.isDangerous,
+        })),
+        user_count: 0,
+      },
     }, { status: 201 })
 
   } catch (error: any) {
     console.error("POST /api/v1/rbac/roles error:", error)
-    
+
 return NextResponse.json(
       { error: error.message || "Erreur serveur" },
       { status: 500 }

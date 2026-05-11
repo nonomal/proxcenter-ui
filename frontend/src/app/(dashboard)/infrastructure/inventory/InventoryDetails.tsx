@@ -89,6 +89,8 @@ import { useTaskTracker } from '@/hooks/useTaskTracker'
 import type { Status, InventorySelection, Kpi, KV, UtilMetric, DetailsPayload, RrdTimeframe, SeriesPoint, ActiveDialog } from './types'
 import { TAG_PALETTE, hashStringToInt, parseTags, formatBps, formatTime, formatUptime, parseMarkdown, parseNodeId, parseVmId, getMetricIcon, pickNumber, buildSeriesFromRrd, fetchRrd, fetchDetails } from './helpers'
 import { useTagColors } from '@/contexts/TagColorContext'
+import { useTenant } from '@/contexts/TenantContext'
+import { useRouter } from 'next/navigation'
 import { getOsSvgIcon } from '@/lib/utils/osIcons'
 import RootInventoryView from './RootInventoryView'
 import StorageDashboard from './StorageDashboard'
@@ -97,6 +99,7 @@ import BackupDashboard from './BackupDashboard'
 import MigrationDashboard from './MigrationDashboard'
 import { ViewMode, AllVmItem, HostItem, PoolItem, TagItem, NodeIcon, ClusterIcon, StatusIcon } from './InventoryTree'
 import NetworkDetailPanel from './components/NetworkDetailPanel'
+import TenantVnetDetailPanel from './TenantVnetDetailPanel'
 import TagManager from './components/TagManager'
 import EntityTagManager from './components/EntityTagManager'
 import VmActions from './components/VmActions'
@@ -118,6 +121,7 @@ import { useDetailData } from './hooks/useDetailData'
 import { useVmActions } from './hooks/useVmActions'
 import { useHardwareHandlers } from './hooks/useHardwareHandlers'
 import VmDetailTabs from './tabs/VmDetailTabs'
+import GreenScoreCard from '@/components/inventory/GreenScoreCard'
 import ClusterTabs from './tabs/ClusterTabs'
 import NodeTabs from './tabs/NodeTabs'
 import { UploadDialog } from '@/components/storage/StorageContentBrowser'
@@ -197,8 +201,18 @@ export default function InventoryDetails({
     const connIds = new Set(allVms.map((vm: any) => vm.connId).filter(Boolean))
     connIds.forEach(id => loadConnection(id))
   }, [allVms, loadConnection])
-  const { hasFeature, loading: licenseLoading } = useLicense()
+  const { hasFeature, isEnterprise, loading: licenseLoading } = useLicense()
   const toast = useToast()
+  // LXC sharing the host kernel doesn't give strong-enough multi-tenant
+  // isolation. Tenants on a shared cluster see only "Create VM" — the
+  // provider keeps the LXC option for lightweight workloads on dedicated
+  // setups. Same gate is used to funnel tenants through the template
+  // catalogue instead of the bare-metal Create VM dialog.
+  const { currentTenant, loading: tenantLoading } = useTenant()
+  const isProviderTenant = !tenantLoading && currentTenant?.id === 'default'
+  const allowLxc = !tenantLoading && (currentTenant === null || isProviderTenant)
+  const allowBlankVm = allowLxc
+  const router = useRouter()
   const { trackTask } = useTaskTracker()
   const { addTask: addPCTask, updateTask: updatePCTask, registerOnRestore, unregisterOnRestore } = useProxCenterTasks()
   const primaryColor = theme.palette.primary.main
@@ -258,6 +272,12 @@ export default function InventoryDetails({
   const [migTargetNode, setMigTargetNode] = useState('')
   const [migTargetStorage, setMigTargetStorage] = useState('')
   const [migNetworkBridge, setMigNetworkBridge] = useState('')
+  // Optional user-picked target VMID. Empty string = let PVE pick the next
+  // free id (default behavior). The dialog runs a debounced availability
+  // check and surfaces the result inline; the migration POST forwards the
+  // value as `targetVmid` when set.
+  const [migTargetVmid, setMigTargetVmid] = useState('')
+  const [migTargetVmidStatus, setMigTargetVmidStatus] = useState<'idle' | 'checking' | 'available' | 'taken' | 'invalid'>('idle')
   // Optional 802.1Q VLAN tag applied to the created VM's NIC. Empty string means
   // "no tag" (access port on the bridge's native VLAN). Stored as string so the
   // input renders cleanly when blank; coerced + validated server-side.
@@ -602,6 +622,7 @@ export default function InventoryDetails({
   useEffect(() => {
     if (!esxiMigrateVm && !bulkMigOpen) return
     setMigTargetConn(''); setMigTargetNode(''); setMigTargetStorage('')
+    setMigTargetVmid(''); setMigTargetVmidStatus('idle')
     setMigNodes([]); setMigStorages([]); setMigNodeOptions([])
     if (esxiMigrateVm) { setMigJobId(null); setMigJob(null) }
     fetch('/api/v1/connections').then(r => r.json()).then(async (d) => {
@@ -1266,6 +1287,7 @@ export default function InventoryDetails({
     haConfig, haGroups, haLoading, haSaving, haError, haLoaded, haEditing,
     setHaEditing, haState, setHaState, haGroup, setHaGroup,
     haMaxRestart, setHaMaxRestart, haMaxRelocate, setHaMaxRelocate,
+    haFailback, setHaFailback,
     haComment, setHaComment, loadHaConfig, saveHaConfig, removeHaConfig, resetHA,
   } = useHA({ selection, detailTab, t, data, setConfirmAction, setConfirmActionLoading })
 
@@ -2488,6 +2510,10 @@ return vm?.isCluster ?? false
         </Box>
       ) : selection?.type === 'net-conn' || selection?.type === 'net-node' || selection?.type === 'net-vlan' ? (
         <NetworkDetailPanel selection={selection} onSelect={onSelect} />
+      ) : selection?.type === 'tvnet' ? (
+        <Box sx={{ p: 2.5, height: '100%', overflow: 'auto' }}>
+          <TenantVnetDetailPanel selectionId={selection.id} />
+        </Box>
       ) : selection?.type === 'storage-cluster' || selection?.type === 'storage-node' ? (
         <StorageIntermediatePanel selection={selection} clusterStorages={clusterStorages || []} onSelect={onSelect} />
       ) : selection?.type === 'backup-root' ? (
@@ -2556,24 +2582,38 @@ return vm?.isCluster ?? false
                     {t('inventory.guests')} ({displayVms.length})
                   </Typography>
                   <Stack direction="row" spacing={1}>
-                    <Button
-                      size="small"
-                      variant="contained"
-                      startIcon={<i className="ri-add-line" />}
-                      onClick={() => setCreateVmDialogOpen(true)}
-                      sx={{ textTransform: 'none' }}
-                    >
-                      {t('common.create')} VM
-                    </Button>
-                    <Button
-                      size="small"
-                      variant="outlined"
-                      startIcon={<i className="ri-add-line" />}
-                      onClick={() => setCreateLxcDialogOpen(true)}
-                      sx={{ textTransform: 'none' }}
-                    >
-                      {t('common.create')} LXC
-                    </Button>
+                    {allowBlankVm ? (
+                      <Button
+                        size="small"
+                        variant="contained"
+                        startIcon={<i className="ri-add-line" />}
+                        onClick={() => setCreateVmDialogOpen(true)}
+                        sx={{ textTransform: 'none' }}
+                      >
+                        {t('common.create')} VM
+                      </Button>
+                    ) : (
+                      <Button
+                        size="small"
+                        variant="contained"
+                        startIcon={<i className="ri-rocket-2-line" />}
+                        onClick={() => router.push('/automation/templates')}
+                        sx={{ textTransform: 'none' }}
+                      >
+                        {t('inventory.deployFromTemplate')}
+                      </Button>
+                    )}
+                    {allowLxc && (
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        startIcon={<i className="ri-add-line" />}
+                        onClick={() => setCreateLxcDialogOpen(true)}
+                        sx={{ textTransform: 'none' }}
+                      >
+                        {t('common.create')} LXC
+                      </Button>
+                    )}
                   </Stack>
                 </Box>
                 <Box sx={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
@@ -2890,29 +2930,36 @@ return vm?.isCluster ?? false
                       />
                     </MuiTooltip>
                   )}
-                  <Typography variant="body2" noWrap sx={{ color: 'text.secondary', flexShrink: 0 }}>
-                    {'- '}
-                    <span style={{ position: 'relative', display: 'inline-block', verticalAlign: 'text-bottom', marginRight: 4, width: 14, height: 14 }}>
-                      <img src={theme.palette.mode === 'dark' ? '/images/proxmox-logo-dark.svg' : '/images/proxmox-logo.svg'} alt="" width={14} height={14} style={{ opacity: 0.7, display: 'block' }} />
-                      <span style={{ position: 'absolute', bottom: -1, right: -1, width: 6, height: 6, borderRadius: '50%', backgroundColor: '#4caf50', border: '1.5px solid var(--mui-palette-background-paper)' }} />
-                    </span>
-                    <Typography
-                      component="span"
-                      variant="body2"
-                      sx={{
-                        color: 'primary.main',
-                        cursor: 'pointer',
-                        fontWeight: 600,
-                        '&:hover': { textDecoration: 'underline' }
-                      }}
-                      onClick={() => {
-                        onViewModeChange?.('hosts')
-                        onSelect?.({ type: 'node', id: `${connId}:${node}` })
-                      }}
-                    >
-                      {node}
+                  {/* Node chip — provider only. Tenants see a vDC abstraction
+                      where the underlying PVE node is an implementation detail
+                      they don't manage; exposing it would also make the host
+                      view clickable from a tenant admin (we hide /hosts for
+                      them). The cluster icon link goes away with it. */}
+                  {isProviderTenant && (
+                    <Typography variant="body2" noWrap sx={{ color: 'text.secondary', flexShrink: 0 }}>
+                      {'- '}
+                      <span style={{ position: 'relative', display: 'inline-block', verticalAlign: 'text-bottom', marginRight: 4, width: 14, height: 14 }}>
+                        <img src={theme.palette.mode === 'dark' ? '/images/proxmox-logo-dark.svg' : '/images/proxmox-logo.svg'} alt="" width={14} height={14} style={{ opacity: 0.7, display: 'block' }} />
+                        <span style={{ position: 'absolute', bottom: -1, right: -1, width: 6, height: 6, borderRadius: '50%', backgroundColor: '#4caf50', border: '1.5px solid var(--mui-palette-background-paper)' }} />
+                      </span>
+                      <Typography
+                        component="span"
+                        variant="body2"
+                        sx={{
+                          color: 'primary.main',
+                          cursor: 'pointer',
+                          fontWeight: 600,
+                          '&:hover': { textDecoration: 'underline' }
+                        }}
+                        onClick={() => {
+                          onViewModeChange?.('hosts')
+                          onSelect?.({ type: 'node', id: `${connId}:${node}` })
+                        }}
+                      >
+                        {node}
+                      </Typography>
                     </Typography>
-                  </Typography>
+                  )}
 
                   {/* Tags */}
                   <TagManager
@@ -2926,6 +2973,19 @@ return vm?.isCluster ?? false
                       onVmTagsChange?.(connId, vmid, newTags)
                     }}
                   />
+
+                  {/* Green Score — Enterprise only, hidden for templates */}
+                  {isEnterprise && !data.isTemplate && connId && node && vmid && (
+                    <Box sx={{ flexShrink: 1, minWidth: 0, overflow: 'hidden' }}>
+                      <GreenScoreCard
+                        inline
+                        connId={connId}
+                        node={node}
+                        type={isLxc ? 'lxc' : 'qemu'}
+                        vmid={vmid}
+                      />
+                    </Box>
+                  )}
 
                   {/* Refresh + Actions — poussées à droite */}
                   <Box sx={{ ml: 'auto', flexShrink: 0, display: 'flex', alignItems: 'center', gap: 0.5 }}>
@@ -2954,6 +3014,7 @@ return vm?.isCluster ?? false
                         isCluster={data.isCluster}
                         isLocked={vmLock.locked}
                         lockType={vmLock.lockType}
+                        canMigrate={isProviderTenant}
                         onStart={onStart}
                         onShutdown={onShutdown}
                         onStop={onStop}
@@ -3066,24 +3127,38 @@ return vm?.isCluster ?? false
                       <i className="ri-refresh-line" style={{ fontSize: 18 }} />
                     </IconButton>
                   </MuiTooltip>
-                  <Button
-                    size="small"
-                    variant="contained"
-                    startIcon={<i className="ri-add-line" />}
-                    onClick={() => setCreateVmDialogOpen(true)}
-                    sx={{ textTransform: 'none' }}
-                  >
-                    {t('common.create')} VM
-                  </Button>
-                  <Button
-                    size="small"
-                    variant="outlined"
-                    startIcon={<i className="ri-add-line" />}
-                    onClick={() => setCreateLxcDialogOpen(true)}
-                    sx={{ textTransform: 'none' }}
-                  >
-                    {t('common.create')} LXC
-                  </Button>
+                  {allowBlankVm ? (
+                    <Button
+                      size="small"
+                      variant="contained"
+                      startIcon={<i className="ri-add-line" />}
+                      onClick={() => setCreateVmDialogOpen(true)}
+                      sx={{ textTransform: 'none' }}
+                    >
+                      {t('common.create')} VM
+                    </Button>
+                  ) : (
+                    <Button
+                      size="small"
+                      variant="contained"
+                      startIcon={<i className="ri-rocket-2-line" />}
+                      onClick={() => router.push('/automation/templates')}
+                      sx={{ textTransform: 'none' }}
+                    >
+                      {t('inventory.deployFromTemplate')}
+                    </Button>
+                  )}
+                  {allowLxc && (
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      startIcon={<i className="ri-add-line" />}
+                      onClick={() => setCreateLxcDialogOpen(true)}
+                      sx={{ textTransform: 'none' }}
+                    >
+                      {t('common.create')} LXC
+                    </Button>
+                  )}
                   {selection?.type === 'node' && (
                     <>
                       <Divider orientation="vertical" flexItem />
@@ -3289,7 +3364,7 @@ return vm?.isCluster ?? false
                 error, exploreWithPveStorage, explorerArchive, explorerArchives, explorerError,
                 explorerFiles, explorerLoading, explorerMode, explorerPath, explorerSearch,
                 filteredExplorerFiles, haComment, haConfig, haEditing, haError,
-                haGroup, haGroups, haLoading, haMaxRelocate, haMaxRestart,
+                haFailback, haGroup, haGroups, haLoading, haMaxRelocate, haMaxRestart,
                 haSaving, haState, loadBackupContent, loadBackupContentViaPbs, loadHaConfig,
                 loadNotes, loadTasks, loading, localTags, memory,
                 memoryModified, navigateToBreadcrumb, navigateToFolder, navigateUp, numaEnabled, newSnapshotDesc,
@@ -3305,7 +3380,7 @@ return vm?.isCluster ?? false
                 setCpuCores, setCpuFlags, setCpuLimit, setCpuLimitEnabled, setCpuSockets, setCpuType,
                 setCreateBackupDialogOpen, setDeleteReplicationId, setDetailTab, setEditDiskDialogOpen, setEditNetworkDialogOpen,
                 setEditOptionDialog, setEditScsiControllerDialogOpen, setExplorerArchive, setExplorerArchives, setExplorerFiles,
-                setExplorerSearch, setHaComment, setHaEditing, setHaGroup, setHaMaxRelocate,
+                setExplorerSearch, setHaComment, setHaEditing, setHaFailback, setHaGroup, setHaMaxRelocate,
                 setHaMaxRestart, setHaState, setMemory, setNewSnapshotDesc, setNewSnapshotName,
                 setSwap, swap,
                 setNewSnapshotRam, setNotesEditing, setNumaEnabled, setReplicationComment, setReplicationLoaded, setReplicationRateLimit,
@@ -4191,6 +4266,10 @@ return vm?.isCluster ?? false
         setMigTargetNode={setMigTargetNode}
         migTargetStorage={migTargetStorage}
         setMigTargetStorage={setMigTargetStorage}
+        migTargetVmid={migTargetVmid}
+        setMigTargetVmid={setMigTargetVmid}
+        migTargetVmidStatus={migTargetVmidStatus}
+        setMigTargetVmidStatus={setMigTargetVmidStatus}
         migNetworkBridge={migNetworkBridge}
         setMigNetworkBridge={setMigNetworkBridge}
         migVlanTag={migVlanTag}

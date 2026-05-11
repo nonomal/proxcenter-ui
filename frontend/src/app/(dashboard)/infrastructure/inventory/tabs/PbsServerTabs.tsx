@@ -35,6 +35,7 @@ import PbsTapeBackupTab from './pbs/PbsTapeBackupTab'
 import PbsTasksTab from './pbs/PbsTasksTab'
 import PbsTrafficControlTab from './pbs/PbsTrafficControlTab'
 import PbsUpdatesTab from './pbs/PbsUpdatesTab'
+import { useTenant } from '@/contexts/TenantContext'
 
 type Timeframe = 'hour' | 'day' | 'week' | 'month' | 'year'
 
@@ -85,6 +86,15 @@ export default function PbsServerTabs({
   const primaryColor = theme.palette.primary.main
   const primaryColorLight = alpha(primaryColor, 0.6)
 
+  // Tenant admins (currentTenant !== provider 'default') only get the first
+  // tab — Server Status. Everything else (notes, services, updates, shell…)
+  // is provider-only and would 403 anyway. We hide it from the UI to avoid
+  // exposing irrelevant tabs and noisy errors.
+  const { currentTenant, loading: tenantLoading } = useTenant()
+  const isTenantAdmin = !tenantLoading && !!currentTenant?.id && currentTenant.id !== 'default'
+  const visibleTabs = isTenantAdmin ? TAB_DEFS.slice(0, 1) : TAB_DEFS
+  const effectiveTab = isTenantAdmin ? 0 : pbsServerTab
+
   if (!selection || selection.type !== 'pbs' || !data?.pbsInfo) return null
 
   const pbsInfo = data.pbsInfo
@@ -104,7 +114,7 @@ export default function PbsServerTabs({
       }}
     >
       <Tabs
-        value={pbsServerTab}
+        value={effectiveTab}
         onChange={(_e, v) => setPbsServerTab(v)}
         variant="scrollable"
         scrollButtons="auto"
@@ -117,7 +127,7 @@ export default function PbsServerTabs({
           '& .MuiTab-root': { minHeight: 40, py: 0 },
         }}
       >
-        {TAB_DEFS.map(({ key, icon }) => (
+        {visibleTabs.map(({ key, icon }) => (
           <Tab
             key={key}
             label={
@@ -142,7 +152,7 @@ export default function PbsServerTabs({
         }}
       >
         {/* Tab 0: Server Status */}
-        {pbsServerTab === 0 && (
+        {effectiveTab === 0 && (
           <Stack spacing={2} sx={{ p: 2 }}>
             {/* Datastores list */}
             <Card variant="outlined" sx={{ width: '100%', borderRadius: 2 }}>
@@ -541,52 +551,52 @@ export default function PbsServerTabs({
         )}
 
         {/* Tab 1: Notes */}
-        {pbsServerTab === 1 && <PbsNotesTab pbsId={selection.id} />}
+        {effectiveTab === 1 && <PbsNotesTab pbsId={selection.id} />}
 
         {/* Tab 2: Services */}
-        {pbsServerTab === 2 && <PbsServicesTab pbsId={selection.id} />}
+        {effectiveTab === 2 && <PbsServicesTab pbsId={selection.id} />}
 
         {/* Tab 3: Updates */}
-        {pbsServerTab === 3 && <PbsUpdatesTab pbsId={selection.id} />}
+        {effectiveTab === 3 && <PbsUpdatesTab pbsId={selection.id} />}
 
         {/* Tab 4: Repositories */}
-        {pbsServerTab === 4 && <PbsRepositoriesTab pbsId={selection.id} />}
+        {effectiveTab === 4 && <PbsRepositoriesTab pbsId={selection.id} />}
 
         {/* Tab 5: Syslog */}
-        {pbsServerTab === 5 && <PbsSyslogTab pbsId={selection.id} />}
+        {effectiveTab === 5 && <PbsSyslogTab pbsId={selection.id} />}
 
         {/* Tab 6: Tasks */}
-        {pbsServerTab === 6 && <PbsTasksTab pbsId={selection.id} />}
+        {effectiveTab === 6 && <PbsTasksTab pbsId={selection.id} />}
 
         {/* Tab 7: Shell */}
-        {pbsServerTab === 7 && <PbsShellTab pbsId={selection.id} />}
+        {effectiveTab === 7 && <PbsShellTab pbsId={selection.id} />}
 
         {/* Tab 8: Storage / Disks */}
-        {pbsServerTab === 8 && <PbsDisksTab pbsId={selection.id} />}
+        {effectiveTab === 8 && <PbsDisksTab pbsId={selection.id} />}
 
         {/* Tab 9: Access Control */}
-        {pbsServerTab === 9 && <PbsAccessControlTab pbsId={selection.id} />}
+        {effectiveTab === 9 && <PbsAccessControlTab pbsId={selection.id} />}
 
         {/* Tab 10: Remotes */}
-        {pbsServerTab === 10 && <PbsRemotesTab pbsId={selection.id} />}
+        {effectiveTab === 10 && <PbsRemotesTab pbsId={selection.id} />}
 
         {/* Tab 11: S3 Endpoints */}
-        {pbsServerTab === 11 && <PbsS3EndpointsTab pbsId={selection.id} />}
+        {effectiveTab === 11 && <PbsS3EndpointsTab pbsId={selection.id} />}
 
         {/* Tab 12: Traffic Control */}
-        {pbsServerTab === 12 && <PbsTrafficControlTab pbsId={selection.id} />}
+        {effectiveTab === 12 && <PbsTrafficControlTab pbsId={selection.id} />}
 
         {/* Tab 13: Certificates */}
-        {pbsServerTab === 13 && <PbsCertificatesTab pbsId={selection.id} />}
+        {effectiveTab === 13 && <PbsCertificatesTab pbsId={selection.id} />}
 
         {/* Tab 14: Notifications */}
-        {pbsServerTab === 14 && <PbsNotificationsTab pbsId={selection.id} />}
+        {effectiveTab === 14 && <PbsNotificationsTab pbsId={selection.id} />}
 
         {/* Tab 15: Subscription */}
-        {pbsServerTab === 15 && <PbsSubscriptionTab pbsId={selection.id} />}
+        {effectiveTab === 15 && <PbsSubscriptionTab pbsId={selection.id} />}
 
         {/* Tab 16: Tape Backup */}
-        {pbsServerTab === 16 && <PbsTapeBackupTab pbsId={selection.id} />}
+        {effectiveTab === 16 && <PbsTapeBackupTab pbsId={selection.id} />}
       </CardContent>
     </Card>
   )

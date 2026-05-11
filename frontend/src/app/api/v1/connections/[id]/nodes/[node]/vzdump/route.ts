@@ -43,7 +43,12 @@ export async function POST(
     }
     
     if (notes) {
-      vzdumpParams.notes = notes
+      // PVE rejects the bare `notes` key with "property is not defined in
+      // schema". The vzdump endpoint takes `notes-template`, a string that
+      // PVE expands (placeholders like {{guestname}}, {{node}}) and attaches
+      // to the resulting backup as a free-form note. We pass the user's text
+      // verbatim — no placeholders means PVE just stores it as-is.
+      vzdumpParams['notes-template'] = notes
     }
     
     // Appeler l'API Proxmox vzdump

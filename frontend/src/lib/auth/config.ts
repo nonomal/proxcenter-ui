@@ -5,7 +5,7 @@ import type { OAuthConfig } from "next-auth/providers/oauth"
 
 import { nanoid } from "nanoid"
 
-import { getDb } from "@/lib/db/sqlite"
+import { prisma } from "@/lib/db/prisma"
 import { verifyPassword, hashPassword } from "./password"
 import { authenticateLdap, isLdapEnabled, getLdapConfig, resolveLdapRole } from "./ldap"
 import { getOidcConfig, resolveOidcRole } from "./oidc"
@@ -88,15 +88,22 @@ export const authOptions: NextAuthOptions = {
           throw new Error("Email et mot de passe requis")
         }
 
-        const db = getDb()
         const email = credentials.email.toLowerCase().trim()
 
         // Chercher l'utilisateur
-        const user = db
-          .prepare(
-            "SELECT id, email, password, name, avatar, role, auth_provider, enabled FROM users WHERE email = ?"
-          )
-          .get(email) as any
+        const user = await prisma.user.findUnique({
+          where: { email },
+          select: {
+            id: true,
+            email: true,
+            password: true,
+            name: true,
+            avatar: true,
+            role: true,
+            authProvider: true,
+            enabled: true,
+          },
+        })
 
         // Fonction pour logger les échecs
         const logFailure = async (reason: string) => {
@@ -136,19 +143,42 @@ export const authOptions: NextAuthOptions = {
         }
 
         // Mettre à jour last_login_at
-        const loginNow = new Date().toISOString()
-        db.prepare("UPDATE users SET last_login_at = ? WHERE id = ?").run(loginNow, user.id)
+        const loginNow = new Date()
+        await prisma.user.update({
+          where: { id: user.id },
+          data: { lastLoginAt: loginNow },
+        })
 
-        // Ensure user has a user_tenants entry
-        const hasUserTenant = db.prepare(
-          "SELECT 1 FROM user_tenants WHERE user_id = ? AND tenant_id = 'default'"
-        ).get(user.id)
+        // Safety net: ensure user has at least one tenant membership.
+        // Only super admins (cross-tenant by design) get the auto-attach
+        // to the provider tenant `default`. A tenant-scoped user with
+        // zero memberships has been stripped of access by an admin
+        // action; re-attaching them to `default` would silently elevate
+        // them to provider scope. Refuse the login instead so the
+        // operator sees the issue and re-assigns the user explicitly.
+        const anyMembership = await prisma.userTenant.findFirst({
+          where: { userId: user.id },
+          select: { userId: true },
+        })
 
-        if (!hasUserTenant) {
-          db.prepare(
-            `INSERT OR IGNORE INTO user_tenants (user_id, tenant_id, is_default, joined_at)
-             VALUES (?, 'default', 1, ?)`
-          ).run(user.id, loginNow)
+        if (!anyMembership) {
+          const isSuperAdmin = await prisma.rbacUserRole.findFirst({
+            where: {
+              userId: user.id,
+              roleId: "role_super_admin",
+              OR: [{ expiresAt: null }, { expiresAt: { gt: loginNow } }],
+            },
+            select: { id: true },
+          })
+          if (!isSuperAdmin) {
+            await logFailure("No tenant membership")
+            throw new Error("Compte sans tenant — contactez votre administrateur")
+          }
+          await prisma.userTenant.upsert({
+            where: { userId_tenantId: { userId: user.id, tenantId: "default" } },
+            update: {},
+            create: { userId: user.id, tenantId: "default", isDefault: true, joinedAt: loginNow },
+          })
         }
 
         return {
@@ -175,7 +205,7 @@ export const authOptions: NextAuthOptions = {
         }
 
         // Vérifier si LDAP est activé
-        if (!isLdapEnabled()) {
+        if (!(await isLdapEnabled())) {
           throw new Error("Authentification LDAP non configurée")
         }
 
@@ -190,7 +220,7 @@ export const authOptions: NextAuthOptions = {
         }
 
         // Check group restriction BEFORE creating/updating user
-        const ldapConfigForRestriction = getLdapConfig()
+        const ldapConfigForRestriction = await getLdapConfig()
         if (ldapConfigForRestriction?.requireGroup && ldapConfigForRestriction.allowedGroups.length > 0) {
           const userGroups = ldapUser.groups || []
           const isAllowed = ldapConfigForRestriction.allowedGroups.some(allowedGroup => {
@@ -208,80 +238,136 @@ export const authOptions: NextAuthOptions = {
           }
         }
 
-        const db = getDb()
         const email = ldapUser.email.toLowerCase()
 
-        // Chercher ou créer l'utilisateur
-        let user = db
-          .prepare("SELECT id, email, name, role, enabled FROM users WHERE email = ?")
-          .get(email) as any
+        // Chercher ou créer l'utilisateur (Postgres)
+        let user = await prisma.user.findUnique({
+          where: { email },
+          select: { id: true, email: true, name: true, role: true, enabled: true },
+        })
 
-        const now = new Date().toISOString()
+        const now = new Date()
 
         if (!user) {
           // Créer l'utilisateur LDAP
           const id = nanoid()
+          await prisma.user.create({
+            data: {
+              id,
+              email,
+              name: ldapUser.name,
+              avatar: ldapUser.avatar,
+              role: "viewer",
+              authProvider: "ldap",
+              ldapDn: ldapUser.dn,
+              enabled: true,
+              createdAt: now,
+              updatedAt: now,
+              lastLoginAt: now,
+            },
+          })
 
-          db.prepare(
-            `INSERT INTO users (id, email, name, avatar, role, auth_provider, ldap_dn, enabled, created_at, updated_at, last_login_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`
-          ).run(id, email, ldapUser.name, ldapUser.avatar, "viewer", "ldap", ldapUser.dn, now, now, now)
+          // Add new LDAP user to default tenant (idempotent on retry).
+          await prisma.userTenant.upsert({
+            where: { userId_tenantId: { userId: id, tenantId: "default" } },
+            update: {},
+            create: { userId: id, tenantId: "default", isDefault: true, joinedAt: now },
+          })
 
-          // Add new LDAP user to default tenant
-          db.prepare(
-            `INSERT OR IGNORE INTO user_tenants (user_id, tenant_id, is_default, joined_at)
-             VALUES (?, 'default', 1, ?)`
-          ).run(id, now)
-
-          user = { id, email, name: ldapUser.name, role: "viewer", enabled: 1 }
+          user = { id, email, name: ldapUser.name, role: "viewer", enabled: true }
         } else {
           if (!user.enabled) {
             throw new Error("Compte désactivé")
           }
 
           // Mettre à jour les infos LDAP, avatar et last_login_at
-          db.prepare(
-            "UPDATE users SET name = ?, avatar = ?, ldap_dn = ?, last_login_at = ?, updated_at = ? WHERE id = ?"
-          ).run(ldapUser.name, ldapUser.avatar, ldapUser.dn, now, now, user.id)
+          await prisma.user.update({
+            where: { id: user.id },
+            data: {
+              name: ldapUser.name,
+              avatar: ldapUser.avatar,
+              ldapDn: ldapUser.dn,
+              lastLoginAt: now,
+              updatedAt: now,
+            },
+          })
 
-          // Ensure existing LDAP user has a user_tenants entry
-          const hasLdapTenant = db.prepare(
-            "SELECT 1 FROM user_tenants WHERE user_id = ? AND tenant_id = 'default'"
-          ).get(user.id)
+          // Safety net only — see credentials provider above for rationale.
+          const hasAnyLdapTenant = await prisma.userTenant.findFirst({
+            where: { userId: user.id },
+            select: { userId: true },
+          })
 
-          if (!hasLdapTenant) {
-            db.prepare(
-              `INSERT OR IGNORE INTO user_tenants (user_id, tenant_id, is_default, joined_at)
-               VALUES (?, 'default', 1, ?)`
-            ).run(user.id, now)
+          if (!hasAnyLdapTenant) {
+            const isSuperAdmin = await prisma.rbacUserRole.findFirst({
+              where: {
+                userId: user.id,
+                roleId: "role_super_admin",
+                OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+              },
+              select: { id: true },
+            })
+            if (!isSuperAdmin) {
+              throw new Error("Compte sans tenant — contactez votre administrateur")
+            }
+            await prisma.userTenant.upsert({
+              where: { userId_tenantId: { userId: user.id, tenantId: "default" } },
+              update: {},
+              create: { userId: user.id, tenantId: "default", isDefault: true, joinedAt: now },
+            })
           }
         }
 
-        // Sync RBAC role from LDAP groups
-        const ldapConfig = getLdapConfig()
+        // Sync RBAC role from LDAP groups (Postgres / Prisma).
+        const ldapConfig = await getLdapConfig()
         if (ldapConfig) {
           const resolvedRoleId = resolveLdapRole(ldapUser.groups, ldapConfig)
 
-          // Check if user already has a global RBAC role
-          const existingRole = db.prepare("SELECT id FROM rbac_user_roles WHERE user_id = ? AND scope_type = 'global' AND tenant_id = 'default'").get(user.id)
+          // Check if user already has a global RBAC role on the default tenant
+          const existingRole = await prisma.rbacUserRole.findFirst({
+            where: { userId: user.id, scopeType: "global", tenantId: "default" },
+            select: { id: true },
+          })
 
           if (resolvedRoleId) {
-            // LDAP group matched — sync the resolved role
-            const roleExists = db.prepare("SELECT id FROM rbac_roles WHERE id = ?").get(resolvedRoleId)
-            const finalRoleId = roleExists ? resolvedRoleId : 'role_viewer'
+            // LDAP group matched — sync the resolved role.
+            // Fall back to role_viewer if the resolved role doesn't exist.
+            const roleExists = await prisma.rbacRole.findUnique({
+              where: { id: resolvedRoleId },
+              select: { id: true },
+            })
+            const finalRoleId = roleExists ? resolvedRoleId : "role_viewer"
 
-            db.prepare("DELETE FROM rbac_user_roles WHERE user_id = ? AND scope_type = 'global' AND tenant_id = 'default'").run(user.id)
-            db.prepare(
-              `INSERT INTO rbac_user_roles (id, user_id, role_id, scope_type, tenant_id, granted_by, granted_at)
-               VALUES (?, ?, ?, 'global', 'default', NULL, ?)`
-            ).run(`ldap_${nanoid(12)}`, user.id, finalRoleId, now)
+            await prisma.$transaction([
+              prisma.rbacUserRole.deleteMany({
+                where: { userId: user.id, scopeType: "global", tenantId: "default" },
+              }),
+              prisma.rbacUserRole.create({
+                data: {
+                  id: `ldap_${nanoid(12)}`,
+                  userId: user.id,
+                  roleId: finalRoleId,
+                  scopeType: "global",
+                  tenantId: "default",
+                  grantedById: null,
+                  grantedAt: now,
+                },
+              }),
+            ])
           } else if (!existingRole) {
             // No group match AND no existing role (first login) — assign default role
-            const defaultRoleId = ldapConfig.defaultRole || 'role_viewer'
-            db.prepare(
-              `INSERT INTO rbac_user_roles (id, user_id, role_id, scope_type, tenant_id, granted_by, granted_at)
-               VALUES (?, ?, ?, 'global', 'default', NULL, ?)`
-            ).run(`ldap_${nanoid(12)}`, user.id, defaultRoleId, now)
+            const defaultRoleId = ldapConfig.defaultRole || "role_viewer"
+            await prisma.rbacUserRole.create({
+              data: {
+                id: `ldap_${nanoid(12)}`,
+                userId: user.id,
+                roleId: defaultRoleId,
+                scopeType: "global",
+                tenantId: "default",
+                grantedById: null,
+                grantedAt: now,
+              },
+            })
           }
           // If no group match but existing role: preserve manually-assigned role
         }
@@ -302,12 +388,11 @@ export const authOptions: NextAuthOptions = {
     async signIn({ user, account, profile }) {
       // Handle OIDC provider sign-in: provision or update user in SQLite
       if (account?.provider === 'oidc' && profile) {
-        const oidcConfig = getOidcConfig()
+        const oidcConfig = await getOidcConfig()
 
         if (!oidcConfig || !oidcConfig.enabled) return false
 
-        const db = getDb()
-        const now = new Date().toISOString()
+        const now = new Date()
         const sub = (profile as any).sub as string
         const email = ((profile as any)[oidcConfig.claimEmail] || (profile as any).email || '').toLowerCase().trim()
         const name = (profile as any)[oidcConfig.claimName] || (profile as any).name || email
@@ -316,34 +401,56 @@ export const authOptions: NextAuthOptions = {
         if (!email) return false
 
         // Look up by oidc_sub first, then by email
-        let existing = db
-          .prepare("SELECT id, email, name, role, enabled, oidc_sub FROM users WHERE oidc_sub = ?")
-          .get(sub) as any
+        let existing = await prisma.user.findFirst({
+          where: { oidcSub: sub },
+          select: { id: true, email: true, name: true, role: true, enabled: true, oidcSub: true },
+        })
 
         if (!existing) {
-          existing = db
-            .prepare("SELECT id, email, name, role, enabled, oidc_sub FROM users WHERE email = ?")
-            .get(email) as any
+          existing = await prisma.user.findUnique({
+            where: { email },
+            select: { id: true, email: true, name: true, role: true, enabled: true, oidcSub: true },
+          })
         }
 
         if (existing) {
           if (!existing.enabled) return false
 
           // Update existing user
-          db.prepare(
-            "UPDATE users SET name = ?, oidc_sub = ?, last_login_at = ?, updated_at = ?, auth_provider = 'oidc' WHERE id = ?"
-          ).run(name, sub, now, now, existing.id)
+          await prisma.user.update({
+            where: { id: existing.id },
+            data: {
+              name,
+              oidcSub: sub,
+              lastLoginAt: now,
+              updatedAt: now,
+              authProvider: "oidc",
+            },
+          })
 
-          // Ensure existing user has a user_tenants entry
-          const hasTenant = db.prepare(
-            "SELECT 1 FROM user_tenants WHERE user_id = ? AND tenant_id = 'default'"
-          ).get(existing.id)
+          // Safety net only — see credentials provider above for rationale.
+          const hasAnyTenant = await prisma.userTenant.findFirst({
+            where: { userId: existing.id },
+            select: { userId: true },
+          })
 
-          if (!hasTenant) {
-            db.prepare(
-              `INSERT OR IGNORE INTO user_tenants (user_id, tenant_id, is_default, joined_at)
-               VALUES (?, 'default', 1, ?)`
-            ).run(existing.id, now)
+          if (!hasAnyTenant) {
+            const isSuperAdmin = await prisma.rbacUserRole.findFirst({
+              where: {
+                userId: existing.id,
+                roleId: "role_super_admin",
+                OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+              },
+              select: { id: true },
+            })
+            if (!isSuperAdmin) {
+              throw new Error("Compte sans tenant — contactez votre administrateur")
+            }
+            await prisma.userTenant.upsert({
+              where: { userId_tenantId: { userId: existing.id, tenantId: "default" } },
+              update: {},
+              create: { userId: existing.id, tenantId: "default", isDefault: true, joinedAt: now },
+            })
           }
 
           user.id = existing.id
@@ -361,25 +468,45 @@ export const authOptions: NextAuthOptions = {
           const oidcRoleId = resolvedRole.startsWith('role_') ? resolvedRole : `role_${resolvedRole}`
           const role = oidcRoleId.replace(/^role_/, '') // Simple name for users table
 
-          db.prepare(
-            `INSERT INTO users (id, email, name, role, auth_provider, oidc_sub, enabled, created_at, updated_at, last_login_at)
-             VALUES (?, ?, ?, ?, 'oidc', ?, 1, ?, ?, ?)`
-          ).run(id, email, name, role, sub, now, now, now)
+          await prisma.user.create({
+            data: {
+              id,
+              email,
+              name,
+              role,
+              authProvider: "oidc",
+              oidcSub: sub,
+              enabled: true,
+              createdAt: now,
+              updatedAt: now,
+              lastLoginAt: now,
+            },
+          })
 
           // Add user to default tenant
-          db.prepare(
-            `INSERT OR IGNORE INTO user_tenants (user_id, tenant_id, is_default, joined_at)
-             VALUES (?, 'default', 1, ?)`
-          ).run(id, now)
+          await prisma.userTenant.upsert({
+            where: { userId_tenantId: { userId: id, tenantId: "default" } },
+            update: {},
+            create: { userId: id, tenantId: "default", isDefault: true, joinedAt: now },
+          })
 
-          // Create RBAC role assignment from OIDC groups
-          const oidcRoleExists = db.prepare("SELECT id FROM rbac_roles WHERE id = ?").get(oidcRoleId)
-          const finalOidcRoleId = oidcRoleExists ? (oidcRoleExists as any).id : 'role_viewer'
+          // Create RBAC role assignment from OIDC groups (Postgres / Prisma).
+          const oidcRoleExists = await prisma.rbacRole.findUnique({
+            where: { id: oidcRoleId },
+            select: { id: true },
+          })
+          const finalOidcRoleId = oidcRoleExists ? oidcRoleExists.id : "role_viewer"
 
-          db.prepare(
-            `INSERT INTO rbac_user_roles (id, user_id, role_id, scope_type, tenant_id, granted_at)
-             VALUES (?, ?, ?, 'global', 'default', ?)`
-          ).run(`oidc_${nanoid(12)}`, id, finalOidcRoleId, now)
+          await prisma.rbacUserRole.create({
+            data: {
+              id: `oidc_${nanoid(12)}`,
+              userId: id,
+              roleId: finalOidcRoleId,
+              scopeType: "global",
+              tenantId: "default",
+              grantedAt: now,
+            },
+          })
 
           user.id = id
           user.email = email
@@ -406,7 +533,7 @@ export const authOptions: NextAuthOptions = {
       if (token.id) {
         try {
           const { getUserDefaultTenantId } = await import("@/lib/tenant")
-          token.tenantId = getUserDefaultTenantId(token.id as string)
+          token.tenantId = await getUserDefaultTenantId(token.id as string)
         } catch {
           token.tenantId = token.tenantId || 'default'
         }
@@ -418,8 +545,10 @@ export const authOptions: NextAuthOptions = {
       // Fetch avatar from DB instead of storing in JWT (avoids large cookies)
       let avatar: string | null = null
       try {
-        const db = getDb()
-        const user = db.prepare("SELECT avatar FROM users WHERE id = ?").get(token.id) as any
+        const user = await prisma.user.findUnique({
+          where: { id: token.id as string },
+          select: { avatar: true },
+        })
         avatar = user?.avatar || null
       } catch (e) {
         // Ignore DB errors for avatar fetch
@@ -481,8 +610,8 @@ export const authOptions: NextAuthOptions = {
  * Used only in the [...nextauth] route handler.
  * All getServerSession(authOptions) calls remain unchanged (JWT validation doesn't need the provider list).
  */
-export function getAuthOptions(): NextAuthOptions {
-  const oidcConfig = getOidcConfig()
+export async function getAuthOptions(): Promise<NextAuthOptions> {
+  const oidcConfig = await getOidcConfig()
 
   if (!oidcConfig || !oidcConfig.enabled || !oidcConfig.issuerUrl || !oidcConfig.clientId) {
     return authOptions

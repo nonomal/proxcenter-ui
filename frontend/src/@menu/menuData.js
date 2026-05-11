@@ -6,8 +6,14 @@ export const menuData = (t = (key) => key) => [
     label: t('navigation.dashboard'),
     icon: 'ri-dashboard-line',
     href: '/home',
-
-    // Accessible à tous les utilisateurs authentifiés
+    requires: { hasVdc: false }, // provider / tenant-without-vdc landing
+  },
+  {
+    label: t('navigation.myVdc'),
+    icon: 'ri-cloud-line',
+    href: '/my-vdc',
+    permissions: ['sdn.vnet.view'],
+    requires: { hasVdc: true }, // tenant cockpit
   },
 
   {
@@ -25,7 +31,11 @@ export const menuData = (t = (key) => key) => [
         label: t('navigation.topology'),
         icon: 'ri-mind-map',
         href: '/infrastructure/topology',
-        permissions: ['vm.view', 'node.view']
+        permissions: ['vm.view', 'node.view'],
+        // Cluster-wide layout (nodes / shared storages / SDN graph) is a
+        // provider concern — tenants don't manage placement and it would
+        // re-leak the node names we hide elsewhere.
+        requires: { isProviderTenant: true }
       },
       {
         label: t('navigation.storage'),
@@ -47,9 +57,12 @@ export const menuData = (t = (key) => key) => [
       },
       {
         label: t('navigation.templates'),
-        icon: 'ri-cloud-line',
+        icon: 'ri-instance-line',
+        // Tenants need to see the catalogue to deploy cloud images into their
+        // vDC. Provider keeps automation.view for full management (upload,
+        // delete, blueprints). Tenants only need vm.create to use the wizard.
         href: '/automation/templates',
-        permissions: ['vm.create', 'vm.clone']
+        permissions: ['automation.view', 'vm.create']
       }
     ]
   },
@@ -58,42 +71,48 @@ export const menuData = (t = (key) => key) => [
     isSection: true,
     label: t('navigation.orchestration'),
     icon: 'ri-robot-line',
-    permissions: ['vm.migrate', 'vm.config'], // Section nécessite au moins une de ces permissions
+    permissions: ['automation.view'], // Provider-scope orchestration: DRS, SR, flows, resources
+    requires: { isProviderTenant: true }, // Hidden in tenant view: these pages drive fleet-wide ops the tenant can't act on
     requiredFeature: 'drs', // Whole section requires DRS feature
     children: [
       {
         label: t('navigation.drs'),
         icon: 'ri-loop-left-fill',
         href: '/automation/drs',
-        permissions: ['vm.migrate'],
+        permissions: ['automation.view'],
+        requires: { isProviderTenant: true },
         requiredFeature: 'drs'
       },
       {
         label: t('navigation.siteRecovery'),
         icon: 'ri-shield-star-line',
         href: '/automation/site-recovery',
-        permissions: ['vm.config'],
+        permissions: ['automation.view'],
+        requires: { isProviderTenant: true },
         requiredFeature: 'ceph_replication'
       },
       {
         label: t('navigation.networkSecurity'),
         icon: 'ri-shield-flash-fill',
         href: '/automation/network',
-        permissions: ['admin.settings'],
+        permissions: ['automation.view'],
+        requires: { isProviderTenant: true },
         requiredFeature: 'microsegmentation'
       },
       {
         label: t('navigation.networkFlows'),
         icon: 'ri-flow-chart',
         href: '/operations/network-flows',
-        permissions: ['vm.view'],
+        permissions: ['automation.view'],
+        requires: { isProviderTenant: true },
         requiredFeature: 'sflow_monitoring'
       },
       {
         label: t('navigation.resources'),
         icon: 'ri-pie-chart-fill',
         href: '/infrastructure/resources',
-        permissions: ['vm.view', 'node.view'],
+        permissions: ['automation.view'],
+        requires: { isProviderTenant: true },
         requiredFeature: 'green_metrics' // Requires Enterprise license
       }
     ]
@@ -114,14 +133,16 @@ export const menuData = (t = (key) => key) => [
         label: t('navigation.changes'),
         icon: 'ri-git-commit-line',
         href: '/operations/changes',
-        permissions: ['events.view'],
+        // Permissions removed to expose the page in vDC tenant menus for
+        // scoping evaluation. API still enforces CONNECTION_VIEW at runtime.
         requiredFeature: 'change_tracking'
       },
       {
         label: t('navigation.alerts'),
         icon: 'ri-notification-3-line',
         href: '/operations/alerts',
-        permissions: ['alerts.view'],
+        // Permissions removed to expose the page in vDC tenant menus for
+        // scoping evaluation. API still enforces ALERTS_VIEW at runtime.
         requiredFeature: 'alerts'
       },
       {
@@ -135,7 +156,8 @@ export const menuData = (t = (key) => key) => [
         label: t('navigation.reports'),
         icon: 'ri-file-chart-line',
         href: '/operations/reports',
-        permissions: ['reports.view'],
+        // Permissions removed to expose the page in vDC tenant menus for
+        // scoping evaluation. API still enforces REPORTS_VIEW at runtime.
         requiredFeature: 'reports'
       }
     ]
@@ -145,7 +167,9 @@ export const menuData = (t = (key) => key) => [
     isSection: true,
     label: t('navigation.securityAccess'),
     icon: 'ri-shield-keyhole-line',
-    permissions: ['admin.users', 'admin.rbac', 'admin.audit', 'admin.compliance'], // Section admin
+    // Section gate removed so the Audit item can appear for vDC tenants
+    // (scoping evaluation). Each child still enforces its own permissions,
+    // so users/rbac/compliance stay admin-only as before.
     children: [
       {
         label: t('navigation.users'),

@@ -36,6 +36,7 @@ import { MigrateVmDialog, CrossClusterMigrateParams } from '@/components/Migrate
 import { CloneVmDialog } from '@/components/hardware/CloneVmDialog'
 import { crossClusterMigrate } from '@/lib/migration/crossClusterMigrate'
 import { NodeIcon, ClusterIcon, getVmIcon } from './TreeIcons'
+import { useTenant } from '@/contexts/TenantContext'
 
 // RemixIcon replacements used in context menus / dialogs
 const PlayArrowIcon = (props: any) => <i className="ri-play-fill" style={{ fontSize: props?.fontSize === 'small' ? 18 : 20, color: props?.sx?.color, ...props?.style }} />
@@ -210,6 +211,9 @@ export interface TreeDialogsProps {
   getNodeVms: (connId: string, nodeName: string) => any[]
   getOtherNodes: (connId: string, nodeName: string) => string[]
 
+  // RBAC
+  isAdmin: boolean
+
   // Bulk action dialog
   bulkActionDialog: { open: boolean; action: 'start-all' | 'shutdown-all' | 'migrate-all' | null; connId: string; node: string; targetNode: string }
   setBulkActionDialog: React.Dispatch<React.SetStateAction<{ open: boolean; action: 'start-all' | 'shutdown-all' | 'migrate-all' | null; connId: string; node: string; targetNode: string }>>
@@ -228,6 +232,11 @@ export interface TreeDialogsProps {
 
 export default function TreeDialogs(props: TreeDialogsProps) {
   const t = useTranslations()
+  // Migration is a provider-only operation in MSP/vDC mode (placement is
+  // the provider's job — tenants don't choose nodes). Hides the per-VM
+  // Migrate menu entry and the node-level "Migrate all VMs" bulk action.
+  const { currentTenant, loading: tenantLoading } = useTenant()
+  const isProviderTenant = !tenantLoading && currentTenant?.id === 'default'
 
   const {
     contextMenu, handleCloseContextMenu, actionBusy, handleVmAction, unlocking,
@@ -248,7 +257,7 @@ export default function TreeDialogs(props: TreeDialogsProps) {
     tagDialog, setTagDialog, tagDialogTags, setTagDialogTags,
     clusterContextMenu, setClusterContextMenu, openTagDialog,
     nodeContextMenu, handleCloseNodeContextMenu, handleMaintenanceClick, handleBulkActionClick, handleOpenShell,
-    onCreateVm, onCreateLxc, onNodeAction, clusters,
+    onCreateVm, onCreateLxc, onNodeAction, clusters, isAdmin,
     maintenanceBusy, maintenanceTarget, setMaintenanceTarget, maintenanceError, maintenanceLocalVms,
     maintenanceStorageLoading, maintenanceMigrateTarget, setMaintenanceMigrateTarget,
     maintenanceShutdownLocal, setMaintenanceShutdownLocal, maintenanceStep, setMaintenanceStep,
@@ -432,7 +441,7 @@ export default function TreeDialogs(props: TreeDialogsProps) {
           <Divider key="divider3" />,
 
           /* --- Console / Migrate / Unlock --- */
-          contextMenu?.isCluster ? (
+          contextMenu?.isCluster && isProviderTenant ? (
             <MenuItem
               key="migrate"
               onClick={() => {
@@ -545,90 +554,91 @@ export default function TreeDialogs(props: TreeDialogsProps) {
             <ListItemText>{t('inventory.createLxc.title')}</ListItemText>
           </MenuItem>
         )}
-        <MenuItem onClick={() => {
-          if (nodeContextMenu) handleOpenShell(nodeContextMenu.connId, nodeContextMenu.node)
-          handleCloseNodeContextMenu()
-        }}>
-          <ListItemIcon sx={{ minWidth: 36 }}>
-            <i className="ri-terminal-box-line" style={{ fontSize: 18 }} />
-          </ListItemIcon>
-          <ListItemText>{t('inventory.tabShell')}</ListItemText>
-        </MenuItem>
-        <Divider />
-        <MenuItem onClick={() => handleBulkActionClick('start-all')}>
-          <ListItemIcon sx={{ minWidth: 36 }}>
-            <PlayArrowIcon fontSize="small" sx={{ color: 'success.main' }} />
-          </ListItemIcon>
-          <ListItemText>{t('bulkActions.startAllVms')}</ListItemText>
-        </MenuItem>
-        <MenuItem onClick={() => handleBulkActionClick('shutdown-all')}>
-          <ListItemIcon sx={{ minWidth: 36 }}>
-            <PowerSettingsNewIcon fontSize="small" sx={{ color: 'warning.main' }} />
-          </ListItemIcon>
-          <ListItemText>{t('bulkActions.shutdownAllVms')}</ListItemText>
-        </MenuItem>
-        <MenuItem onClick={() => handleBulkActionClick('migrate-all')}>
-          <ListItemIcon sx={{ minWidth: 36 }}>
-            <MoveUpIcon fontSize="small" />
-          </ListItemIcon>
-          <ListItemText>{t('bulkActions.migrateAllVms')}</ListItemText>
-        </MenuItem>
-
-        <Divider />
-
-        <MenuItem onClick={() => {
-          if (nodeContextMenu) onNodeAction?.(nodeContextMenu.connId, nodeContextMenu.node, 'reboot')
-          handleCloseNodeContextMenu()
-        }}>
-          <ListItemIcon sx={{ minWidth: 36 }}>
-            <i className="ri-restart-line" style={{ fontSize: 18, color: '#f59e0b' }} />
-          </ListItemIcon>
-          <ListItemText>{t('inventory.nodeReboot')}</ListItemText>
-        </MenuItem>
-        <MenuItem onClick={() => {
-          if (nodeContextMenu) onNodeAction?.(nodeContextMenu.connId, nodeContextMenu.node, 'shutdown')
-          handleCloseNodeContextMenu()
-        }}>
-          <ListItemIcon sx={{ minWidth: 36 }}>
-            <i className="ri-shut-down-line" style={{ fontSize: 18, color: '#c62828' }} />
-          </ListItemIcon>
-          <ListItemText>{t('inventory.nodeShutdown')}</ListItemText>
-        </MenuItem>
-
-        <Divider />
-
-        <MenuItem
-          onClick={nodeContextMenu?.sshEnabled ? handleMaintenanceClick : undefined}
-          disabled={maintenanceBusy || !nodeContextMenu?.sshEnabled}
-          sx={!nodeContextMenu?.sshEnabled ? { opacity: 0.5 } : undefined}
-        >
-          <ListItemIcon sx={{ minWidth: 36 }}>
-            <i className={nodeContextMenu?.maintenance ? 'ri-play-circle-line' : 'ri-tools-fill'} style={{ fontSize: 20, color: !nodeContextMenu?.sshEnabled ? undefined : nodeContextMenu?.maintenance ? '#4caf50' : '#ff9800' }} />
-          </ListItemIcon>
-          <ListItemText>
-            {nodeContextMenu?.maintenance ? t('inventory.exitMaintenance') : t('inventory.enterMaintenance')}
-          </ListItemText>
-        </MenuItem>
-        {!nodeContextMenu?.sshEnabled && (
-          <Typography variant="caption" sx={{ px: 2, pb: 1, display: 'block', opacity: 0.5 }}>
-            <i className="ri-ssh-line" style={{ fontSize: 12, marginRight: 4, verticalAlign: 'middle' }} />
-            {t('inventory.maintenanceRequiresSsh')}
-          </Typography>
-        )}
-        <Divider />
-        <MenuItem onClick={() => {
-          if (nodeContextMenu) {
-            const clu = clusters.find(c => c.connId === nodeContextMenu.connId)
-            const n = clu?.nodes.find(n => n.node === nodeContextMenu.node)
-            openTagDialog('host', '', nodeContextMenu.node, nodeContextMenu.connId, nodeContextMenu.node, { nodeStatus: n?.status, nodeMaintenance: nodeContextMenu.maintenance })
-          }
-          handleCloseNodeContextMenu()
-        }}>
-          <ListItemIcon sx={{ minWidth: 36 }}>
-            <i className="ri-price-tag-3-line" style={{ fontSize: 18 }} />
-          </ListItemIcon>
-          <ListItemText>{t('inventory.manageTags', { defaultMessage: 'Manage Tags' })}</ListItemText>
-        </MenuItem>
+        {isAdmin && [
+          <MenuItem key="shell" onClick={() => {
+            if (nodeContextMenu) handleOpenShell(nodeContextMenu.connId, nodeContextMenu.node)
+            handleCloseNodeContextMenu()
+          }}>
+            <ListItemIcon sx={{ minWidth: 36 }}>
+              <i className="ri-terminal-box-line" style={{ fontSize: 18 }} />
+            </ListItemIcon>
+            <ListItemText>{t('inventory.tabShell')}</ListItemText>
+          </MenuItem>,
+          <Divider key="d-bulk" />,
+          <MenuItem key="bulk-start" onClick={() => handleBulkActionClick('start-all')}>
+            <ListItemIcon sx={{ minWidth: 36 }}>
+              <PlayArrowIcon fontSize="small" sx={{ color: 'success.main' }} />
+            </ListItemIcon>
+            <ListItemText>{t('bulkActions.startAllVms')}</ListItemText>
+          </MenuItem>,
+          <MenuItem key="bulk-shutdown" onClick={() => handleBulkActionClick('shutdown-all')}>
+            <ListItemIcon sx={{ minWidth: 36 }}>
+              <PowerSettingsNewIcon fontSize="small" sx={{ color: 'warning.main' }} />
+            </ListItemIcon>
+            <ListItemText>{t('bulkActions.shutdownAllVms')}</ListItemText>
+          </MenuItem>,
+          isProviderTenant ? (
+            <MenuItem key="bulk-migrate" onClick={() => handleBulkActionClick('migrate-all')}>
+              <ListItemIcon sx={{ minWidth: 36 }}>
+                <MoveUpIcon fontSize="small" />
+              </ListItemIcon>
+              <ListItemText>{t('bulkActions.migrateAllVms')}</ListItemText>
+            </MenuItem>
+          ) : null,
+          <Divider key="d-power" />,
+          <MenuItem key="reboot" onClick={() => {
+            if (nodeContextMenu) onNodeAction?.(nodeContextMenu.connId, nodeContextMenu.node, 'reboot')
+            handleCloseNodeContextMenu()
+          }}>
+            <ListItemIcon sx={{ minWidth: 36 }}>
+              <i className="ri-restart-line" style={{ fontSize: 18, color: '#f59e0b' }} />
+            </ListItemIcon>
+            <ListItemText>{t('inventory.nodeReboot')}</ListItemText>
+          </MenuItem>,
+          <MenuItem key="shutdown" onClick={() => {
+            if (nodeContextMenu) onNodeAction?.(nodeContextMenu.connId, nodeContextMenu.node, 'shutdown')
+            handleCloseNodeContextMenu()
+          }}>
+            <ListItemIcon sx={{ minWidth: 36 }}>
+              <i className="ri-shut-down-line" style={{ fontSize: 18, color: '#c62828' }} />
+            </ListItemIcon>
+            <ListItemText>{t('inventory.nodeShutdown')}</ListItemText>
+          </MenuItem>,
+          <Divider key="d-maint" />,
+          <MenuItem
+            key="maintenance"
+            onClick={nodeContextMenu?.sshEnabled ? handleMaintenanceClick : undefined}
+            disabled={maintenanceBusy || !nodeContextMenu?.sshEnabled}
+            sx={!nodeContextMenu?.sshEnabled ? { opacity: 0.5 } : undefined}
+          >
+            <ListItemIcon sx={{ minWidth: 36 }}>
+              <i className={nodeContextMenu?.maintenance ? 'ri-play-circle-line' : 'ri-tools-fill'} style={{ fontSize: 20, color: !nodeContextMenu?.sshEnabled ? undefined : nodeContextMenu?.maintenance ? '#4caf50' : '#ff9800' }} />
+            </ListItemIcon>
+            <ListItemText>
+              {nodeContextMenu?.maintenance ? t('inventory.exitMaintenance') : t('inventory.enterMaintenance')}
+            </ListItemText>
+          </MenuItem>,
+          !nodeContextMenu?.sshEnabled ? (
+            <Typography key="ssh-hint" variant="caption" sx={{ px: 2, pb: 1, display: 'block', opacity: 0.5 }}>
+              <i className="ri-ssh-line" style={{ fontSize: 12, marginRight: 4, verticalAlign: 'middle' }} />
+              {t('inventory.maintenanceRequiresSsh')}
+            </Typography>
+          ) : null,
+          <Divider key="d-tags" />,
+          <MenuItem key="tags" onClick={() => {
+            if (nodeContextMenu) {
+              const clu = clusters.find(c => c.connId === nodeContextMenu.connId)
+              const n = clu?.nodes.find(n => n.node === nodeContextMenu.node)
+              openTagDialog('host', '', nodeContextMenu.node, nodeContextMenu.connId, nodeContextMenu.node, { nodeStatus: n?.status, nodeMaintenance: nodeContextMenu.maintenance })
+            }
+            handleCloseNodeContextMenu()
+          }}>
+            <ListItemIcon sx={{ minWidth: 36 }}>
+              <i className="ri-price-tag-3-line" style={{ fontSize: 18 }} />
+            </ListItemIcon>
+            <ListItemText>{t('inventory.manageTags', { defaultMessage: 'Manage Tags' })}</ListItemText>
+          </MenuItem>,
+        ]}
       </Menu>
 
       {/* Dialog confirmation maintenance */}

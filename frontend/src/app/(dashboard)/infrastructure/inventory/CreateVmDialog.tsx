@@ -2,6 +2,8 @@
 
 import React, { useEffect, useMemo, useState } from 'react'
 import { useTranslations } from 'next-intl'
+import { useRBAC } from '@/contexts/RBACContext'
+import { useTenant } from '@/contexts/TenantContext'
 import { getOsSvgIcon } from '@/lib/utils/osIcons'
 
 import {
@@ -18,6 +20,7 @@ import {
   Divider,
   FormControl,
   FormControlLabel,
+  FormHelperText,
   IconButton,
   InputAdornment,
   InputLabel,
@@ -38,6 +41,7 @@ import {
 import { alpha } from '@mui/material/styles'
 
 import AppDialogTitle from '@/components/ui/AppDialogTitle'
+import QuotaDonut from '@/components/mydc/QuotaDonut'
 import { formatBytes } from '@/utils/format'
 import { AllVmItem } from './InventoryTree'
 
@@ -165,7 +169,13 @@ function CreateVmDialog({
 }) {
   const t = useTranslations()
   const theme = useTheme()
-  
+  const { isAdmin } = useRBAC()
+  // Tenants other than the provider get the cloud abstraction: no node
+  // picker, smart auto-placement on the least-loaded node.
+  const { currentTenant, loading: tenantLoading } = useTenant()
+  const isProviderTenant = !tenantLoading && currentTenant?.id === 'default'
+  const hideNodePicker = !tenantLoading && !!currentTenant && !isProviderTenant
+
   // États du formulaire
   const [activeTab, setActiveTab] = useState(0)
   const [creating, setCreating] = useState(false)
@@ -228,6 +238,11 @@ function CreateVmDialog({
   const [memorySize, setMemorySize] = useState(2048)
   const [minMemory, setMinMemory] = useState(2048)
   const [ballooning, setBallooning] = useState(true)
+
+  // vDC quota awareness (tenants only — super admins get `null` here and pass
+  // through unchecked). Fetched when dialog opens + connection resolved.
+  const [vdcQuota, setVdcQuota] = useState<{ maxVcpus: number | null; maxRamMb: number | null; maxStorageMb: number | null; maxVms: number | null } | null>(null)
+  const [vdcUsage, setVdcUsage] = useState<{ usedVcpus: number; usedRamMb: number; usedStorageMb: number; usedVms: number } | null>(null)
   
   // UI collapse states
   const [bootSectionExpanded, setBootSectionExpanded] = useState(false)
@@ -263,24 +278,34 @@ function CreateVmDialog({
     setVmidError(null)
   }
 
-  // Load bridges from node
+  // Load bridges from node via network-choices endpoint
   const loadBridges = async (connId: string, node: string) => {
     try {
       const res = await fetch(
-        `/api/v1/connections/${encodeURIComponent(connId)}/nodes/${encodeURIComponent(node)}/network`
+        `/api/v1/connections/${encodeURIComponent(connId)}/network-choices?node=${encodeURIComponent(node)}`
       )
       if (res.ok) {
         const json = await res.json()
-        const allInterfaces = json.data || []
-        const bridgeList = allInterfaces.filter((iface: any) =>
-          iface.type === 'bridge' || iface.type === 'OVSBridge'
-        )
+        const choices = Array.isArray(json.data) ? json.data : []
+        const bridgeList = choices.map((c: any) => ({
+          iface: c.name,
+          // VNets carry a hashed iface (the actual PVE ID) but a friendly
+          // display name from the user. Surface displayName as label so the
+          // picker shows "lan" instead of "v8a3f9e2b".
+          type: c.kind === 'vnet' ? 'vnet' : c.kind === 'shared' ? 'shared' : (c.type || 'bridge'),
+          label: c.kind === 'vnet' ? (c.displayName ?? null) : (c.label ?? null),
+          vdc: c.vdc ?? null,
+        }))
         setBridges(bridgeList)
-        if (bridgeList.length > 0) {
-          setNics(prev => prev.map(nic =>
-            bridgeList.some((b: any) => b.iface === nic.bridge) ? nic : { ...nic, bridge: bridgeList[0].iface }
-          ))
-        }
+        // Sync nic state with what the server actually authorises: valid
+        // picks stay, invalid ones (e.g. the default 'vmbr0' when the tenant
+        // has no bridge) fall back to the first valid choice — or to '' if
+        // nothing is available, so networkBlocked below catches it.
+        setNics(prev => prev.map(nic =>
+          bridgeList.some((b: any) => b.iface === nic.bridge)
+            ? nic
+            : { ...nic, bridge: bridgeList[0]?.iface || '' }
+        ))
       }
     } catch (e) {
       console.error('Error loading bridges:', e)
@@ -355,6 +380,14 @@ function CreateVmDialog({
     }
   }, [open])
 
+  // Clear a stale server-side error (e.g. previous 409 "Quota exceeded") as
+  // soon as the user tweaks a quota-affecting field — otherwise the red alert
+  // lingers next to an updated green banner and confuses them.
+  useEffect(() => {
+    setError(null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cpuSockets, cpuCores, memorySize, disks, nics])
+
   // Charger les storages quand un node est sélectionné
   useEffect(() => {
     if (selectedConnection && resolvedNode) {
@@ -368,6 +401,48 @@ function CreateVmDialog({
       loadBridges(selectedConnection, resolvedNode)
     }
   }, [selectedConnection, resolvedNode])
+
+  // Charger le quota+usage du vDC du tenant pour la connexion sélectionnée.
+  // Super admin → /api/v1/vdcs renvoie [] (pas de vDC sur le provider tenant),
+  // on reste donc à vdcQuota=null → validation passante.
+  useEffect(() => {
+    if (!open || !selectedConnection) {
+      setVdcQuota(null)
+      setVdcUsage(null)
+      return
+    }
+    let cancelled = false
+    ;(async () => {
+      try {
+        const res = await fetch('/api/v1/vdcs')
+        if (!res.ok) { if (!cancelled) { setVdcQuota(null); setVdcUsage(null) } ; return }
+        const json = await res.json()
+        const vdcs: any[] = Array.isArray(json?.data) ? json.data : []
+        const match = vdcs.find(v => v.connectionId === selectedConnection || v.connection_id === selectedConnection)
+        if (cancelled) return
+        if (match?.quota) {
+          setVdcQuota({
+            maxVcpus: match.quota.maxVcpus ?? null,
+            maxRamMb: match.quota.maxRamMb ?? null,
+            maxStorageMb: match.quota.maxStorageMb ?? null,
+            maxVms: match.quota.maxVms ?? null,
+          })
+          setVdcUsage({
+            usedVcpus: match.usage?.usedVcpus ?? 0,
+            usedRamMb: match.usage?.usedRamMb ?? 0,
+            usedStorageMb: match.usage?.usedStorageMb ?? 0,
+            usedVms: match.usage?.usedVms ?? 0,
+          })
+        } else {
+          setVdcQuota(null)
+          setVdcUsage(null)
+        }
+      } catch {
+        if (!cancelled) { setVdcQuota(null); setVdcUsage(null) }
+      }
+    })()
+    return () => { cancelled = true }
+  }, [open, selectedConnection])
 
   // Charger les pools de ressources quand la connexion change
   useEffect(() => {
@@ -496,9 +571,39 @@ return
 
       setNodes(allNodes)
 
-      // 3. Sélectionner le node par défaut (priorité au defaultNode/defaultConnId)
+      // Pick the least-loaded online node. Score = cpuPct + 1.5*memPct, RAM
+      // weighted higher because it's the harder constraint at provisioning
+      // time. Falls back to the first online node, then to the first node.
+      const pickBestNode = (pool: any[]): any => {
+        if (pool.length === 0) return null
+        const online = pool.filter(n => n.status === 'online')
+        const candidates = online.length > 0 ? online : pool
+        const scored = candidates.map(n => ({
+          node: n,
+          score: (n.cpuPct ?? 0) + 1.5 * (n.memPct ?? 0),
+        }))
+        scored.sort((a, b) => a.score - b.score)
+        return scored[0].node
+      }
+
+      // 3. Sélectionner le node par défaut. For tenants we always go through
+      // pickBestNode (auto-placement, picker is hidden). The provider keeps
+      // the legacy precedence (defaultNode/defaultConnId/first).
       if (allNodes.length > 0) {
-        if (defaultConnId && defaultNode) {
+        if (hideNodePicker) {
+          // Tenant: pick best across the whole pool; if a defaultConnId was
+          // hinted, restrict to that cluster's nodes first.
+          const pool = defaultConnId
+            ? allNodes.filter((n: any) => n.connId === defaultConnId)
+            : allNodes
+          const target = pickBestNode(pool.length > 0 ? pool : allNodes)
+          if (target) {
+            setSelectedNodeValue(target.node)
+            setResolvedNode(target.node)
+            setSelectedConnection(target.connId)
+            loadNextVmid(target.connId)
+          }
+        } else if (defaultConnId && defaultNode) {
           const match = allNodes.find((n: any) => n.connId === defaultConnId && n.node === defaultNode)
           const target = match || allNodes[0]
           setSelectedNodeValue(target.node)
@@ -753,8 +858,12 @@ return
       // Réseau
       if (!noNetwork) {
         nics.forEach((nic, i) => {
+          const selectedBridge = bridges.find((b: any) => b.iface === nic.bridge)
+          // Skip the 802.1Q tag on VXLAN SDN VNets — the VNI already carries
+          // isolation, tagging on top is virtually never intended.
+          const skipVlanTag = selectedBridge?.type === 'vnet'
           let netStr = `${nic.model},bridge=${nic.bridge}`
-          if (nic.vlanTag) netStr += `,tag=${nic.vlanTag}`
+          if (nic.vlanTag && !skipVlanTag) netStr += `,tag=${nic.vlanTag}`
           if (nic.macAddress && nic.macAddress !== 'auto') netStr += `,macaddr=${nic.macAddress}`
           if (nic.firewall) netStr += ',firewall=1'
           if (nic.rateLimit) netStr += `,rate=${nic.rateLimit}`
@@ -834,6 +943,10 @@ return
       case 0: // General
         return (
           <Stack spacing={1.5}>
+            {/* Node picker hidden for tenants: placement is auto-resolved on
+                the least-loaded node in their vDC scope. The selectedNodeValue
+                state is still set silently so downstream API calls work. */}
+            {!hideNodePicker && (
             <FormControl fullWidth size="small">
               <InputLabel>{t('inventory.createVm.node')}</InputLabel>
               <Select
@@ -843,8 +956,8 @@ return
                 MenuProps={{ PaperProps: { sx: { maxHeight: 400 } } }}
               >
                 {groupedNodes.map(group => [
-                  // Cluster header (si multi-nodes)
-                  group.isCluster && (
+                  // Cluster header (si multi-nodes) — hidden for vDC tenant users
+                  isAdmin && group.isCluster && (
                     <MenuItem
                       key={`cluster:${group.connId}`}
                       value={`cluster:${group.connId}`}
@@ -897,7 +1010,7 @@ return
                       key={`${n.connId}-${n.node}`}
                       value={n.node}
                       disabled={isDisabled}
-                      sx={{ pl: group.isCluster ? 4 : 2 }}
+                      sx={{ pl: (isAdmin && group.isCluster) ? 4 : 2 }}
                     >
                       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, width: '100%' }}>
                         <Box sx={{ position: 'relative', display: 'inline-flex', alignItems: 'center', width: 14, height: 14, flexShrink: 0 }}>
@@ -949,49 +1062,58 @@ return
                 ]).flat().filter(Boolean)}
               </Select>
             </FormControl>
-            <FormControl fullWidth size="small">
-              <InputLabel>{t('inventory.createVm.resourcePool')}</InputLabel>
-              <Select value={resourcePool} onChange={(e) => setResourcePool(e.target.value)} label={t('inventory.createVm.resourcePool')}>
-                <MenuItem value="">({t('common.none')})</MenuItem>
-                {pools.map((p) => (
-                  <MenuItem key={p.poolid} value={p.poolid}>
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                      <i className="ri-folder-line" style={{ fontSize: 14, opacity: 0.7 }} />
-                      <Box>
-                        <Typography variant="body2">{p.poolid}</Typography>
-                        {p.comment && (
-                          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontSize: '0.65rem' }}>
-                            {p.comment}
-                          </Typography>
-                        )}
+            )}
+            {/* Resource pool selector — hidden for vDC tenants (pool assigned automatically) */}
+            {isAdmin && (
+              <FormControl fullWidth size="small">
+                <InputLabel>{t('inventory.createVm.resourcePool')}</InputLabel>
+                <Select value={resourcePool} onChange={(e) => setResourcePool(e.target.value)} label={t('inventory.createVm.resourcePool')}>
+                  <MenuItem value="">({t('common.none')})</MenuItem>
+                  {pools.map((p) => (
+                    <MenuItem key={p.poolid} value={p.poolid}>
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                        <i className="ri-folder-line" style={{ fontSize: 14, opacity: 0.7 }} />
+                        <Box>
+                          <Typography variant="body2">{p.poolid}</Typography>
+                          {p.comment && (
+                            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontSize: '0.65rem' }}>
+                              {p.comment}
+                            </Typography>
+                          )}
+                        </Box>
                       </Box>
-                    </Box>
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
-            <TextField
-              label="VM ID"
-              value={vmid}
-              onChange={(e) => handleVmidChange(e.target.value)}
-              size="small"
-              error={!!vmidError}
-              helperText={vmidError}
-              inputProps={{ inputMode: 'numeric', pattern: '[0-9]*' }}
-              slotProps={{
-                input: {
-                  endAdornment: (
-                    <InputAdornment position="end">
-                      <Tooltip title={t('inventory.createVm.generateVmId')}>
-                        <IconButton size="small" onClick={generateNextVmid} edge="end">
-                          <i className="ri-refresh-line" style={{ fontSize: 18 }} />
-                        </IconButton>
-                      </Tooltip>
-                    </InputAdornment>
-                  )
-                }
-              }}
-            />
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+            )}
+            {/* VMID is a Proxmox implementation detail — hidden from tenants
+                (auto-generated via /cluster/nextid in loadNextVmid). Provider
+                keeps the field visible to set/override manually. */}
+            {!hideNodePicker && (
+              <TextField
+                label="VM ID"
+                value={vmid}
+                onChange={(e) => handleVmidChange(e.target.value)}
+                size="small"
+                error={!!vmidError}
+                helperText={vmidError}
+                inputProps={{ inputMode: 'numeric', pattern: '[0-9]*' }}
+                slotProps={{
+                  input: {
+                    endAdornment: (
+                      <InputAdornment position="end">
+                        <Tooltip title={t('inventory.createVm.generateVmId')}>
+                          <IconButton size="small" onClick={generateNextVmid} edge="end">
+                            <i className="ri-refresh-line" style={{ fontSize: 18 }} />
+                          </IconButton>
+                        </Tooltip>
+                      </InputAdornment>
+                    )
+                  }
+                }}
+              />
+            )}
             <TextField label={t('inventory.createVm.vmName')} value={vmName} onChange={(e) => setVmName(e.target.value)} size="small" fullWidth />
 
             {/* Boot & Shutdown — collapsible */}
@@ -1424,33 +1546,49 @@ return
                               <MenuItem value="ide">IDE</MenuItem>
                             </Select>
                           </FormControl>
-                          <FormControl size="small">
+                          <FormControl size="small" error={diskStoragesList.length === 0}>
                             <InputLabel>{t('inventory.createVm.storage')}</InputLabel>
-                            <Select value={disk.storage} onChange={(e) => updateDisk(diskIdx, { storage: e.target.value })} label={t('inventory.createVm.storage')} renderValue={(val) => { const s = diskStoragesList.find(x => x.storage === val); return s ? `${s.storage}${!s.shared && s.node ? ` — ${s.node}` : ''}` : String(val) }}>
-                              {diskStoragesList.map(s => {
-                                const total = s.total || 0
-                                const used = s.used || 0
-                                const avail = s.avail ?? (total - used)
-                                const usagePct = total > 0 ? Math.round((used / total) * 100) : 0
-                                const usageColor = usagePct > 90 ? 'error' : usagePct > 75 ? 'warning' : 'primary'
-                                return (
-                                  <MenuItem key={s.id || s.storage} value={s.storage}>
-                                    <Box sx={{ width: '100%' }}>
-                                      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 0.25 }}>
-                                        <Typography variant="body2" fontSize={13}>{s.storage}{!s.shared && s.node ? ` — ${s.node}` : ''}</Typography>
-                                        {total > 0 && <Typography variant="caption" color="text.secondary">{formatBytes(avail)} free / {formatBytes(total)}</Typography>}
+                            <Select value={disk.storage} onChange={(e) => updateDisk(diskIdx, { storage: e.target.value })} label={t('inventory.createVm.storage')} disabled={diskStoragesList.length === 0} renderValue={(val) => { const s = diskStoragesList.find(x => x.storage === val); return s ? `${s.storage}${!s.shared && s.node ? ` — ${s.node}` : ''}` : String(val) }}>
+                              {diskStoragesList.length === 0 ? (
+                                <MenuItem value="" disabled>
+                                  {storages.length === 0
+                                    ? t('inventory.createVm.emptyState.noStorage')
+                                    : t('inventory.createVm.emptyState.noImageStorage')}
+                                </MenuItem>
+                              ) : (
+                                diskStoragesList.map(s => {
+                                  const total = s.total || 0
+                                  const used = s.used || 0
+                                  const avail = s.avail ?? (total - used)
+                                  const usagePct = total > 0 ? Math.round((used / total) * 100) : 0
+                                  const usageColor = usagePct > 90 ? 'error' : usagePct > 75 ? 'warning' : 'primary'
+                                  return (
+                                    <MenuItem key={s.id || s.storage} value={s.storage}>
+                                      <Box sx={{ width: '100%' }}>
+                                        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 0.25 }}>
+                                          <Typography variant="body2" fontSize={13}>{s.storage}{!s.shared && s.node ? ` — ${s.node}` : ''}</Typography>
+                                          {total > 0 && <Typography variant="caption" color="text.secondary">{formatBytes(avail)} free / {formatBytes(total)}</Typography>}
+                                        </Box>
+                                        {total > 0 && <LinearProgress variant="determinate" value={usagePct} color={usageColor as any} sx={{ height: 4, borderRadius: 1 }} />}
                                       </Box>
-                                      {total > 0 && <LinearProgress variant="determinate" value={usagePct} color={usageColor as any} sx={{ height: 4, borderRadius: 1 }} />}
-                                    </Box>
-                                  </MenuItem>
-                                )
-                              })}
+                                    </MenuItem>
+                                  )
+                                })
+                              )}
                             </Select>
+                            {diskStoragesList.length === 0 && storages.length > 0 && (
+                              <FormHelperText>
+                                {t('inventory.createVm.emptyState.imageStorageHint')}
+                              </FormHelperText>
+                            )}
                           </FormControl>
                           <TextField
                             label={t('inventory.createVm.diskSizeGib')}
-                            value={disk.size}
-                            onChange={(e) => updateDisk(diskIdx, { size: Number.parseInt(e.target.value) || 0 })}
+                            value={disk.size === 0 ? '' : disk.size}
+                            onChange={(e) => {
+                              const n = Number.parseInt(e.target.value, 10)
+                              updateDisk(diskIdx, { size: Number.isFinite(n) ? n : 0 })
+                            }}
                             size="small"
                             type="number"
                           />
@@ -1773,19 +1911,47 @@ return
                     <Box sx={{ px: 2, pb: 2, pt: 1 }}>
                       {/* Essential fields */}
                       <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 1.5, mb: 2 }}>
-                        <FormControl size="small">
+                        <FormControl size="small" error={bridges.length === 0}>
                           <InputLabel>{t('inventory.createVm.bridge')}</InputLabel>
-                          <Select value={nic.bridge} onChange={(e) => updateNic(nicIdx, { bridge: e.target.value })} label={t('inventory.createVm.bridge')}>
+                          <Select
+                            value={bridges.some((b: any) => b.iface === nic.bridge) ? nic.bridge : ''}
+                            onChange={(e) => updateNic(nicIdx, { bridge: e.target.value })}
+                            label={t('inventory.createVm.bridge')}
+                            disabled={bridges.length === 0}
+                          >
                             {bridges.length > 0 ? (
-                              bridges.map((b: any) => (
-                                <MenuItem key={b.iface} value={b.iface}>
-                                  {b.iface}{b.type === 'OVSBridge' ? ' (OVS)' : ''}{b.comments ? ` — ${b.comments}` : ''}{b.cidr ? ` (${b.cidr})` : ''}
-                                </MenuItem>
-                              ))
+                              bridges.map((b: any) => {
+                                const tag =
+                                  b.type === 'vnet' ? 'VNet'
+                                  : b.type === 'shared' ? 'Shared'
+                                  : b.type === 'OVSBridge' ? 'OVS' : null
+                                // For VNets the iface is the hashed PVE ID and
+                                // b.label is the friendly display name — lead
+                                // with the friendly part, demote the hash.
+                                const primary = b.type === 'vnet' && b.label ? b.label : b.iface
+                                const showHash = b.type === 'vnet' && b.label && b.label !== b.iface
+                                return (
+                                  <MenuItem key={b.iface} value={b.iface}>
+                                    {primary}{tag ? ` (${tag})` : ''}
+                                    {showHash && (
+                                      <span style={{ opacity: 0.45, marginLeft: 6, fontSize: '0.75em' }}>{b.iface}</span>
+                                    )}
+                                    {!showHash && b.label && b.label !== b.iface ? ` — ${b.label}` : ''}
+                                    {b.vdc && b.vdc !== '*' ? ` — ${b.vdc}` : ''}
+                                  </MenuItem>
+                                )
+                              })
                             ) : (
-                              <MenuItem value={nic.bridge}>{nic.bridge}</MenuItem>
+                              <MenuItem value="" disabled>
+                                {t('inventory.createVm.emptyState.noBridge')}
+                              </MenuItem>
                             )}
                           </Select>
+                          {bridges.length === 0 && (
+                            <FormHelperText>
+                              {t('inventory.createVm.emptyState.bridgeHint')}
+                            </FormHelperText>
+                          )}
                         </FormControl>
                         <FormControl size="small">
                           <InputLabel>{t('inventory.createVm.model')}</InputLabel>
@@ -1796,13 +1962,24 @@ return
                             <MenuItem value="vmxnet3">VMware vmxnet3</MenuItem>
                           </Select>
                         </FormControl>
-                        <TextField
-                          label={t('inventory.createVm.vlanTag')}
-                          value={nic.vlanTag}
-                          onChange={(e) => updateNic(nicIdx, { vlanTag: e.target.value })}
-                          size="small"
-                          placeholder="no VLAN"
-                        />
+                        {(() => {
+                          const selectedBridge = bridges.find((b: any) => b.iface === nic.bridge)
+                          // VXLAN SDN VNets carry their own isolation via the
+                          // VNI — an 802.1Q tag on top would be VLAN-in-VXLAN,
+                          // almost never what the user wants. Hide the input.
+                          const isVnet = selectedBridge?.type === 'vnet'
+                          return (
+                            <TextField
+                              label={t('inventory.createVm.vlanTag')}
+                              value={isVnet ? '' : nic.vlanTag}
+                              onChange={(e) => updateNic(nicIdx, { vlanTag: e.target.value })}
+                              size="small"
+                              placeholder={isVnet ? t('inventory.createVm.vlanTagVnetPlaceholder') : 'no VLAN'}
+                              disabled={isVnet}
+                              helperText={isVnet ? t('inventory.createVm.vlanTagVnetHint') : undefined}
+                            />
+                          )
+                        })()}
                         <TextField
                           label={t('inventory.createVm.macAddress')}
                           value={nic.macAddress}
@@ -1868,12 +2045,48 @@ return
               {items}
             </Box>
           )
+          const blockers: string[] = []
+          if (!vmid) blockers.push(t('inventory.createVm.confirmStep.noVmid'))
+          if (vmidError) blockers.push(t('inventory.createVm.confirmStep.invalidVmid', { error: vmidError }))
+          if (!resolvedNode) blockers.push(t('inventory.createVm.confirmStep.noNode'))
+          if (quotaViolations.length > 0) {
+            for (const v of quotaViolations) {
+              blockers.push(t('inventory.createVm.confirmStep.quotaViolation', { violation: v }))
+            }
+          }
+          if (networkBlocked) {
+            const nicDetails = nics
+              .map((n, i) => !bridges.some((b: any) => b.iface === n.bridge)
+                ? t('inventory.createVm.confirmStep.nicLabel', { index: i + 1, bridge: n.bridge || '—' })
+                : null)
+              .filter(Boolean)
+              .join(', ')
+            blockers.push(
+              bridges.length === 0
+                ? t('inventory.createVm.confirmStep.noBridgeBlocker')
+                : t('inventory.createVm.confirmStep.invalidBridgeBlocker', { nicDetails })
+            )
+          }
+          const canCreate = blockers.length === 0
           return (
             <Box>
               {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
-              <Alert severity="info" sx={{ mb: 2 }}>
-                {t('inventory.createVm.reviewSettingsVm')}
-              </Alert>
+              {canCreate ? (
+                <Alert severity="success" icon={<i className="ri-check-line" />} sx={{ mb: 2 }}>
+                  {t('inventory.createVm.confirmStep.ready')}
+                </Alert>
+              ) : (
+                <Alert severity="warning" icon={<i className="ri-error-warning-line" />} sx={{ mb: 2 }}>
+                  <Typography variant="body2" fontWeight={600} sx={{ mb: 0.5 }}>
+                    {t('inventory.createVm.confirmStep.blockersTitle')}
+                  </Typography>
+                  <ul style={{ margin: 0, paddingLeft: 18 }}>
+                    {blockers.map((b, i) => (
+                      <li key={i}><Typography variant="body2">{b}</Typography></li>
+                    ))}
+                  </ul>
+                </Alert>
+              )}
               <Stack spacing={1.5}>
                 {/* General */}
                 {confirmCard('ri-server-line', 'General', (
@@ -1957,6 +2170,79 @@ return
     }
   }
 
+  // ── vDC quota pre-flight (client-side mirror of server enforcement) ──
+  // Format MB as GB with 1 decimal so fractional sizes (1.5 GB, 1.8 GB)
+  // render accurately in the donut instead of being rounded up to the same %.
+  const formatMbAsGb = (mb: number) => `${(mb / 1024).toFixed(1)} GB`
+  // Gives immediate feedback as the user tweaks sliders, instead of a 409
+  // after they hit Create. Violations are computed in the server's native
+  // units (MB, vcpu counts) so GB rounding in the donut labels never masks
+  // a real overshoot (e.g. 2500 MB vs 2048 MB quota).
+  const requestedVcpus = cpuSockets * cpuCores
+  const requestedRamMb = memorySize
+  const requestedStorageMb = disks.reduce((s, d) => s + (d.storage ? (d.size || 0) * 1024 : 0), 0)
+
+  const quotaViolations: string[] = []
+  if (vdcQuota) {
+    const usedVcpus = vdcUsage?.usedVcpus ?? 0
+    const usedRamMb = vdcUsage?.usedRamMb ?? 0
+    const usedStorageMb = vdcUsage?.usedStorageMb ?? 0
+    const usedVms = vdcUsage?.usedVms ?? 0
+    if (vdcQuota.maxVcpus != null && usedVcpus + requestedVcpus > vdcQuota.maxVcpus) {
+      quotaViolations.push(t('inventory.createVm.quotaBanner.violations.vcpus', { projected: usedVcpus + requestedVcpus, max: vdcQuota.maxVcpus }))
+    }
+    if (vdcQuota.maxRamMb != null && usedRamMb + requestedRamMb > vdcQuota.maxRamMb) {
+      quotaViolations.push(t('inventory.createVm.quotaBanner.violations.ramGb', { projected: Math.round((usedRamMb + requestedRamMb) / 1024), max: Math.round(vdcQuota.maxRamMb / 1024) }))
+    }
+    if (vdcQuota.maxStorageMb != null && usedStorageMb + requestedStorageMb > vdcQuota.maxStorageMb) {
+      quotaViolations.push(t('inventory.createVm.quotaBanner.violations.storageGb', { projected: Math.round((usedStorageMb + requestedStorageMb) / 1024), max: Math.round(vdcQuota.maxStorageMb / 1024) }))
+    }
+    if (vdcQuota.maxVms != null && usedVms + 1 > vdcQuota.maxVms) {
+      quotaViolations.push(t('inventory.createVm.quotaBanner.violations.vms', { projected: usedVms + 1, max: vdcQuota.maxVms }))
+    }
+  }
+  const quotaBlocked = quotaViolations.length > 0
+
+  // Structured quota state for the visual banner: one row per resource with
+  // projected usage, percent, and over-flag, so the header / donut grid /
+  // violations list all share the same source of truth.
+  type QuotaResource = 'vcpus' | 'ram' | 'storage' | 'vms'
+  interface QuotaItem {
+    resource: QuotaResource
+    label: string
+    icon: string
+    used: number
+    requested: number
+    projected: number
+    max: number | null
+    format: (v: number) => string
+    pct: number
+    over: boolean
+  }
+  const quotaItems: QuotaItem[] = vdcQuota ? (() => {
+    const fmtNum = (v: number) => String(v)
+    const raw = [
+      { resource: 'vcpus' as const, icon: 'ri-cpu-line', label: t('inventory.createVm.quotaBanner.labels.vcpus'), used: vdcUsage?.usedVcpus ?? 0, requested: requestedVcpus, max: vdcQuota.maxVcpus, format: fmtNum },
+      { resource: 'ram' as const, icon: 'ri-ram-2-line', label: t('inventory.createVm.quotaBanner.labels.ram'), used: vdcUsage?.usedRamMb ?? 0, requested: requestedRamMb, max: vdcQuota.maxRamMb, format: formatMbAsGb },
+      { resource: 'storage' as const, icon: 'ri-hard-drive-2-line', label: t('inventory.createVm.quotaBanner.labels.storage'), used: vdcUsage?.usedStorageMb ?? 0, requested: requestedStorageMb, max: vdcQuota.maxStorageMb, format: formatMbAsGb },
+      { resource: 'vms' as const, icon: 'ri-computer-line', label: t('inventory.createVm.quotaBanner.labels.vms'), used: vdcUsage?.usedVms ?? 0, requested: 1, max: vdcQuota.maxVms, format: fmtNum },
+    ]
+    return raw.map(i => {
+      const projected = i.used + i.requested
+      const pct = i.max != null && i.max > 0 ? Math.round((projected / i.max) * 100) : 0
+      const over = i.max != null && projected > i.max
+      return { ...i, projected, pct, over }
+    })
+  })() : []
+  const overItems = quotaItems.filter(i => i.over)
+  const tightItems = quotaItems.filter(i => !i.over && i.pct >= 90)
+  const quotaTight = !quotaBlocked && tightItems.length > 0
+
+  // Network gate: a NIC targeting a bridge not returned by network-choices
+  // (typically the hardcoded vmbr0 fallback) would be rejected by the server's
+  // bridge whitelist. Block navigation/submit so the user can't hit a 403.
+  const networkBlocked = !noNetwork && nics.some(n => !bridges.some((b: any) => b.iface === n.bridge))
+
   return (
     <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth>
       <AppDialogTitle
@@ -1992,6 +2278,142 @@ return
       </Box>
       
       <DialogContent sx={{ minHeight: 350, pt: 3 }}>
+        {vdcQuota && (() => {
+          // Glassmorphism accent colour follows the quota state so the banner
+          // tints success/warning/error consistently with the donuts.
+          const accent = quotaBlocked ? theme.palette.error.main
+            : quotaTight ? theme.palette.warning.main
+            : theme.palette.success.main
+          return (
+          <Box
+            sx={{
+              mb: 2,
+              p: 2,
+              borderRadius: 1,
+              border: 1,
+              borderColor: alpha(accent, 0.35),
+              position: 'relative',
+              overflow: 'hidden',
+              background: `linear-gradient(135deg, ${alpha(accent, 0.1)} 0%, ${alpha(theme.palette.background.paper, 0.97)} 50%, ${alpha(accent, 0.04)} 100%)`,
+              backdropFilter: 'blur(8px)',
+              transition: 'border-color 0.2s, box-shadow 0.2s, background 0.2s',
+              '&:hover': {
+                borderColor: alpha(accent, 0.55),
+                boxShadow: `0 8px 32px ${alpha(accent, 0.15)}`,
+              },
+            }}
+          >
+            {/* Top-right highlight blob — the "reflet" */}
+            <Box
+              aria-hidden
+              sx={{
+                position: 'absolute',
+                top: -60,
+                right: -60,
+                width: 220,
+                height: 220,
+                borderRadius: '50%',
+                background: `radial-gradient(circle, ${alpha(accent, 0.14)} 0%, transparent 70%)`,
+                pointerEvents: 'none',
+              }}
+            />
+            {/* Header: state icon + title */}
+            <Stack direction="row" alignItems="center" spacing={1} mb={1.5} sx={{ position: 'relative' }}>
+              <Box
+                component="i"
+                className={
+                  quotaBlocked ? 'ri-close-circle-fill'
+                  : quotaTight ? 'ri-error-warning-fill'
+                  : 'ri-checkbox-circle-fill'
+                }
+                sx={{
+                  fontSize: 20,
+                  color: quotaBlocked ? 'error.main' : quotaTight ? 'warning.main' : 'success.main',
+                }}
+              />
+              <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                {quotaBlocked ? t('inventory.createVm.quotaBanner.titleBlocked') : t('inventory.createVm.quotaBanner.title')}
+              </Typography>
+            </Stack>
+
+            {/* Donuts (4 across, 2 on mobile) */}
+            <Box
+              sx={{
+                display: 'grid',
+                gap: 2,
+                gridTemplateColumns: { xs: 'repeat(2, 1fr)', sm: 'repeat(4, 1fr)' },
+                justifyItems: 'center',
+                position: 'relative',
+              }}
+            >
+              {quotaItems.map(item => (
+                <QuotaDonut
+                  key={item.resource}
+                  icon={item.icon}
+                  label={item.label}
+                  used={item.used}
+                  requested={item.requested}
+                  max={item.max}
+                  formatValue={item.resource === 'ram' || item.resource === 'storage' ? formatMbAsGb : undefined}
+                  unlimitedLabel={t('inventory.createVm.quotaBanner.unlimited')}
+                  size={88}
+                />
+              ))}
+            </Box>
+
+            {/* Violations: one row per over-limit resource, with delta chip */}
+            {overItems.length > 0 && (
+              <Box
+                sx={{
+                  mt: 2,
+                  pt: 1.5,
+                  borderTop: 1,
+                  borderColor: (theme) => theme.palette.mode === 'dark' ? 'error.dark' : 'error.light',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 0.75,
+                  position: 'relative',
+                }}
+              >
+                {overItems.map(item => {
+                  const overAmount = item.max != null ? item.projected - item.max : 0
+                  return (
+                    <Stack key={item.resource} direction="row" alignItems="center" spacing={1.5}>
+                      <Box
+                        component="i"
+                        className={item.icon}
+                        sx={{ fontSize: 16, color: 'error.main', width: 16, textAlign: 'center', flexShrink: 0 }}
+                      />
+                      <Typography variant="body2" sx={{ fontWeight: 500, minWidth: 70 }}>
+                        {item.label}
+                      </Typography>
+                      <Typography variant="body2" sx={{ flex: 1, color: 'text.secondary' }} noWrap>
+                        {item.format(item.projected)} / {item.format(item.max as number)}
+                      </Typography>
+                      <Box
+                        sx={{
+                          px: 1,
+                          py: 0.25,
+                          borderRadius: 0.75,
+                          bgcolor: 'error.main',
+                          color: 'error.contrastText',
+                          fontWeight: 600,
+                          fontSize: '0.72rem',
+                          lineHeight: 1.4,
+                          flexShrink: 0,
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        +{item.format(overAmount)}
+                      </Box>
+                    </Stack>
+                  )
+                })}
+              </Box>
+            )}
+          </Box>
+          )
+        })()}
         {loadingData ? (
           <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
             <CircularProgress />
@@ -2011,15 +2433,19 @@ return
           Back
         </Button>
         {activeTab < tabs.length - 1 ? (
-          <Button onClick={() => setActiveTab(prev => prev + 1)} variant="contained">
+          <Button
+            onClick={() => setActiveTab(prev => prev + 1)}
+            variant="contained"
+            disabled={quotaBlocked || networkBlocked}
+          >
             Next
           </Button>
         ) : (
-          <Button 
-            onClick={handleCreate} 
-            variant="contained" 
+          <Button
+            onClick={handleCreate}
+            variant="contained"
             color="primary"
-            disabled={creating || !vmid || !resolvedNode || !!vmidError}
+            disabled={creating || !vmid || !resolvedNode || !!vmidError || quotaBlocked || networkBlocked}
             startIcon={creating ? <CircularProgress size={16} /> : null}
           >
             Create

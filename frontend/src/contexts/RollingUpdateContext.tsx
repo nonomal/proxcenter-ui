@@ -4,6 +4,7 @@ import React, { createContext, useCallback, useContext, useEffect, useRef, useSt
 
 import RollingUpdateWizard from '@/components/RollingUpdateWizard'
 import { useLicense, Features } from '@/contexts/LicenseContext'
+import { useRBAC } from '@/contexts/RBACContext'
 
 export type ActiveRollingUpdate = {
   id: string
@@ -37,7 +38,8 @@ export function useRollingUpdates() {
 
 export function RollingUpdateProvider({ children }: { children: React.ReactNode }) {
   const { hasFeature, loading: licenseLoading } = useLicense()
-  const rollingUpdatesAvailable = !licenseLoading && hasFeature(Features.ROLLING_UPDATES)
+  const { hasPermission } = useRBAC()
+  const rollingUpdatesAvailable = !licenseLoading && hasFeature(Features.ROLLING_UPDATES) && hasPermission('automation.view')
 
   const [activeUpdates, setActiveUpdates] = useState<ActiveRollingUpdate[]>([])
   const [wizardOpen, setWizardOpen] = useState(false)

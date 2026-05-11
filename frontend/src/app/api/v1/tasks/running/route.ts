@@ -2,8 +2,11 @@ import { NextResponse } from 'next/server'
 
 import { pveFetch } from '@/lib/proxmox/client'
 import { getConnectionById } from '@/lib/connections/getConnection'
-import { getSessionPrisma } from "@/lib/tenant"
+import { getTenantConnectionIds } from "@/lib/tenant"
+import { prisma } from "@/lib/db/prisma"
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
+import { getVdcVmidsByConnection } from "@/lib/alerts/vdcVmids"
+import { extractTaskVmid } from "@/lib/tasks/scope"
 
 export const runtime = 'nodejs'
 
@@ -87,15 +90,38 @@ return 'ri-loader-4-line'
 // GET /api/v1/tasks/running - Récupère toutes les tâches en cours
 export async function GET() {
   try {
-    const denied = await checkPermission(PERMISSIONS.TASKS_VIEW)
+    // connection.view baseline — tenants without tasks.view still get a
+    // scoped view of their own nodes' running tasks via the vDC filter
+    // below. Super admins see everything.
+    const denied = await checkPermission(PERMISSIONS.CONNECTION_VIEW)
     if (denied) return denied
 
-    const prisma = await getSessionPrisma()
-    // Récupérer uniquement les connexions PVE
+    const { getCurrentTenantId } = await import('@/lib/tenant')
+    const { getVdcScope } = await import('@/lib/vdc/scope')
+    const tenantId = await getCurrentTenantId()
+    const vdcScope = await getVdcScope(tenantId)
+    // For vDC tenants on shared-node clusters the node filter is a no-op
+    // (every vDC has every node in scope). Pool-membership is the real
+    // boundary — pull the live vmid set per connection.
+    const vdcVmids = vdcScope ? await getVdcVmidsByConnection(tenantId) : null
+
+    // Reachable connection IDs = directly owned ∪ vDC-bound. The previous
+    // tenant-scoped prisma query returned an empty set in MSP mode (tenants
+    // don't own connections directly), so the dropdown was permanently
+    // empty for them — same bug as /changes and /orchestrator/alerts.
+    const tenantConnectionIds = await getTenantConnectionIds()
+
+    if (tenantConnectionIds.size === 0) {
+      return NextResponse.json({ data: [], count: 0 })
+    }
+
+    // Use the global prisma (not tenant-scoped) since vDC-bound connections
+    // are owned by the provider tenant; we still safety-filter against the
+    // reachable set above.
     const connections = await prisma.connection.findMany({
-      where: { type: 'pve' }
+      where: { type: 'pve', id: { in: Array.from(tenantConnectionIds) } },
     })
-    
+
     if (connections.length === 0) {
       return NextResponse.json({ data: [], count: 0 })
     }
@@ -143,13 +169,22 @@ export async function GET() {
 
           // Filtrer uniquement les tâches en cours
           // Une tâche est "en cours" si elle n'a pas de endtime ET pas de status (ou status vide)
+          const allowedNodes = vdcScope?.nodesByConnection.get(conn.id)
+          const allowedVmids = vdcVmids?.get(conn.id)
           const running = tasks.filter(t => {
-            // Si endtime existe, la tâche est terminée
             if (t.endtime) return false
-
-            // Si status existe et n'est pas vide, la tâche est terminée
             if (t.status && t.status !== '') return false
-            
+            // Tenant scope: drop tasks whose node is outside the vDC's nodes.
+            if (allowedNodes && t.node && !allowedNodes.has(t.node)) return false
+            // vDC tenants on shared-node clusters need pool isolation:
+            // VM tasks must target a vmid in the tenant's vDC pools;
+            // non-VM tasks (cluster-wide, node-level) are provider-only.
+            if (allowedVmids) {
+              const vmid = extractTaskVmid(t.id)
+              if (!vmid) return false
+              if (!allowedVmids.has(vmid)) return false
+            }
+
 return true
           })
           

@@ -5,6 +5,7 @@ import { getConnectionById } from "@/lib/connections/getConnection"
 import { checkPermission, buildVmResourceId, PERMISSIONS } from "@/lib/rbac"
 import { migrateVmSchema } from "@/lib/schemas"
 import { invalidateInventoryCache } from "@/lib/cache/inventoryCache"
+import { requireProviderTenant } from "@/lib/tenant"
 
 export const runtime = "nodejs"
 
@@ -22,6 +23,13 @@ export async function POST(
     const denied = await checkPermission(PERMISSIONS.VM_MIGRATE, "vm", resourceId)
 
     if (denied) return denied
+
+    // VM placement is the provider's responsibility in MSP/vDC mode —
+    // tenants don't choose nodes (they get an abstracted vDC). Block at
+    // the API layer too so the read-only UI can't be bypassed by a
+    // crafted POST or by a tenant admin that happens to have VM_MIGRATE.
+    const providerOnly = await requireProviderTenant()
+    if (providerOnly) return providerOnly
 
     const rawBody = await req.json()
     const parseResult = migrateVmSchema.safeParse(rawBody)

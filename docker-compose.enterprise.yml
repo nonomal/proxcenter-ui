@@ -15,7 +15,9 @@ services:
       - "3000:3000"  # Unified HTTP + WebSocket
     environment:
       - NODE_ENV=production
-      - DATABASE_URL=file:/app/data/proxcenter.db
+      # ProxCenter speaks Postgres only since the SQLite cutover. The
+      # bundled `postgres` service below holds every table.
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-proxcenter}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-proxcenter}?schema=public
       - APP_SECRET=${APP_SECRET}
       - NEXTAUTH_SECRET=${NEXTAUTH_SECRET}
       - NEXTAUTH_URL=${NEXTAUTH_URL:-http://localhost:3000}
@@ -38,14 +40,49 @@ services:
     networks:
       - proxcenter
     depends_on:
-      orchestrator:
+      postgres:
         condition: service_healthy
+      # The orchestrator no longer blocks the frontend: the frontend has to
+      # apply Prisma migrations before the orchestrator's GORM auto-migrate
+      # touches the schema, otherwise Prisma sees a pre-populated database
+      # without its migration history and bails with P3005 on first boot.
+      # See `orchestrator.depends_on.frontend` below for the inverse order.
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:3000/api/health"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 30s
+
+  # ========================================
+  # Postgres (application database)
+  # ========================================
+  # Single source of truth for ProxCenter data. Both the frontend and the
+  # Go orchestrator connect to this instance over the internal network.
+  postgres:
+    image: postgres:16-alpine
+    container_name: proxcenter-postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-proxcenter}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required (see .env.example)}
+      - POSTGRES_DB=${POSTGRES_DB:-proxcenter}
+      - POSTGRES_INITDB_ARGS=--encoding=UTF8 --locale=C
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    # No ports: published on purpose. Postgres is reached over the internal
+    # `proxcenter` network only. Uncomment to expose it to the host for
+    # debugging with psql / DBeaver / pgAdmin.
+    # ports:
+    #   - "127.0.0.1:5432:5432"
+    networks:
+      - proxcenter
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-proxcenter} -d ${POSTGRES_DB:-proxcenter}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
   # ========================================
   # Orchestrator (Go Backend)
@@ -63,9 +100,14 @@ services:
       - LOG_LEVEL=info
       - LOG_FORMAT=json
       - TZ=${TZ:-Europe/Paris}
+      # Shared Postgres with the frontend.
+      - PROXCENTER_DATABASE_DRIVER=postgres
+      - PROXCENTER_DATABASE_DSN=postgres://${POSTGRES_USER:-proxcenter}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-proxcenter}?sslmode=disable
       # sFlow collector
       - PROXCENTER_SFLOW_ENABLED=true
       - PROXCENTER_SFLOW_LISTEN_ADDRESS=0.0.0.0:6343
+      # PDF report renderer (WeasyPrint sidecar — see weasyprint service below).
+      - PROXCENTER_REPORTING_URL=http://weasyprint:5000
       #
       # Docker Secrets support (Swarm / file-based):
       # - APP_SECRET_FILE=/run/secrets/app_secret
@@ -80,10 +122,41 @@ services:
     #   - license_key
     networks:
       - proxcenter
+    depends_on:
+      postgres:
+        condition: service_healthy
+      # Wait for the frontend to finish applying Prisma migrations before
+      # GORM auto-migrate adds the orchestrator-side tables, so Prisma's
+      # migration history goes down on a clean slate (avoids P3005).
+      frontend:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:8080/api/v1/health"]
       interval: 30s
       timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  # ========================================
+  # WeasyPrint sidecar (PDF reports)
+  # ========================================
+  # Tiny Flask service that turns the orchestrator's HTML report templates
+  # into PDF documents. Built from `weasyprint/Dockerfile`. Without it, the
+  # orchestrator boots fine but PDF generation is disabled.
+  weasyprint:
+    image: ghcr.io/adminsyspro/proxcenter-weasyprint:${VERSION:-latest}
+    # Uncomment to rebuild from source instead of pulling the pinned image
+    # (useful when iterating on weasyprint/server.py or the Dockerfile).
+    # build:
+    #   context: ./weasyprint
+    container_name: proxcenter-weasyprint
+    restart: unless-stopped
+    networks:
+      - proxcenter
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; r=urllib.request.urlopen('http://127.0.0.1:5000/health',timeout=3); sys.exit(0 if r.status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
       retries: 3
       start_period: 15s
 
@@ -115,4 +188,7 @@ volumes:
     external: true
   orchestrator_data:
     name: orchestrator_data
+    external: true
+  postgres_data:
+    name: postgres_data
     external: true

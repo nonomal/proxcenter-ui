@@ -37,7 +37,10 @@ export async function POST(
       return NextResponse.json({ error: "No config saved for retry" }, { status: 400 })
     }
 
-    const config = JSON.parse(job.config)
+    // job.config is a JSONB column (see schema.prisma): Prisma returns the
+    // parsed object directly. The shape is set at create time in
+    // /api/v1/migrations/route.ts and matches MigrationConfig.
+    const config = job.config as unknown as Parameters<typeof runMigrationPipeline>[1]
 
     // Create a new job for the retry
     const newJob = await prisma.migrationJob.create({

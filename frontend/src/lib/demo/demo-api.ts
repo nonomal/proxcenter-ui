@@ -188,6 +188,18 @@ function generateHealthHistory(): { date: string, score: number }[] {
 }
 
 // ---------------------------------------------------------------------------
+// Demo lockout response for mutations on flagship MSP routes.
+// Returned by lookupMock to keep route handlers from running against an empty DB.
+// ---------------------------------------------------------------------------
+
+function demoLocked(): Response {
+  return new Response(
+    JSON.stringify({ error: "Action désactivée en mode démo" }),
+    { status: 403, headers: { "Content-Type": "application/json" } }
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Hardcoded mock responses for endpoints not in mock-data.json
 // ---------------------------------------------------------------------------
 
@@ -1587,7 +1599,7 @@ function normaliseNodeName(urlPath: string): string {
  *  6. Fallback: unmatched GET → { data: [] }
  *  7. Otherwise null
  */
-function lookupMock(method: string, urlPath: string): any | null {
+function lookupMock(method: string, urlPath: string): any | Response | null {
   const cleanPath = stripQuery(urlPath)
   const methodKey = `${method}:${cleanPath}`
 
@@ -1620,6 +1632,23 @@ function lookupMock(method: string, urlPath: string): any | null {
       const pbsMethodKey = `${method}:${withDemoPbs}`
       if (EXTRA_MOCKS[pbsMethodKey] !== undefined) return EXTRA_MOCKS[pbsMethodKey]
       if (method === 'GET' && MOCK_DATA[withDemoPbs] !== undefined) return MOCK_DATA[withDemoPbs]
+    }
+  }
+
+  // --- Demo lockout for v1.4 flagship MSP mutations ---
+  if (method !== 'GET') {
+    const lockedPrefixes = [
+      '/api/v1/admin/vdcs',
+      '/api/v1/admin/datacenters',
+      '/api/v1/admin/pbs-connections',
+      '/api/v1/admin/green-assignments',
+      '/api/v1/admin/connections',
+      '/api/v1/vdcs',
+      '/api/v1/users',
+      '/api/v1/rbac/assignments',
+    ]
+    if (lockedPrefixes.some(p => cleanPath === p || cleanPath.startsWith(p + '/'))) {
+      return demoLocked()
     }
   }
 
@@ -1929,6 +1958,7 @@ export function demoResponse(req: Request): NextResponse | Response | null {
     }
 
     const specificMock = lookupMock(method, pathname)
+    if (specificMock instanceof Response) return specificMock
     if (specificMock !== null) {
       return NextResponse.json(specificMock, { headers: demoHeaders })
     }
@@ -2091,6 +2121,36 @@ export function demoResponse(req: Request): NextResponse | Response | null {
     return NextResponse.json({ data }, { headers: demoHeaders })
   }
 
+  // --- Dynamic per-VM Green Score endpoint ---
+  if (cleanPath.match(/\/api\/v1\/connections\/[^/]+\/guests\/[^/]+\/[^/]+\/[^/]+\/green$/)) {
+    const nowSec = Math.floor(Date.now() / 1000)
+    return NextResponse.json({
+      hasEnoughData: true,
+      windowDays: 30,
+      samples: {
+        count: 720,
+        fromTs: nowSec - 30 * 86400,
+        toTs: nowSec,
+        avgCpuPct: 7.2,
+        avgMemPct: 42.0,
+        runningRatio: 0.95,
+      },
+      metrics: {
+        power: { current: 28, max: 65, monthly: 20, yearly: 245 },
+        co2: { hourly: 0.001, daily: 0.03, monthly: 0.9, yearly: 12, factor: 0.052, equivalentKmCar: 47, equivalentTrees: 0.5 },
+        cost: { hourly: 0.005, daily: 0.13, monthly: 4, yearly: 48, pricePerKwh: 0.18, currency: 'EUR' },
+        efficiency: { pue: 1.4, vmPerKw: 32, score: 72 },
+      },
+      insight: {
+        kind: 'idle_cpu',
+        severity: 'warning',
+        titleKey: 'green.insights.idleCpu.title',
+        suggestionKey: 'green.insights.idleCpu.suggestion',
+        placeholders: { cpu: 7, suggestedVcpus: 2 },
+      },
+    }, { headers: demoHeaders })
+  }
+
   // --- Dynamic RRD endpoints ---
   if (cleanPath.match(/\/api\/v1\/connections\/[^/]+\/rrd/) || cleanPath.match(/\/api\/v1\/connections\/[^/]+\/ceph\/rrd/)) {
     const timeframe = urlObj.searchParams.get('timeframe') || 'hour'
@@ -2120,6 +2180,7 @@ export function demoResponse(req: Request): NextResponse | Response | null {
   // 5. GET request — look up mock data
   const data = lookupMock(method, pathname)
 
+  if (data instanceof Response) return data
   if (data !== null) {
     return NextResponse.json(data, { headers: demoHeaders })
   }

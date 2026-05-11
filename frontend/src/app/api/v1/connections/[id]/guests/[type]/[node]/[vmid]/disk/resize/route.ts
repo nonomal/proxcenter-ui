@@ -4,8 +4,21 @@ import { pveFetch } from "@/lib/proxmox/client"
 import { getConnectionById } from "@/lib/connections/getConnection"
 import { checkPermission, buildVmResourceId, PERMISSIONS } from "@/lib/rbac"
 import { resizeDiskSchema } from "@/lib/schemas"
+import { getCurrentTenantId } from '@/lib/tenant'
+import { resolveVdcForTenant, checkVdcQuota } from '@/lib/vdc/quota'
 
 export const runtime = "nodejs"
+
+function parseSizeDeltaMb(size: string): number {
+  const match = size.match(/^\+?(\d+(?:\.\d+)?)\s*(G|M|T|K)?/i)
+  if (!match) return 0
+  const value = parseFloat(match[1])
+  const unit = (match[2] || 'G').toUpperCase()
+  if (unit === 'T') return Math.round(value * 1024 * 1024)
+  if (unit === 'G') return Math.round(value * 1024)
+  if (unit === 'K') return Math.round(value / 1024)
+  return Math.round(value) // MB
+}
 
 // POST /api/v1/connections/{id}/guests/{type}/{node}/{vmid}/disk/resize
 // Redimensionne un disque (agrandissement uniquement)
@@ -33,6 +46,35 @@ export async function POST(
     }
 
     const { disk, size } = parseResult.data
+
+    const tenantId = await getCurrentTenantId()
+    try {
+      const vdcInfo = await resolveVdcForTenant(tenantId, id, node)
+
+      if (vdcInfo) {
+        const deltaMb = parseSizeDeltaMb(size)
+
+        if (deltaMb > 0) {
+          const quotaCheck = await checkVdcQuota(id, vdcInfo.poolName, vdcInfo.quota, {
+            type: 'resize',
+            addStorageMb: deltaMb,
+            addVms: 0,
+          })
+
+          if (!quotaCheck.allowed) {
+            return NextResponse.json({
+              error: 'Quota exceeded',
+              violations: quotaCheck.violations,
+            }, { status: 409 })
+          }
+        }
+      }
+    } catch (e: any) {
+      if (e?.message === 'NODE_NOT_AUTHORIZED') {
+        return NextResponse.json({ error: 'This node is not authorized for your vDC' }, { status: 403 })
+      }
+      throw e
+    }
 
     const conn = await getConnectionById(id)
     

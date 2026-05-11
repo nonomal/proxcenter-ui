@@ -2,7 +2,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 
 import { getOrchestratorClient } from '@/lib/orchestrator/client'
-import { getDb } from '@/lib/db/sqlite'
+import { getSetting, setSetting } from '@/lib/db/settings'
 import { getCurrentTenantId } from '@/lib/tenant'
 import { checkPermission, PERMISSIONS } from '@/lib/rbac'
 
@@ -13,12 +13,9 @@ export const runtime = "nodejs"
 // — they MUST be sent to the orchestrator for safety enforcement
 const FRONTEND_ONLY_KEYS = ['max_pending_recommendations'] as const
 
-function getFrontendSettings(): Record<string, any> {
+async function getFrontendSettings(): Promise<Record<string, any>> {
   try {
-    const db = getDb()
-    const tenantId = 'default'
-    const row = db.prepare('SELECT value FROM settings WHERE key = ? AND tenant_id = ?').get('drs_frontend_settings', tenantId) as any
-    const all = row?.value ? JSON.parse(row.value) : {}
+    const all = (await getSetting<Record<string, any>>('drs_frontend_settings')) ?? {}
     // Only return keys that are actually frontend-only (filter out keys now managed by orchestrator)
     const filtered: Record<string, any> = {}
     for (const key of FRONTEND_ONLY_KEYS) {
@@ -28,13 +25,9 @@ function getFrontendSettings(): Record<string, any> {
   } catch { return {} }
 }
 
-function saveFrontendSettings(data: Record<string, any>) {
+async function saveFrontendSettings(data: Record<string, any>): Promise<void> {
   try {
-    const db = getDb()
-    const json = JSON.stringify(data)
-    db.prepare(
-      `INSERT OR REPLACE INTO settings (key, value, tenant_id, updated_at) VALUES (?, ?, 'default', datetime('now'))`
-    ).run('drs_frontend_settings', json)
+    await setSetting('drs_frontend_settings', 'default', data)
   } catch (e) { console.error('[drs/settings] Failed to save frontend settings:', e) }
 }
 
@@ -97,7 +90,7 @@ export async function GET() {
       excluded_nodes: response.data?.excluded_nodes ?? defaultSettings.excluded_nodes,
       cluster_modes: response.data?.cluster_modes ?? defaultSettings.cluster_modes,
       // Merge frontend-only settings from local DB
-      ...getFrontendSettings(),
+      ...(await getFrontendSettings()),
     }
 
     return NextResponse.json(mergedSettings)
@@ -136,11 +129,11 @@ export async function PUT(request: NextRequest) {
       }
     }
     if (Object.keys(frontendData).length > 0) {
-      saveFrontendSettings({ ...getFrontendSettings(), ...frontendData })
+      await saveFrontendSettings({ ...(await getFrontendSettings()), ...frontendData })
     }
 
     const response = await client.put('/drs/settings', body)
-    
+
     // Merge response with defaults + frontend-only settings
     const mergedSettings = {
       ...defaultSettings,
@@ -150,7 +143,7 @@ export async function PUT(request: NextRequest) {
       excluded_clusters: response.data?.excluded_clusters ?? defaultSettings.excluded_clusters,
       excluded_nodes: response.data?.excluded_nodes ?? defaultSettings.excluded_nodes,
       cluster_modes: response.data?.cluster_modes ?? defaultSettings.cluster_modes,
-      ...getFrontendSettings(),
+      ...(await getFrontendSettings()),
     }
 
     return NextResponse.json(mergedSettings)

@@ -3,6 +3,7 @@ import { NextResponse } from "next/server"
 import { pveFetch } from "@/lib/proxmox/client"
 import { getConnectionById } from "@/lib/connections/getConnection"
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
+import { guardTenantStorageWrite } from "@/lib/vdc/scope"
 
 export const runtime = "nodejs"
 
@@ -15,8 +16,11 @@ export async function POST(
   try {
     const { id, node, storage } = await ctx.params
 
-    const denied = await checkPermission(PERMISSIONS.STORAGE_UPLOAD, "connection", id)
+    const denied = await checkPermission(PERMISSIONS.CONNECTION_VIEW, "connection", id)
     if (denied) return denied
+
+    const storageBlock = await guardTenantStorageWrite(id, storage)
+    if (storageBlock) return storageBlock
 
     const conn = await getConnectionById(id)
     const body = await req.json()

@@ -21,6 +21,12 @@ export default function ImageCard({ image, onDeploy, isCustom, onEdit, onDelete 
     ? (image as any).volumeId || 'volume'
     : (() => { try { return new URL(image.downloadUrl).hostname } catch { return image.downloadUrl } })()
 
+  // ISO install media is rendered with a clearly different cue than cloud
+  // images: distinct icon + chip so the tenant sees at a glance whether
+  // they're picking an unattended cloud-init image or boot media that
+  // requires a manual install.
+  const isIso = String(image.format || '').toLowerCase() === 'iso'
+
   return (
     <Card
       variant="outlined"
@@ -86,8 +92,18 @@ export default function ImageCard({ image, onDeploy, isCustom, onEdit, onDelete 
           )}
         </Box>
 
-        {/* Tags */}
+        {/* Tags + format chip. The format chip is the primary signal —
+            'Manual install' (ISO) vs 'Cloud-init' (qcow2/raw/…). It sits
+            first so it's the eye's first stop in the chip row. */}
         <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
+          <Chip
+            icon={<Box component="i" className={isIso ? 'ri-disc-line' : 'ri-cloud-line'} sx={{ fontSize: 12, ml: 0.5 }} />}
+            label={isIso ? t('templates.catalog.formatIsoChip') : t('templates.catalog.formatCloudChip')}
+            size="small"
+            color={isIso ? 'warning' : 'info'}
+            variant="outlined"
+            sx={{ height: 20, fontSize: '0.65rem', '& .MuiChip-icon': { color: 'inherit' } }}
+          />
           {image.tags.map(tag => (
             <Chip
               key={tag}

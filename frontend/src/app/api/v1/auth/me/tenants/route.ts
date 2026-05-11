@@ -11,7 +11,7 @@ export async function GET() {
     return NextResponse.json({ error: "Not authenticated" }, { status: 401 })
   }
 
-  const tenants = getUserTenants(session.user.id)
+  const tenants = await getUserTenants(session.user.id)
   return NextResponse.json({
     data: tenants,
     currentTenantId: session.user.tenantId || 'default',

@@ -2,8 +2,9 @@ import { NextResponse } from "next/server"
 
 import { demoResponse } from "@/lib/demo/demo-api"
 import { pbsFetch } from "@/lib/proxmox/pbs-client"
-import { getPbsConnectionById } from "@/lib/connections/getConnection"
+import { getPbsConnectionById, getPbsConnectionByIdUnscoped } from "@/lib/connections/getConnection"
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
+import { assertVdcPbsAccess } from "@/lib/vdc/scope"
 
 export const runtime = "nodejs"
 
@@ -33,11 +34,20 @@ export async function GET(
     const denied = await checkPermission(PERMISSIONS.BACKUP_VIEW, "pbs", id)
     if (denied) return denied
 
+    const access = await assertVdcPbsAccess(id)
+    if (access instanceof Response) return access
+
+    if (access.kind === 'tenant' && !access.allowed.some(a => a.datastore === store)) {
+      return NextResponse.json({ error: 'Datastore not accessible for this tenant' }, { status: 403 })
+    }
+
     const url = new URL(req.url)
     const timeframe = url.searchParams.get('timeframe') || 'hour'
     const cf = url.searchParams.get('cf') || 'AVERAGE'
 
-    const conn = await getPbsConnectionById(id)
+    const conn = access.kind === 'admin'
+      ? await getPbsConnectionById(id)
+      : await getPbsConnectionByIdUnscoped(id)
 
     // PBS utilise /admin/datastore/{store}/rrd pour les métriques du datastore
     const rrdData = await pbsFetch<any[]>(

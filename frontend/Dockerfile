@@ -7,13 +7,12 @@ FROM node:22-alpine AS deps
 
 WORKDIR /app
 
-# Install build dependencies for better-sqlite3
-RUN apk add --no-cache python3 make g++ sqlite-dev
-
 # Copy package files (including lock file for reproducible builds)
 COPY package.json package-lock.json ./
 
-# Install dependencies WITHOUT running postinstall (source files not yet available)
+# Install dependencies WITHOUT running postinstall (source files not yet
+# available). No native modules left to compile since better-sqlite3 was
+# dropped (post-step-2.7 cleanup), so we skip python/make/g++ entirely.
 RUN npm ci --legacy-peer-deps --ignore-scripts
 
 # ========================================
@@ -23,17 +22,11 @@ FROM node:22-alpine AS builder
 
 WORKDIR /app
 
-# Install build dependencies for better-sqlite3
-RUN apk add --no-cache python3 make g++ sqlite-dev
-
 # Copy dependencies from deps stage
 COPY --from=deps /app/node_modules ./node_modules
 
 # Copy source code
 COPY . .
-
-# Rebuild better-sqlite3 native module for this platform
-RUN npm rebuild better-sqlite3
 
 # Generate icon CSS bundle
 RUN npm run build:icons
@@ -58,10 +51,37 @@ ARG DEMO_MODE=""
 ENV DEMO_MODE=${DEMO_MODE}
 ENV NEXT_PUBLIC_DEMO_MODE=${DEMO_MODE}
 
-# Create data directory for SQLite (needed during build for page data collection)
+# Create data directory (used at runtime for branding logo uploads, etc.)
 RUN mkdir -p /app/data
 
 RUN npm run build
+
+# Bundle the Prisma seed script to a self-contained CommonJS file so the
+# runner stage can execute it via plain `node` (no tsx / esbuild at runtime).
+# @prisma/client and @prisma/adapter-pg stay external — they are copied into
+# the runner stage from node_modules below.
+RUN npx esbuild prisma/seed.ts \
+    --bundle \
+    --platform=node \
+    --target=node22 \
+    --format=cjs \
+    --outfile=prisma/seed.js \
+    --external:@prisma/client \
+    --external:@prisma/adapter-pg
+
+# Strip dev dependencies from node_modules so the runner stage can adopt the
+# whole tree as-is. Production deps include the prisma CLI + its transitive
+# graph (pathe, hono, @electric-sql/pglite, …), which would otherwise need
+# dozens of selective COPY lines to assemble correctly.
+#
+# The `rm -rf` strips packages that .next/standalone bundles its own (lean,
+# trace-driven) copy of, so the final image doesn't carry both. @swc is a
+# build-time compiler and is never imported at runtime — also dropped.
+# Doing this here, in the same RUN layer, means the runner-stage COPY of
+# /app/node_modules pulls the slim tree directly (~480 MB saved versus
+# pruning in the runner where Docker layers preserve the heavier original).
+RUN npm prune --omit=dev --legacy-peer-deps --ignore-scripts && \
+    rm -rf node_modules/next node_modules/@next node_modules/@swc
 
 # ========================================
 # Stage 3: Runner
@@ -80,46 +100,37 @@ ENV GIT_SHA=${GIT_SHA}
 ARG DEMO_MODE=""
 ENV DEMO_MODE=${DEMO_MODE}
 
-# Install runtime dependencies
-RUN apk add --no-cache sqlite-dev
-
 # Create non-root user
 RUN addgroup --system --gid 1001 nodejs && \
     adduser --system --uid 1001 nextjs
 
-# Create data directory for SQLite
+# Create data directory (used by the app for branding logo uploads, etc.)
 RUN mkdir -p /app/data && chown nextjs:nodejs /app/data
 
 # Copy public assets
 COPY --from=builder /app/public ./public
 
-# Copy standalone build
+# Pruned production node_modules from the builder (already trimmed of
+# next/@next/@swc — see the prune step above). Carries the Prisma CLI +
+# its full transitive graph, @prisma/client, adapter-pg, pg.
+COPY --from=builder --chown=nextjs:nodejs /app/node_modules ./node_modules
+
+# Standalone Next.js bundle: server.js, lean traced node_modules
+# (re-adds next + @next entries the prune dropped) and the compiled
+# .next/ tree.
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 
-# Copy better-sqlite3 native module (required for Prisma with SQLite)
-COPY --from=builder /app/node_modules/better-sqlite3 ./node_modules/better-sqlite3
+# Prisma schema, migrations and pre-bundled seed.js (built by esbuild above).
+COPY --from=builder --chown=nextjs:nodejs /app/prisma ./prisma
+COPY --from=builder --chown=nextjs:nodejs /app/prisma.config.ts ./prisma.config.ts
 
-# Copy Prisma adapter, client, config and dependencies
-COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
-COPY --from=builder /app/node_modules/@prisma ./node_modules/@prisma
-COPY --from=builder /app/node_modules/prisma ./node_modules/prisma
-COPY --from=builder /app/prisma ./prisma
-COPY --from=builder /app/prisma.config.ts ./prisma.config.ts
+# Unified server entry point + WebSocket proxy.
+COPY --from=builder --chown=nextjs:nodejs /app/start.js ./start.js
+COPY --from=builder --chown=nextjs:nodejs /app/ws-proxy.js ./ws-proxy.js
 
-# Copy Prisma config dependencies (required by @prisma/config at runtime)
-# Dependency chain: prisma → @prisma/config → effect → fast-check → pure-rand
-COPY --from=builder /app/node_modules/effect ./node_modules/effect
-COPY --from=builder /app/node_modules/fast-check ./node_modules/fast-check
-COPY --from=builder /app/node_modules/pure-rand ./node_modules/pure-rand
-
-# Copy unified server entry point, WebSocket proxy and ws dependency
-COPY --from=builder /app/start.js ./start.js
-COPY --from=builder /app/ws-proxy.js ./ws-proxy.js
-COPY --from=builder /app/node_modules/ws ./node_modules/ws
-
-# Copy package.json for version display in startup banner
-COPY --from=builder /app/package.json ./package.json
+# Package metadata (used by the startup banner for the version label).
+COPY --from=builder --chown=nextjs:nodejs /app/package.json ./package.json
 
 # No extra runtime dependencies — start.js runs as single process
 
@@ -132,15 +143,16 @@ EXPOSE 3000
 # Environment variables (can be overridden)
 ENV PORT=3000
 ENV HOSTNAME="0.0.0.0"
-ENV DATABASE_URL="file:/app/data/proxcenter.db"
+# DATABASE_URL has no default on purpose — the entrypoint refuses to boot
+# without it. The bundled docker-compose stack injects the right Postgres
+# connection string.
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
     CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:3000/api/health || exit 1
 
-# Copy entrypoint and migration scripts
+# Copy entrypoint
 COPY --from=builder --chown=nextjs:nodejs /app/docker-entrypoint.sh ./docker-entrypoint.sh
-COPY --from=builder --chown=nextjs:nodejs /app/db-migrate.js ./db-migrate.js
 
 # Start: entrypoint inits DB, CMD starts unified server
 ENTRYPOINT ["/app/docker-entrypoint.sh"]

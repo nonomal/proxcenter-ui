@@ -2,8 +2,9 @@ import { NextResponse } from "next/server"
 
 import { demoResponse } from "@/lib/demo/demo-api"
 import { pbsFetch } from "@/lib/proxmox/pbs-client"
-import { getPbsConnectionById } from "@/lib/connections/getConnection"
+import { getPbsConnectionById, getPbsConnectionByIdUnscoped } from "@/lib/connections/getConnection"
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
+import { assertVdcPbsAccess } from "@/lib/vdc/scope"
 
 export const runtime = "nodejs"
 
@@ -28,11 +29,16 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> |
     const denied = await checkPermission(PERMISSIONS.BACKUP_VIEW, "pbs", id)
     if (denied) return denied
 
+    const access = await assertVdcPbsAccess(id)
+    if (access instanceof Response) return access
+
     const url = new URL(req.url)
     const timeframe = url.searchParams.get('timeframe') || 'hour'
     const cf = url.searchParams.get('cf') || 'AVERAGE'
 
-    const conn = await getPbsConnectionById(id)
+    const conn = access.kind === 'admin'
+      ? await getPbsConnectionById(id)
+      : await getPbsConnectionByIdUnscoped(id)
 
     // PBS utilise /nodes/localhost/rrd pour les métriques du serveur
     // Essayer plusieurs endpoints possibles

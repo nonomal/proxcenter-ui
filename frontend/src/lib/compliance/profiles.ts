@@ -1,8 +1,10 @@
 // src/lib/compliance/profiles.ts
-// CRUD operations for compliance profiles
+// CRUD operations for compliance profiles (Postgres / Prisma).
 
-import { getDb } from '@/lib/db/sqlite'
+import { prisma } from '@/lib/db/prisma'
 
+// Wire shape preserved (snake_case fields, integer-as-boolean) for the UI
+// callers that haven't been migrated to camelCase yet.
 export interface ComplianceProfile {
   id: string
   name: string
@@ -25,69 +27,93 @@ export interface ComplianceProfileCheck {
   category: string | null
 }
 
-export function listProfiles(tenantId: string, connectionId?: string): ComplianceProfile[] {
-  const db = getDb()
-  if (connectionId) {
-    return db.prepare(
-      'SELECT * FROM compliance_profiles WHERE tenant_id = ? AND (connection_id = ? OR connection_id IS NULL) ORDER BY created_at DESC'
-    ).all(tenantId, connectionId) as ComplianceProfile[]
+function rowToProfile(r: any): ComplianceProfile {
+  return {
+    id: r.id,
+    name: r.name,
+    description: r.description ?? null,
+    framework_id: r.frameworkId ?? null,
+    is_active: r.isActive ? 1 : 0,
+    connection_id: r.connectionId ?? null,
+    created_by: r.createdBy ?? null,
+    created_at: r.createdAt instanceof Date ? r.createdAt.toISOString() : String(r.createdAt),
+    updated_at: r.updatedAt instanceof Date ? r.updatedAt.toISOString() : String(r.updatedAt),
   }
-  return db.prepare('SELECT * FROM compliance_profiles WHERE tenant_id = ? ORDER BY created_at DESC').all(tenantId) as ComplianceProfile[]
 }
 
-export function getProfile(id: string, tenantId: string): ComplianceProfile | undefined {
-  const db = getDb()
-  return db.prepare('SELECT * FROM compliance_profiles WHERE id = ? AND tenant_id = ?').get(id, tenantId) as ComplianceProfile | undefined
+function rowToCheck(r: any): ComplianceProfileCheck {
+  return {
+    id: r.id,
+    profile_id: r.profileId,
+    check_id: r.checkId,
+    enabled: r.enabled ? 1 : 0,
+    weight: Number(r.weight),
+    control_ref: r.controlRef ?? null,
+    category: r.category ?? null,
+  }
 }
 
-export function getProfileChecks(profileId: string, tenantId: string): ComplianceProfileCheck[] {
-  const db = getDb()
-  return db.prepare('SELECT * FROM compliance_profile_checks WHERE profile_id = ? AND tenant_id = ?').all(profileId, tenantId) as ComplianceProfileCheck[]
+export async function listProfiles(tenantId: string, connectionId?: string): Promise<ComplianceProfile[]> {
+  const where: any = { tenantId }
+  if (connectionId) {
+    where.OR = [{ connectionId }, { connectionId: null }]
+  }
+  const rows = await prisma.complianceProfile.findMany({
+    where,
+    orderBy: { createdAt: 'desc' },
+  })
+  return rows.map(rowToProfile)
 }
 
-export function createProfile(data: {
+export async function getProfile(id: string, tenantId: string): Promise<ComplianceProfile | undefined> {
+  const r = await prisma.complianceProfile.findFirst({ where: { id, tenantId } })
+  return r ? rowToProfile(r) : undefined
+}
+
+export async function getProfileChecks(profileId: string, tenantId: string): Promise<ComplianceProfileCheck[]> {
+  const rows = await prisma.complianceProfileCheck.findMany({ where: { profileId, tenantId } })
+  return rows.map(rowToCheck)
+}
+
+export async function createProfile(data: {
   name: string
   description?: string
   connection_id?: string
   created_by?: string
   tenant_id: string
-}): ComplianceProfile {
-  const db = getDb()
+}): Promise<ComplianceProfile> {
   const id = crypto.randomUUID()
-  const now = new Date().toISOString()
-
-  db.prepare(`
-    INSERT INTO compliance_profiles (id, name, description, framework_id, is_active, connection_id, created_by, created_at, updated_at, tenant_id)
-    VALUES (?, ?, ?, NULL, 0, ?, ?, ?, ?, ?)
-  `).run(id, data.name, data.description || null, data.connection_id || null, data.created_by || null, now, now, data.tenant_id)
-
-  return getProfile(id, data.tenant_id)!
+  const now = new Date()
+  await prisma.complianceProfile.create({
+    data: {
+      id,
+      tenantId: data.tenant_id,
+      name: data.name,
+      description: data.description || null,
+      frameworkId: null,
+      isActive: false,
+      connectionId: data.connection_id || null,
+      createdBy: data.created_by || null,
+      createdAt: now,
+      updatedAt: now,
+    },
+  })
+  return (await getProfile(id, data.tenant_id))!
 }
 
-export function updateProfile(id: string, data: {
-  name?: string
-  description?: string
-}, tenantId: string): ComplianceProfile | undefined {
-  const db = getDb()
-  const now = new Date().toISOString()
-  const fields: string[] = ['updated_at = ?']
-  const values: any[] = [now]
-
-  if (data.name !== undefined) {
-    fields.push('name = ?')
-    values.push(data.name)
-  }
-  if (data.description !== undefined) {
-    fields.push('description = ?')
-    values.push(data.description)
-  }
-
-  values.push(id, tenantId)
-  db.prepare(`UPDATE compliance_profiles SET ${fields.join(', ')} WHERE id = ? AND tenant_id = ?`).run(...values)
+export async function updateProfile(
+  id: string,
+  data: { name?: string; description?: string },
+  tenantId: string,
+): Promise<ComplianceProfile | undefined> {
+  const update: Record<string, unknown> = { updatedAt: new Date() }
+  if (data.name !== undefined) update.name = data.name
+  if (data.description !== undefined) update.description = data.description
+  await prisma.complianceProfile.updateMany({ where: { id, tenantId }, data: update })
   return getProfile(id, tenantId)
 }
 
-export function updateProfileChecks(
+export async function updateProfileChecks(
   profileId: string,
   checks: Array<{
     check_id: string
@@ -96,77 +122,74 @@ export function updateProfileChecks(
     control_ref?: string
     category?: string
   }>,
-  tenantId: string
-): void {
-  const db = getDb()
-
-  // Delete existing checks and re-insert
-  db.prepare('DELETE FROM compliance_profile_checks WHERE profile_id = ? AND tenant_id = ?').run(profileId, tenantId)
-
-  const insert = db.prepare(`
-    INSERT INTO compliance_profile_checks (id, profile_id, check_id, enabled, weight, control_ref, category, tenant_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `)
-
-  for (const check of checks) {
-    insert.run(
-      crypto.randomUUID(),
-      profileId,
-      check.check_id,
-      check.enabled ? 1 : 0,
-      check.weight,
-      check.control_ref || null,
-      check.category || null,
-      tenantId
-    )
-  }
-
-  // Update profile timestamp
-  db.prepare('UPDATE compliance_profiles SET updated_at = ? WHERE id = ? AND tenant_id = ?').run(new Date().toISOString(), profileId, tenantId)
+  tenantId: string,
+): Promise<void> {
+  const now = new Date()
+  await prisma.$transaction(async tx => {
+    await tx.complianceProfileCheck.deleteMany({ where: { profileId, tenantId } })
+    if (checks.length > 0) {
+      await tx.complianceProfileCheck.createMany({
+        data: checks.map(c => ({
+          id: crypto.randomUUID(),
+          tenantId,
+          profileId,
+          checkId: c.check_id,
+          enabled: !!c.enabled,
+          weight: c.weight,
+          controlRef: c.control_ref || null,
+          category: c.category || null,
+        })),
+      })
+    }
+    await tx.complianceProfile.updateMany({ where: { id: profileId, tenantId }, data: { updatedAt: now } })
+  })
 }
 
-export function deleteProfile(id: string, tenantId: string): void {
-  const db = getDb()
-  db.prepare('DELETE FROM compliance_profiles WHERE id = ? AND tenant_id = ?').run(id, tenantId)
+export async function deleteProfile(id: string, tenantId: string): Promise<void> {
+  await prisma.complianceProfile.deleteMany({ where: { id, tenantId } })
 }
 
-export function setActiveProfile(profileId: string, connectionId: string | undefined, tenantId: string): void {
-  const db = getDb()
+export async function setActiveProfile(profileId: string, connectionId: string | undefined, tenantId: string): Promise<void> {
+  await prisma.$transaction(async tx => {
+    if (connectionId) {
+      await tx.complianceProfile.updateMany({
+        where: { tenantId, OR: [{ connectionId }, { connectionId: null }] },
+        data: { isActive: false },
+      })
+    } else {
+      await tx.complianceProfile.updateMany({
+        where: { tenantId },
+        data: { isActive: false },
+      })
+    }
+    await tx.complianceProfile.updateMany({
+      where: { id: profileId, tenantId },
+      data: { isActive: true },
+    })
+  })
+}
 
-  // Deactivate all profiles (optionally scoped to a connection), always scoped by tenant
+export async function deactivateProfiles(connectionId: string | undefined, tenantId: string): Promise<void> {
   if (connectionId) {
-    db.prepare('UPDATE compliance_profiles SET is_active = 0 WHERE tenant_id = ? AND (connection_id = ? OR connection_id IS NULL)').run(tenantId, connectionId)
+    await prisma.complianceProfile.updateMany({
+      where: { tenantId, OR: [{ connectionId }, { connectionId: null }] },
+      data: { isActive: false },
+    })
   } else {
-    db.prepare('UPDATE compliance_profiles SET is_active = 0 WHERE tenant_id = ?').run(tenantId)
-  }
-
-  // Activate the selected one
-  db.prepare('UPDATE compliance_profiles SET is_active = 1 WHERE id = ? AND tenant_id = ?').run(profileId, tenantId)
-}
-
-export function deactivateProfiles(connectionId: string | undefined, tenantId: string): void {
-  const db = getDb()
-  if (connectionId) {
-    db.prepare('UPDATE compliance_profiles SET is_active = 0 WHERE tenant_id = ? AND (connection_id = ? OR connection_id IS NULL)').run(tenantId, connectionId)
-  } else {
-    db.prepare('UPDATE compliance_profiles SET is_active = 0 WHERE tenant_id = ?').run(tenantId)
+    await prisma.complianceProfile.updateMany({
+      where: { tenantId },
+      data: { isActive: false },
+    })
   }
 }
 
-export function getActiveProfile(connectionId: string | undefined, tenantId: string): (ComplianceProfile & { checks: ComplianceProfileCheck[] }) | null {
-  const db = getDb()
-  let profile: ComplianceProfile | undefined
-
+export async function getActiveProfile(connectionId: string | undefined, tenantId: string): Promise<(ComplianceProfile & { checks: ComplianceProfileCheck[] }) | null> {
+  const where: any = { isActive: true, tenantId }
   if (connectionId) {
-    profile = db.prepare(
-      'SELECT * FROM compliance_profiles WHERE is_active = 1 AND tenant_id = ? AND (connection_id = ? OR connection_id IS NULL) LIMIT 1'
-    ).get(tenantId, connectionId) as ComplianceProfile | undefined
-  } else {
-    profile = db.prepare('SELECT * FROM compliance_profiles WHERE is_active = 1 AND tenant_id = ? LIMIT 1').get(tenantId) as ComplianceProfile | undefined
+    where.OR = [{ connectionId }, { connectionId: null }]
   }
-
+  const profile = await prisma.complianceProfile.findFirst({ where })
   if (!profile) return null
-
-  const checks = getProfileChecks(profile.id, tenantId)
-  return { ...profile, checks }
+  const checks = await getProfileChecks(profile.id, tenantId)
+  return { ...rowToProfile(profile), checks }
 }

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { useTranslations } from 'next-intl'
+import { useSearchParams, useRouter } from 'next/navigation'
 import { Box, Card, Tab, Tabs } from '@mui/material'
 
 import { usePageTitle } from '@/contexts/PageTitleContext'
@@ -31,11 +32,34 @@ export default function TemplatesPage() {
   const [wizardOpen, setWizardOpen] = useState(false)
   const [selectedImage, setSelectedImage] = useState<CloudImage | null>(null)
   const [selectedBlueprint, setSelectedBlueprint] = useState<any | null>(null)
+  // Resume mode — set when the user clicks an active deployment in the
+  // navbar TasksDropdown. The wizard reopens at the Progress step bound
+  // to this deployment id and the form fields stay hidden.
+  const [resumeDeploymentId, setResumeDeploymentId] = useState<string | null>(null)
+
+  // Read the resume deployment id from the URL on mount. Cleared from
+  // the URL once consumed so a refresh doesn't reopen the same dialog.
+  const searchParams = useSearchParams()
+  const router = useRouter()
 
   useEffect(() => { setMounted(true) }, [])
 
   useEffect(() => {
-    setPageInfo(t('templates.title'), t('templates.catalogSubtitle'), 'ri-cloud-line')
+    const depId = searchParams?.get('deployment')
+    if (!depId) return
+    setResumeDeploymentId(depId)
+    setSelectedImage(null)
+    setSelectedBlueprint(null)
+    setWizardOpen(true)
+    // Strip the query param so a second mount (back-button) doesn't
+    // trigger another reopen.
+    const url = new URL(window.location.href)
+    url.searchParams.delete('deployment')
+    router.replace(url.pathname + (url.search || ''), { scroll: false })
+  }, [searchParams, router])
+
+  useEffect(() => {
+    setPageInfo(t('templates.title'), t('templates.catalogSubtitle'), 'ri-instance-line')
     return () => setPageInfo('', '', '')
   }, [setPageInfo, t])
 
@@ -56,17 +80,24 @@ export default function TemplatesPage() {
     setWizardOpen(false)
     setSelectedImage(null)
     setSelectedBlueprint(null)
+    setResumeDeploymentId(null)
   }, [])
 
   const handleRetryDeployment = useCallback(async (deployment: any) => {
     const image = deployment.imageSlug ? await resolveImage(deployment.imageSlug) : null
     setSelectedImage(image || null)
 
-    // Build a prefill object from the deployment's saved config
+    // Build a prefill object from the deployment's saved config. Since
+    // step 2.5 the API returns config as a parsed object; tolerate the
+    // legacy string shape for older cached clients.
     let config: any = null
-    try {
-      config = deployment.config ? JSON.parse(deployment.config) : null
-    } catch { /* ignore */ }
+    if (deployment.config) {
+      if (typeof deployment.config === 'string') {
+        try { config = JSON.parse(deployment.config) } catch { /* ignore */ }
+      } else {
+        config = deployment.config
+      }
+    }
 
     setSelectedBlueprint({
       imageSlug: deployment.imageSlug,
@@ -128,6 +159,7 @@ export default function TemplatesPage() {
         onClose={handleWizardClose}
         image={selectedImage}
         prefillBlueprint={selectedBlueprint}
+        resumeDeploymentId={resumeDeploymentId}
       />
     </Box>
   )

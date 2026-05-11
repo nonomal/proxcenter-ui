@@ -10,6 +10,7 @@ import {
   AccordionDetails,
   AccordionSummary,
   Alert,
+  Autocomplete,
   Box,
   Button,
   Chip,
@@ -35,6 +36,9 @@ import {
   Typography,
 } from '@mui/material'
 
+import { COUNTRIES, findCountry } from '@/lib/utils/countries'
+import { CountryFlag } from '@/components/ui/CountryFlag'
+
 export type ConnectionFormData = {
   name: string
   baseUrl: string
@@ -52,6 +56,7 @@ export type ConnectionFormData = {
   latitude: string
   longitude: string
   locationLabel: string
+  country: string // ISO-3166-1 alpha-2
   // SSH fields
   sshEnabled: boolean
   sshPort: number
@@ -91,6 +96,7 @@ const defaultFormData: ConnectionFormData = {
   latitude: '',
   longitude: '',
   locationLabel: '',
+  country: '',
   sshEnabled: false,
   sshPort: 22,
   sshUser: 'root',
@@ -118,6 +124,9 @@ export default function ConnectionDialog({
   const [tokenId, setTokenId] = useState('')
   const [tokenSecret, setTokenSecret] = useState('')
   const [showTokenSecret, setShowTokenSecret] = useState(false)
+  const [pbsFingerprint, setPbsFingerprint] = useState<string | null>(null)
+  const [capturingFingerprint, setCapturingFingerprint] = useState(false)
+  const [fingerprintError, setFingerprintError] = useState<string | null>(null)
   
   // Test SSH
   const [testingSSH, setTestingSSH] = useState(false)
@@ -149,6 +158,7 @@ export default function ConnectionDialog({
           latitude: initialData.latitude != null ? String(initialData.latitude) : '',
           longitude: initialData.longitude != null ? String(initialData.longitude) : '',
           locationLabel: initialData.locationLabel || '',
+          country: ((initialData as any).country || '').toString().toUpperCase(),
         })
       } else {
         setForm({
@@ -161,6 +171,8 @@ export default function ConnectionDialog({
       setTokenId('')
       setTokenSecret('')
       setShowTokenSecret(false)
+      setPbsFingerprint((initialData as any)?.fingerprint ?? null)
+      setFingerprintError(null)
     }
   }, [open, initialData])
 
@@ -168,6 +180,37 @@ export default function ConnectionDialog({
     setForm(prev => ({ ...prev, [field]: value }))
     setError(null)
   }
+
+  // Reverse-geocode lat/lng → country (ISO-2) when user fills the GPS fields
+  // and the country field is still empty. Debounced 800 ms so we don't hammer
+  // Nominatim while the user is typing. The field stays editable — user can
+  // override the auto-detected value at any time.
+  useEffect(() => {
+    if (!open) return
+    const lat = parseFloat(form.latitude)
+    const lng = parseFloat(form.longitude)
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return
+    if (form.country) return
+    const ctrl = new AbortController()
+    const timer = setTimeout(async () => {
+      try {
+        const url = `https://nominatim.openstreetmap.org/reverse?format=json&zoom=3&lat=${lat}&lon=${lng}`
+        const r = await fetch(url, {
+          signal: ctrl.signal,
+          headers: { 'Accept-Language': 'en' },
+        })
+        if (!r.ok) return
+        const j = await r.json()
+        const code = String(j?.address?.country_code || '').toUpperCase()
+        if (code.length === 2 && findCountry(code)) {
+          setForm(prev => prev.country ? prev : { ...prev, country: code })
+        }
+      } catch {
+        // Ignore — user keeps the empty field, can pick manually.
+      }
+    }, 800)
+    return () => { clearTimeout(timer); ctrl.abort() }
+  }, [open, form.latitude, form.longitude, form.country])
 
   const handleSshEnabledChange = (enabled: boolean) => {
     setForm(prev => ({
@@ -194,6 +237,28 @@ export default function ConnectionDialog({
       sshPassword: method === 'password' ? prev.sshPassword : '',
     }))
     setSshTestResult(null)
+  }
+
+  const handleCapturePbsFingerprint = async () => {
+    if (!initialData?.id) return
+    setCapturingFingerprint(true)
+    setFingerprintError(null)
+    try {
+      const res = await fetch(
+        `/api/v1/admin/pbs-connections/${encodeURIComponent(initialData.id)}/fingerprint`,
+        { method: 'POST' },
+      )
+      const j = await res.json()
+      if (!res.ok) {
+        setFingerprintError(j.error || `HTTP ${res.status}`)
+      } else {
+        setPbsFingerprint(j.data?.fingerprint ?? null)
+      }
+    } catch (e: any) {
+      setFingerprintError(e?.message || String(e))
+    } finally {
+      setCapturingFingerprint(false)
+    }
   }
 
   const handleTestSSH = async () => {
@@ -610,6 +675,44 @@ export default function ConnectionDialog({
               }}
             />
 
+            {isPbs && isEdit && initialData?.id && (
+              <Box sx={{ mt: 2, p: 1.5, border: '1px solid', borderColor: 'divider', borderRadius: 1 }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
+                  <i className="ri-fingerprint-line" style={{ fontSize: 16, opacity: 0.7 }} />
+                  <Typography variant="body2" fontWeight={600}>TLS fingerprint (SHA256)</Typography>
+                </Box>
+                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
+                  Required for PVE to trust this PBS when ProxCenter injects a `pbs:` storage. Click Capture to fetch from the server's TLS handshake.
+                </Typography>
+                {pbsFingerprint ? (
+                  <Typography
+                    variant="body2"
+                    sx={{ fontFamily: '"JetBrains Mono", monospace', fontSize: 11, wordBreak: 'break-all', mb: 1 }}
+                  >
+                    {pbsFingerprint}
+                  </Typography>
+                ) : (
+                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
+                    Not captured yet.
+                  </Typography>
+                )}
+                {fingerprintError && (
+                  <Typography variant="caption" color="error" sx={{ display: 'block', mb: 1 }}>
+                    {fingerprintError}
+                  </Typography>
+                )}
+                <Button
+                  size="small"
+                  variant="outlined"
+                  onClick={handleCapturePbsFingerprint}
+                  disabled={capturingFingerprint}
+                  startIcon={<i className="ri-refresh-line" />}
+                >
+                  {capturingFingerprint ? '…' : pbsFingerprint ? 'Re-capture' : 'Capture fingerprint'}
+                </Button>
+              </Box>
+            )}
+
             <Accordion
               disableGutters
               elevation={0}
@@ -958,6 +1061,41 @@ export default function ConnectionDialog({
                 InputProps={{ inputProps: { min: -180, max: 180, step: 'any' } }}
               />
             </Box>
+            <Autocomplete
+              sx={{ mt: 2 }}
+              options={COUNTRIES}
+              getOptionLabel={c => c.name}
+              isOptionEqualToValue={(a, b) => a.code === b.code}
+              value={findCountry(form.country) ?? null}
+              onChange={(_e, v) => handleChange('country', v?.code ?? '')}
+              renderOption={(props, option) => {
+                const { key, ...rest } = props as any
+                return (
+                  <Box component="li" key={option.code} {...rest} sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                    <CountryFlag code={option.code} size={20} />
+                    <span>{option.name}</span>
+                    <Typography component="span" variant="caption" sx={{ ml: 'auto', opacity: 0.5 }}>
+                      {option.code}
+                    </Typography>
+                  </Box>
+                )
+              }}
+              renderInput={params => (
+                <TextField
+                  {...params}
+                  label={t('settings.country')}
+                  placeholder={t('settings.countryPlaceholder')}
+                  InputProps={{
+                    ...params.InputProps,
+                    startAdornment: form.country ? (
+                      <InputAdornment position="start">
+                        <CountryFlag code={form.country} size={20} />
+                      </InputAdornment>
+                    ) : undefined,
+                  }}
+                />
+              )}
+            />
           </>
         )}
       </DialogContent>

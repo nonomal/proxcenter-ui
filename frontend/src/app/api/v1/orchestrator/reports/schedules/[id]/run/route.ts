@@ -2,12 +2,13 @@
 import { NextRequest, NextResponse } from 'next/server'
 
 import { orchestratorFetch } from '@/lib/orchestrator'
-import { getTenantConnectionIds } from '@/lib/tenant'
 import { checkPermission, PERMISSIONS } from '@/lib/rbac'
 
 export const runtime = 'nodejs'
 
-// POST /api/v1/orchestrator/reports/schedules/[id]/run - Run schedule now (tenant-scoped)
+// POST /api/v1/orchestrator/reports/schedules/[id]/run - Run schedule now.
+// Tenant ownership is enforced by the orchestrator (X-Tenant-ID header set
+// by orchestratorFetch returns 404 for cross-tenant ids).
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -17,15 +18,6 @@ export async function POST(
     if (denied) return denied
 
     const { id } = await params
-
-    // Verify schedule belongs to tenant
-    const schedule = await orchestratorFetch(`/reports/schedules/${id}`) as any
-    if (schedule?.connection_id) {
-      const tenantConnectionIds = await getTenantConnectionIds()
-      if (!tenantConnectionIds.has(schedule.connection_id)) {
-        return NextResponse.json({ error: 'Schedule not found' }, { status: 404 })
-      }
-    }
 
     const data = await orchestratorFetch(`/reports/schedules/${id}/run`, {
       method: 'POST'

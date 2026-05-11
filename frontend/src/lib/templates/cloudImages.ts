@@ -27,6 +27,14 @@ export const VENDORS = [
   { id: 'alma', name: 'AlmaLinux', icon: 'ri-centos-fill' },
   { id: 'fedora', name: 'Fedora', icon: 'ri-fedora-fill' },
   { id: 'opensuse', name: 'openSUSE', icon: 'ri-suse-fill' },
+  // The icon strings here are RemixIcon class names used by the vendor
+  // filter chips. Distros without a native RemixIcon glyph (Alpine, Arch)
+  // get a generic cloud icon — VendorLogo (used elsewhere) loads the real
+  // SVG from /images/vendors/ which is always preferred when available.
+  { id: 'alpine', name: 'Alpine Linux', icon: 'ri-cloud-line' },
+  { id: 'arch', name: 'Arch Linux', icon: 'ri-cloud-line' },
+  { id: 'centos', name: 'CentOS Stream', icon: 'ri-centos-fill' },
+  { id: 'freebsd', name: 'FreeBSD', icon: 'ri-server-line' },
 ] as const
 
 export const CLOUD_IMAGES: CloudImage[] = [
@@ -67,6 +75,27 @@ export const CLOUD_IMAGES: CloudImage[] = [
     logoIcon: 'ri-ubuntu-fill',
   },
   {
+    slug: 'debian-13',
+    name: 'Debian 13 (Trixie)',
+    vendor: 'debian',
+    version: '13',
+    arch: 'amd64',
+    format: 'qcow2',
+    // `/latest/` redirects to the freshest point release (e.g. 13.0,
+    // 13.1, …) so the URL stays valid across patch cycles without code
+    // changes — same pattern as bookworm/bullseye below.
+    downloadUrl: 'https://cloud.debian.org/images/cloud/trixie/latest/debian-13-generic-amd64.qcow2',
+    checksumUrl: 'https://cloud.debian.org/images/cloud/trixie/latest/SHA512SUMS',
+    defaultDiskSize: '20G',
+    minMemory: 512,
+    recommendedMemory: 1024,
+    minCores: 1,
+    recommendedCores: 2,
+    ostype: 'l26',
+    tags: ['stable', 'cloud-init', 'popular'],
+    logoIcon: 'ri-debian-fill',
+  },
+  {
     slug: 'debian-12',
     name: 'Debian 12 (Bookworm)',
     vendor: 'debian',
@@ -81,7 +110,7 @@ export const CLOUD_IMAGES: CloudImage[] = [
     minCores: 1,
     recommendedCores: 2,
     ostype: 'l26',
-    tags: ['stable', 'cloud-init', 'popular'],
+    tags: ['oldstable', 'cloud-init'],
     logoIcon: 'ri-debian-fill',
   },
   {
@@ -99,8 +128,30 @@ export const CLOUD_IMAGES: CloudImage[] = [
     minCores: 1,
     recommendedCores: 2,
     ostype: 'l26',
-    tags: ['oldstable', 'cloud-init'],
+    // Bullseye LTS officially ends in August 2026 — keep it for transition
+    // workloads but flag it so users notice it's not the right default.
+    tags: ['oldoldstable', 'cloud-init', 'eol-soon'],
     logoIcon: 'ri-debian-fill',
+  },
+  {
+    slug: 'rocky-10',
+    name: 'Rocky Linux 10',
+    vendor: 'rocky',
+    version: '10',
+    arch: 'x86_64',
+    format: 'qcow2',
+    // `.latest.` is a server-side symlink that always points to the most
+    // recent point release (10.0, 10.1…), same convention as Rocky 9.
+    downloadUrl: 'https://dl.rockylinux.org/pub/rocky/10/images/x86_64/Rocky-10-GenericCloud.latest.x86_64.qcow2',
+    checksumUrl: 'https://dl.rockylinux.org/pub/rocky/10/images/x86_64/CHECKSUM',
+    defaultDiskSize: '20G',
+    minMemory: 1024,
+    recommendedMemory: 2048,
+    minCores: 1,
+    recommendedCores: 2,
+    ostype: 'l26',
+    tags: ['rhel', 'cloud-init', 'enterprise', 'popular'],
+    logoIcon: 'ri-centos-fill',
   },
   {
     slug: 'rocky-9',
@@ -118,6 +169,24 @@ export const CLOUD_IMAGES: CloudImage[] = [
     recommendedCores: 2,
     ostype: 'l26',
     tags: ['rhel', 'cloud-init', 'enterprise'],
+    logoIcon: 'ri-centos-fill',
+  },
+  {
+    slug: 'alma-10',
+    name: 'AlmaLinux 10',
+    vendor: 'alma',
+    version: '10',
+    arch: 'x86_64',
+    format: 'qcow2',
+    downloadUrl: 'https://repo.almalinux.org/almalinux/10/cloud/x86_64/images/AlmaLinux-10-GenericCloud-latest.x86_64.qcow2',
+    checksumUrl: 'https://repo.almalinux.org/almalinux/10/cloud/x86_64/images/CHECKSUM',
+    defaultDiskSize: '20G',
+    minMemory: 1024,
+    recommendedMemory: 2048,
+    minCores: 1,
+    recommendedCores: 2,
+    ostype: 'l26',
+    tags: ['rhel', 'cloud-init', 'enterprise', 'popular'],
     logoIcon: 'ri-centos-fill',
   },
   {
@@ -139,13 +208,56 @@ export const CLOUD_IMAGES: CloudImage[] = [
     logoIcon: 'ri-centos-fill',
   },
   {
-    slug: 'fedora-41',
-    name: 'Fedora 41 Cloud',
-    vendor: 'fedora',
-    version: '41',
+    slug: 'centos-stream-10',
+    name: 'CentOS Stream 10',
+    vendor: 'centos',
+    version: '10-stream',
     arch: 'x86_64',
     format: 'qcow2',
-    downloadUrl: 'https://download.fedoraproject.org/pub/fedora/linux/releases/41/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-41-1.4.x86_64.qcow2',
+    // CentOS Stream is the upstream rolling preview of RHEL — Stream 10
+    // tracks RHEL 10's development cycle. The `-latest.` segment is a
+    // server-side symlink to the freshest build.
+    downloadUrl: 'https://cloud.centos.org/centos/10-stream/x86_64/images/CentOS-Stream-GenericCloud-10-latest.x86_64.qcow2',
+    checksumUrl: 'https://cloud.centos.org/centos/10-stream/x86_64/images/CHECKSUM',
+    defaultDiskSize: '20G',
+    minMemory: 1024,
+    recommendedMemory: 2048,
+    minCores: 1,
+    recommendedCores: 2,
+    ostype: 'l26',
+    tags: ['rhel', 'cloud-init', 'upstream'],
+    logoIcon: 'ri-centos-fill',
+  },
+  {
+    slug: 'centos-stream-9',
+    name: 'CentOS Stream 9',
+    vendor: 'centos',
+    version: '9-stream',
+    arch: 'x86_64',
+    format: 'qcow2',
+    downloadUrl: 'https://cloud.centos.org/centos/9-stream/x86_64/images/CentOS-Stream-GenericCloud-9-latest.x86_64.qcow2',
+    checksumUrl: 'https://cloud.centos.org/centos/9-stream/x86_64/images/CHECKSUM',
+    defaultDiskSize: '20G',
+    minMemory: 1024,
+    recommendedMemory: 2048,
+    minCores: 1,
+    recommendedCores: 2,
+    ostype: 'l26',
+    tags: ['rhel', 'cloud-init', 'upstream'],
+    logoIcon: 'ri-centos-fill',
+  },
+  {
+    slug: 'fedora-43',
+    name: 'Fedora 43 Cloud',
+    vendor: 'fedora',
+    version: '43',
+    arch: 'x86_64',
+    // The minor (build) suffix `-1.1` may need bumping after a respin —
+    // Fedora doesn't expose a stable `latest` symlink, unlike Debian /
+    // Rocky / Alma. Check the directory listing if download 404s:
+    //   https://download.fedoraproject.org/pub/fedora/linux/releases/43/Cloud/x86_64/images/
+    format: 'qcow2',
+    downloadUrl: 'https://download.fedoraproject.org/pub/fedora/linux/releases/43/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-43-1.1.x86_64.qcow2',
     checksumUrl: null,
     defaultDiskSize: '20G',
     minMemory: 1024,
@@ -173,6 +285,50 @@ export const CLOUD_IMAGES: CloudImage[] = [
     ostype: 'l26',
     tags: ['cloud-init', 'enterprise'],
     logoIcon: 'ri-suse-fill',
+  },
+  {
+    slug: 'alpine-321',
+    name: 'Alpine Linux 3.21',
+    vendor: 'alpine',
+    version: '3.21',
+    arch: 'x86_64',
+    format: 'qcow2',
+    // Alpine cloud images live under `/releases/cloud/` — `nocloud_*` is
+    // the variant that pulls cloud-init metadata from local NoCloud
+    // datasource, which is what Proxmox provides via its CD-ROM drive.
+    downloadUrl: 'https://dl-cdn.alpinelinux.org/alpine/v3.21/releases/cloud/nocloud_alpine-3.21.0-x86_64-bios-cloudinit-r0.qcow2',
+    checksumUrl: null,
+    // Alpine is famously minimal — 256 MB is enough for the OS to boot
+    // and run a small workload. Disk default also smaller (5 GB).
+    defaultDiskSize: '5G',
+    minMemory: 256,
+    recommendedMemory: 512,
+    minCores: 1,
+    recommendedCores: 1,
+    ostype: 'l26',
+    tags: ['cloud-init', 'minimal', 'edge'],
+    logoIcon: 'ri-cloud-line',
+  },
+  {
+    slug: 'arch-rolling',
+    name: 'Arch Linux (rolling)',
+    vendor: 'arch',
+    version: 'rolling',
+    arch: 'x86_64',
+    format: 'qcow2',
+    // Arch publishes monthly-rebuilt cloud images under `/images/latest/`
+    // which is a server-side symlink to the most recent monthly snapshot
+    // (e.g. `/images/v20250901/...`). The base URL stays valid forever.
+    downloadUrl: 'https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2',
+    checksumUrl: 'https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2.SHA256',
+    defaultDiskSize: '10G',
+    minMemory: 512,
+    recommendedMemory: 2048,
+    minCores: 1,
+    recommendedCores: 2,
+    ostype: 'l26',
+    tags: ['cloud-init', 'rolling', 'cutting-edge'],
+    logoIcon: 'ri-cloud-line',
   },
 ]
 
@@ -203,7 +359,8 @@ export function customImageToCloudImage(ci: {
   recommendedCores: number
   ostype: string
   tags: string | null
-}): CloudImage & { sourceType: string; volumeId: string | null; isCustom: true } {
+  isShared?: boolean | null
+}): CloudImage & { sourceType: string; volumeId: string | null; isCustom: true; isShared?: boolean } {
   return {
     slug: ci.slug,
     name: ci.name,
@@ -224,5 +381,6 @@ export function customImageToCloudImage(ci: {
     sourceType: ci.sourceType,
     volumeId: ci.volumeId,
     isCustom: true,
+    isShared: !!ci.isShared,
   }
 }

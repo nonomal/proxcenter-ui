@@ -4,6 +4,8 @@ import { pveFetch } from "@/lib/proxmox/client"
 import { getConnectionById } from "@/lib/connections/getConnection"
 import { formatBytes } from "@/utils/format"
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
+import { getCurrentTenantId } from "@/lib/tenant"
+import { getVdcScope } from "@/lib/vdc/scope"
 
 export const runtime = "nodejs"
 
@@ -14,7 +16,10 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
 
     if (!id) return NextResponse.json({ error: "Missing params.id" }, { status: 400 })
 
-    const denied = await checkPermission(PERMISSIONS.STORAGE_VIEW, "connection", id)
+    // connection.view (not storage.view) so tenant admins can see the list.
+    // The endpoint already filters results by vDC scope below, so a tenant
+    // only sees the storages actually assigned to their vDC.
+    const denied = await checkPermission(PERMISSIONS.CONNECTION_VIEW, "connection", id)
     if (denied) return denied
 
     const conn = await getConnectionById(id)
@@ -145,7 +150,46 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
       }
     }
 
-    const result = Array.from(aggregatedMap.values())
+    let result = Array.from(aggregatedMap.values())
+
+    // vDC filtering: restrict to storages assigned to the tenant's vDC.
+    // Drop SHARED storages (ceph, nfs, cifs, …) from tenant views — on a
+    // shared pool, browsing content would leak filenames from every other
+    // tenant sitting on the same backend. Super admin (scope=null) keeps
+    // the full list, since they need to see shared storages to manage them.
+    //
+    // Exception: PVE-PBS storages (type === 'pbs'). They are technically
+    // "shared" (network mount) but isolation between tenants happens at
+    // the namespace level (vdc_pbs_namespaces binding), enforced on the
+    // backup snapshot/file routes. Hiding PBS storages here breaks the VM
+    // backup tab — `loadPveStorages` couldn't find any PVE-PBS bridge to
+    // run the file-restore against.
+    const tenantId = await getCurrentTenantId()
+    const vdcScope = await getVdcScope(tenantId)
+    if (vdcScope) {
+      const allowedStorages = vdcScope.storagesByConnection.get(id)
+      const allowedNodes = vdcScope.nodesByConnection.get(id)
+      if (allowedStorages && allowedNodes) {
+        result = result.filter((s: any) => {
+          if (!allowedStorages.has(s.storage)) return false
+          if (s.shared && s.type !== 'pbs') return false
+          // PBS rows are aggregated cross-node — their `node` field is
+          // arbitrary (first one seen). Match against the full nodes list
+          // and require at least one to be in the tenant's vDC, so a PBS
+          // mounted on any reachable node passes through.
+          if (s.type === 'pbs') {
+            const nodes: string[] = Array.isArray(s.nodes) ? s.nodes : (s.node ? [s.node] : [])
+            return nodes.some(n => allowedNodes.has(n))
+          }
+          // Non-shared storages are per-node — only return rows whose node
+          // is actually authorised in the tenant's vDC. Avoids surfacing
+          // `local` from sibling nodes the tenant can't reach anyway.
+          return s.node && allowedNodes.has(s.node)
+        })
+      } else {
+        result = []
+      }
+    }
 
     // Trier: partagés d'abord, puis par utilisation décroissante
     result.sort((a, b) => {

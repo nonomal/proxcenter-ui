@@ -1,8 +1,8 @@
 export const dynamic = "force-dynamic"
 import { NextRequest, NextResponse } from "next/server"
-import { checkPermission, PERMISSIONS } from "@/lib/rbac"
-import { getTenantUsers, addUserToTenant, removeUserFromTenant, DEFAULT_TENANT_ID } from "@/lib/tenant"
-import { getDb } from "@/lib/db/sqlite"
+import { checkPermission, PERMISSIONS, isUserSuperAdmin } from "@/lib/rbac"
+import { getTenantUsers, addUserToTenant, removeUserFromTenant, TenantMembershipError, requireProviderTenant } from "@/lib/tenant"
+import { prisma } from "@/lib/db/prisma"
 import { audit } from "@/lib/audit"
 import { getServerSession } from "next-auth"
 import { authOptions } from "@/lib/auth/config"
@@ -11,16 +11,20 @@ type Ctx = { params: Promise<{ id: string }> }
 
 // GET /api/v1/tenants/:id/users
 export async function GET(_req: NextRequest, ctx: Ctx) {
+  const providerGate = await requireProviderTenant()
+  if (providerGate) return providerGate
   const denied = await checkPermission(PERMISSIONS.ADMIN_TENANTS)
   if (denied) return denied
 
   const { id } = await ctx.params
-  const users = getTenantUsers(id)
+  const users = await getTenantUsers(id)
   return NextResponse.json({ data: users })
 }
 
 // POST /api/v1/tenants/:id/users — add user to tenant
 export async function POST(req: NextRequest, ctx: Ctx) {
+  const providerGate = await requireProviderTenant()
+  if (providerGate) return providerGate
   const denied = await checkPermission(PERMISSIONS.ADMIN_TENANTS)
   if (denied) return denied
 
@@ -32,24 +36,33 @@ export async function POST(req: NextRequest, ctx: Ctx) {
     return NextResponse.json({ error: "userId is required" }, { status: 400 })
   }
 
-  addUserToTenant(body.userId, id, body.isDefault || false)
+  await addUserToTenant(body.userId, id, body.isDefault || false)
 
-  // Grant a default role in this tenant (role from body, or viewer)
-  const db = getDb()
-  const now = new Date().toISOString()
+  // Grant a default role in this tenant (role from body, or viewer).
+  // Super-admins are excluded: their global role_super_admin already grants
+  // wildcard access in every tenant, so a per-tenant role would either be
+  // misleading (role_viewer chip on a super-admin) or redundant.
   const roleId = body.roleId || 'role_viewer'
   const roleAssignId = `tenant_add_${id}_${body.userId}_${Date.now()}`
 
-  // Only add if user doesn't already have a role in this tenant
-  const existingRole = db.prepare(
-    "SELECT 1 FROM rbac_user_roles WHERE user_id = ? AND tenant_id = ? LIMIT 1"
-  ).get(body.userId, id)
+  const targetIsSuperAdmin = await isUserSuperAdmin(body.userId)
+  const existingRole = await prisma.rbacUserRole.findFirst({
+    where: { userId: body.userId, tenantId: id },
+    select: { id: true },
+  })
 
-  if (!existingRole) {
-    db.prepare(
-      `INSERT INTO rbac_user_roles (id, user_id, role_id, scope_type, tenant_id, granted_by, granted_at)
-       VALUES (?, ?, ?, 'global', ?, ?, ?)`
-    ).run(roleAssignId, body.userId, roleId, id, session?.user?.id || null, now)
+  if (!existingRole && !targetIsSuperAdmin) {
+    await prisma.rbacUserRole.create({
+      data: {
+        id: roleAssignId,
+        userId: body.userId,
+        roleId,
+        scopeType: 'global',
+        tenantId: id,
+        grantedById: session?.user?.id || null,
+        grantedAt: new Date(),
+      },
+    })
   }
 
   await audit({
@@ -68,15 +81,12 @@ export async function POST(req: NextRequest, ctx: Ctx) {
 
 // DELETE /api/v1/tenants/:id/users — remove user from tenant
 export async function DELETE(req: NextRequest, ctx: Ctx) {
+  const providerGate = await requireProviderTenant()
+  if (providerGate) return providerGate
   const denied = await checkPermission(PERMISSIONS.ADMIN_TENANTS)
   if (denied) return denied
 
   const { id } = await ctx.params
-
-  if (id === DEFAULT_TENANT_ID) {
-    return NextResponse.json({ error: "Cannot remove users from the default tenant" }, { status: 400 })
-  }
-
   const body = await req.json()
   const session = await getServerSession(authOptions)
 
@@ -84,7 +94,15 @@ export async function DELETE(req: NextRequest, ctx: Ctx) {
     return NextResponse.json({ error: "userId is required" }, { status: 400 })
   }
 
-  removeUserFromTenant(body.userId, id)
+  try {
+    await removeUserFromTenant(body.userId, id)
+  } catch (e) {
+    if (e instanceof TenantMembershipError) {
+      const status = e.code === "LAST_TENANT" ? 409 : e.code === "SUPER_ADMIN_PROTECTED" ? 403 : 404
+      return NextResponse.json({ error: e.message, code: e.code }, { status })
+    }
+    throw e
+  }
 
   await audit({
     action: "tenant.remove_user",

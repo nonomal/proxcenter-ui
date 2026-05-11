@@ -26,6 +26,8 @@ import {
 import { useTranslations } from 'next-intl'
 
 import { useLocale } from '@/contexts/LocaleContext'
+import { localeCountryCodes } from '@/i18n/config'
+import { CountryFlag } from '@/components/ui/CountryFlag'
 
 // Materio settings hook (theme, mode, etc.)
 import { useSettings } from '@core/hooks/useSettings'
@@ -167,6 +169,10 @@ const NavbarContent = ({ targetLayout } = {}) => {
   const { hasFeature, loading: licenseLoading, status: licenseStatus, isEnterprise } = useLicense()
   const { roles: rbacRoles, hasPermission } = useRBAC()
   const { currentTenant, availableTenants, switchTenant, isMultiTenant } = useTenant()
+  // Provider-only notifications (ProxCenter update, license / node limit
+  // warnings, DRS recommendations) are gated on this flag. Tenant admins
+  // see only the alerts and changes scoped to their own connections.
+  const isProviderTenant = currentTenant?.id === 'default'
 
   // Check if AI feature is available AND enabled in settings
   const [aiEnabled, setAiEnabled] = useState(false)
@@ -203,17 +209,27 @@ const NavbarContent = ({ targetLayout } = {}) => {
   const [notifAnchor, setNotifAnchor] = useState(null)
   const [userAnchor, setUserAnchor] = useState(null)
 
-  // RBAC-based notification visibility
-  const canViewAlerts = hasPermission('alerts.view')
+  // RBAC-based notification visibility. canViewAlerts intentionally uses
+  // connection.view rather than alerts.view: vDC tenants don't carry
+  // alerts.view in their default role but the alerts API now gates on
+  // connection.view and applies tenant + vDC scoping server-side, so they
+  // are entitled to see their own scoped alerts in the bell.
+  const canViewAlerts = hasPermission('connection.view')
   const canViewAdmin = hasPermission('admin.settings')
   const canViewDrs = hasPermission('automation.view')
 
   // SWR hooks for notifications — gated by permissions to avoid unnecessary fetches
   const { data: alertsResponse, mutate: mutateAlerts } = useActiveAlerts(isEnterprise && canViewAlerts)
-  const { data: drsRecsResponse, mutate: mutateDrsRecs } = useDRSRecommendations(isEnterprise && canViewDrs && hasFeature(Features.DRS))
-  const { data: drsSettingsData } = useDRSSettings(isEnterprise && canViewDrs)
+  // DRS placement is a provider concern in MSP/vDC mode (tenants don't pick
+  // nodes and we just hid the migrate UI for them). Don't fetch DRS recs
+  // for tenants — the messages would expose node names and the tenant has
+  // no actionable button anyway.
+  const { data: drsRecsResponse, mutate: mutateDrsRecs } = useDRSRecommendations(isEnterprise && canViewDrs && hasFeature(Features.DRS) && isProviderTenant)
+  const { data: drsSettingsData } = useDRSSettings(isEnterprise && canViewDrs && isProviderTenant)
   const maxPendingRecs = drsSettingsData?.max_pending_recommendations || 10
-  const { data: updateInfoData } = useVersionCheck(3600000)
+  // Version check / GitHub release lookup is provider-only — skip the
+  // hourly round-trip for tenants instead of fetching and then hiding.
+  const { data: updateInfoData } = useVersionCheck(3600000, isProviderTenant)
   const { data: healthData } = useOrchestratorHealth(isEnterprise)
 
   // Derive notifications from SWR data
@@ -246,8 +262,14 @@ const NavbarContent = ({ targetLayout } = {}) => {
 
   const updateInfo = updateInfoData || null
 
-  // License expiration notification (admin only)
-  const licenseExpirationNotif = canViewAdmin && licenseStatus?.licensed &&
+  // License / version notifications are provider-scoped: they describe the
+  // ProxCenter installation as a whole (license seat usage, software
+  // version), not anything the tenant owns. canViewAdmin alone isn't
+  // enough — a tenant admin still has admin.settings on their own scope
+  // but must not see the global health of the platform.
+
+  // License expiration notification (provider only)
+  const licenseExpirationNotif = isProviderTenant && canViewAdmin && licenseStatus?.licensed &&
     licenseStatus?.expiration_warn &&
     licenseStatus?.days_remaining > 0 ? {
       id: 'license-expiration',
@@ -257,8 +279,8 @@ const NavbarContent = ({ targetLayout } = {}) => {
       isLicenseNotif: true
     } : null
 
-  // Node limit exceeded notification (admin only)
-  const nodeLimitNotif = canViewAdmin && licenseStatus?.node_status?.exceeded ? {
+  // Node limit exceeded notification (provider only)
+  const nodeLimitNotif = isProviderTenant && canViewAdmin && licenseStatus?.node_status?.exceeded ? {
     id: 'node-limit-exceeded',
     message: t('license.nodeLimitExceeded', {
       current: licenseStatus.node_status.current_nodes,
@@ -269,8 +291,8 @@ const NavbarContent = ({ targetLayout } = {}) => {
     isNodeLimitNotif: true
   } : null
 
-  // Update available notification (admin only)
-  const updateNotif = canViewAdmin && updateInfo?.updateAvailable ? {
+  // Update available notification (provider only)
+  const updateNotif = isProviderTenant && canViewAdmin && updateInfo?.updateAvailable ? {
     id: 'version-update',
     message: t('about.newVersionAvailable', { version: updateInfo.latestVersion }),
     severity: 'info',
@@ -707,7 +729,7 @@ return () => window.removeEventListener('keydown', onKeyDown)
             selected={locale === loc}
           >
             <ListItemIcon sx={{ minWidth: 'auto', mr: 2 }}>
-              <span style={{ fontSize: '1.2rem' }}>{localeFlags[loc]}</span>
+              <CountryFlag code={localeCountryCodes[loc]} size={22} />
             </ListItemIcon>
             {t(`languages.${loc}`)}
           </MenuItem>

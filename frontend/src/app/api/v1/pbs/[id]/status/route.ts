@@ -2,8 +2,9 @@ import { NextResponse } from "next/server"
 
 import { demoResponse } from "@/lib/demo/demo-api"
 import { pbsFetch } from "@/lib/proxmox/pbs-client"
-import { getPbsConnectionById } from "@/lib/connections/getConnection"
+import { getPbsConnectionById, getPbsConnectionByIdUnscoped } from "@/lib/connections/getConnection"
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
+import { assertVdcPbsAccess } from "@/lib/vdc/scope"
 
 export const runtime = "nodejs"
 
@@ -20,7 +21,12 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> |
     const denied = await checkPermission(PERMISSIONS.BACKUP_VIEW, "pbs", id)
     if (denied) return denied
 
-    const conn = await getPbsConnectionById(id)
+    const access = await assertVdcPbsAccess(id)
+    if (access instanceof Response) return access
+
+    const conn = access.kind === 'admin'
+      ? await getPbsConnectionById(id)
+      : await getPbsConnectionByIdUnscoped(id)
 
     // First verify authentication (will throw on 401/403)
     const version = await pbsFetch<any>(conn, "/version")
@@ -31,19 +37,29 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> |
       pbsFetch<any[]>(conn, "/admin/datastore").catch(() => []),
     ])
 
+    // For vDC tenants, only count datastores they have a binding on.
+    const allowedDatastores = access.kind === 'tenant'
+      ? new Set(access.allowed.map(a => a.datastore))
+      : null
+    const visibleDatastores = (datastores || []).filter((ds: any) => {
+      if (!allowedDatastores) return true
+      const name = ds.store || ds.name
+      return name && allowedDatastores.has(name)
+    })
+
     // Récupérer les stats de chaque datastore en parallèle
     let totalSize = 0
     let totalUsed = 0
 
-    const datastoreStatsPromises = (datastores || []).map(async (ds) => {
+    const datastoreStatsPromises = visibleDatastores.map(async (ds) => {
       const storeName = ds.store || ds.name
 
       if (!storeName) return null
-      
+
       try {
         const dsStatus = await pbsFetch<any>(conn, `/admin/datastore/${encodeURIComponent(storeName)}/status`)
 
-        
+
 return {
           name: storeName,
           total: dsStatus?.total || 0,
@@ -56,7 +72,7 @@ return {
     })
 
     const datastoreStats = await Promise.all(datastoreStatsPromises)
-    
+
     for (const ds of datastoreStats) {
       if (ds) {
         totalSize += ds.total
@@ -77,7 +93,7 @@ return {
         ksmsharing: status?.ksmsharing || null,
 
         // Stats calculées
-        datastoreCount: datastores?.length || 0,
+        datastoreCount: visibleDatastores.length,
         totalSize,
         totalUsed,
         usagePercent: totalSize > 0 ? Math.round((totalUsed / totalSize) * 100) : 0,

@@ -2,6 +2,13 @@
 
 import { createContext, useContext, useEffect, useState, useCallback, type ReactNode } from 'react'
 
+import { useSession } from 'next-auth/react'
+
+export interface BrandingHighlight {
+  icon: string
+  text: string
+}
+
 export interface BrandingConfig {
   enabled: boolean
   appName: string
@@ -16,6 +23,12 @@ export interface BrandingConfig {
   showWhatsNew: boolean
   showAbout: boolean
   showSubscription: boolean
+  loginTagline: string
+  loginHighlights: BrandingHighlight[]
+  docsUrl: string
+  supportUrl: string
+  changelogUrl: string
+  hideVersion: boolean
 }
 
 const DEFAULT_BRANDING: BrandingConfig = {
@@ -32,6 +45,12 @@ const DEFAULT_BRANDING: BrandingConfig = {
   showWhatsNew: true,
   showAbout: true,
   showSubscription: true,
+  loginTagline: '',
+  loginHighlights: [],
+  docsUrl: '',
+  supportUrl: '',
+  changelogUrl: '',
+  hideVersion: false,
 }
 
 interface BrandingContextValue {
@@ -49,6 +68,15 @@ const BrandingContext = createContext<BrandingContextValue>({
 export function BrandingProvider({ children }: { children: ReactNode }) {
   const [branding, setBranding] = useState<BrandingConfig>(DEFAULT_BRANDING)
   const [loading, setLoading] = useState(true)
+  // The branding API resolves the tenant from the session JWT
+  // (getCurrentTenantId on the server). Tracking session here lets us
+  // refetch when login/logout or tenant-switch changes the answer — without
+  // this, the provider mounts once at app boot (in the root layout) with
+  // an empty session, caches the default-tenant branding, and the only way
+  // to pick up the tenant's white-label is a hard reload.
+  const { data: session, status } = useSession()
+  const sessionUserId = (session as any)?.user?.id || null
+  const sessionTenantId = (session as any)?.user?.tenantId || null
 
   const fetchBranding = useCallback(async () => {
     try {
@@ -66,9 +94,14 @@ export function BrandingProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
+  // Initial fetch + refetch on session identity change. `status` flips to
+  // 'authenticated' / 'unauthenticated' once NextAuth has resolved, and
+  // sessionUserId / sessionTenantId change on login, logout, or tenant
+  // switch — all three cases want a fresh branding payload.
   useEffect(() => {
+    if (status === 'loading') return
     fetchBranding()
-  }, [fetchBranding])
+  }, [fetchBranding, status, sessionUserId, sessionTenantId])
 
   // Update favicon dynamically
   useEffect(() => {

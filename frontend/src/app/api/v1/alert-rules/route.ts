@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto'
 
 import { NextResponse } from 'next/server'
 
-import { getDb } from '@/lib/db/sqlite'
+import { prisma } from '@/lib/db/prisma'
 import { getCurrentTenantId } from '@/lib/tenant'
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
 
@@ -39,41 +39,25 @@ export const SCOPE_TYPES = {
   'vm': { label: 'VM spécifique' },
 } as const
 
-type AlertRule = {
-  id: string
-  name: string
-  description: string | null
-  enabled: number
-  metric: string
-  operator: string
-  threshold: number
-  duration: number
-  severity: string
-  scope_type: string
-  scope_target: string | null
-  created_at: string
-  updated_at: string
-}
-
 // GET - Liste des règles
 export async function GET() {
   try {
     const denied = await checkPermission(PERMISSIONS.ALERTS_VIEW)
     if (denied) return denied
 
-    const db = getDb()
     const tenantId = await getCurrentTenantId()
 
-    const rules = db.prepare(`
-      SELECT * FROM alert_rules WHERE tenant_id = ? ORDER BY created_at DESC
-    `).all(tenantId) as AlertRule[]
+    const rules = await prisma.alertRule.findMany({
+      where: { tenantId },
+      orderBy: { createdAt: 'desc' },
+    })
 
     // Transformer pour le frontend
     const formattedRules = rules.map(rule => ({
       id: rule.id,
       name: rule.name,
       description: rule.description,
-      enabled: rule.enabled === 1,
+      enabled: rule.enabled,
       metric: rule.metric,
       metricLabel: METRIC_TYPES[rule.metric as keyof typeof METRIC_TYPES]?.label || rule.metric,
       operator: rule.operator,
@@ -81,13 +65,13 @@ export async function GET() {
       threshold: rule.threshold,
       duration: rule.duration,
       severity: rule.severity,
-      scopeType: rule.scope_type,
-      scopeTarget: rule.scope_target,
-      createdAt: rule.created_at,
-      updatedAt: rule.updated_at,
+      scopeType: rule.scopeType,
+      scopeTarget: rule.scopeTarget,
+      createdAt: rule.createdAt.toISOString(),
+      updatedAt: rule.updatedAt.toISOString(),
     }))
 
-    return NextResponse.json({ 
+    return NextResponse.json({
       data: formattedRules,
       meta: {
         metrics: METRIC_TYPES,
@@ -98,7 +82,7 @@ export async function GET() {
     })
   } catch (error: any) {
     console.error('Erreur GET alert-rules:', error)
-    
+
 return NextResponse.json(
       { error: error?.message || 'Erreur serveur' },
       { status: 500 }
@@ -136,38 +120,36 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Sévérité invalide' }, { status: 400 })
     }
 
-    const db = getDb()
     const tenantId = await getCurrentTenantId()
     const id = randomUUID()
-    const now = new Date().toISOString()
+    const now = new Date()
 
-    db.prepare(`
-      INSERT INTO alert_rules (id, tenant_id, name, description, enabled, metric, operator, threshold, duration, severity, scope_type, scope_target, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      id,
-      tenantId,
-      name.trim(),
-      description?.trim() || null,
-      enabled !== false ? 1 : 0,
-      metric,
-      operator,
-      Number(threshold),
-      Number(duration) || 0,
-      severity,
-      scopeType || 'all',
-      scopeTarget?.trim() || null,
-      now,
-      now
-    )
+    await prisma.alertRule.create({
+      data: {
+        id,
+        tenantId,
+        name: name.trim(),
+        description: description?.trim() || null,
+        enabled: enabled !== false,
+        metric,
+        operator,
+        threshold: Number(threshold),
+        duration: Number(duration) || 0,
+        severity,
+        scopeType: scopeType || 'all',
+        scopeTarget: scopeTarget?.trim() || null,
+        createdAt: now,
+        updatedAt: now,
+      },
+    })
 
-    return NextResponse.json({ 
+    return NextResponse.json({
       data: { id },
       message: 'Règle créée avec succès'
     }, { status: 201 })
   } catch (error: any) {
     console.error('Erreur POST alert-rules:', error)
-    
+
 return NextResponse.json(
       { error: error?.message || 'Erreur serveur' },
       { status: 500 }

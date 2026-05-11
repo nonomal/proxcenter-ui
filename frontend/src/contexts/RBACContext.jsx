@@ -37,14 +37,14 @@ export function RBACProvider({ children }) {
       setRoles([])
       setIsAdmin(false)
       setLoading(false)
-      
+
 return
     }
 
     try {
       const res = await fetch('/api/v1/rbac/effective')
       const json = await res.json()
-      
+
       if (json.data) {
         setPermissions(json.data.permissions || [])
         setRoles(json.data.roles || [])
@@ -64,7 +64,7 @@ return
   // Vérifier si l'utilisateur a une permission spécifique
   const hasPermission = useCallback((permission) => {
     if (isAdmin) return true
-    
+
 return permissions.includes(permission)
   }, [permissions, isAdmin])
 
@@ -72,7 +72,7 @@ return permissions.includes(permission)
   const hasAnyPermission = useCallback((perms) => {
     if (isAdmin) return true
     if (!perms || perms.length === 0) return true
-    
+
 return perms.some(p => permissions.includes(p))
   }, [permissions, isAdmin])
 
@@ -80,7 +80,7 @@ return perms.some(p => permissions.includes(p))
   const hasAllPermissions = useCallback((perms) => {
     if (isAdmin) return true
     if (!perms || perms.length === 0) return true
-    
+
 return perms.every(p => permissions.includes(p))
   }, [permissions, isAdmin])
 
@@ -110,10 +110,10 @@ export function useRBAC() {
  */
 export function useMenuPermission(requiredPermissions) {
   const { hasAnyPermission, loading } = useRBAC()
-  
+
   if (loading) return true // Afficher pendant le chargement
   if (!requiredPermissions || requiredPermissions.length === 0) return true
-  
+
   return hasAnyPermission(requiredPermissions)
 }
 
