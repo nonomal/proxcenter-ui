@@ -139,10 +139,30 @@
         "createdAt": "2026-02-15T10:00:00.000Z",
         "updatedAt": "2026-02-15T10:00:00.000Z",
         "hosts": [
-          { "id": "demo-dr-host-01", "node": "pve-dr-01", "ip": "10.20.20.1", "enabled": true },
-          { "id": "demo-dr-host-02", "node": "pve-dr-02", "ip": "10.20.20.2", "enabled": true },
-          { "id": "demo-dr-host-03", "node": "pve-dr-03", "ip": "10.20.20.3", "enabled": true },
-          { "id": "demo-dr-host-04", "node": "pve-dr-04", "ip": "10.20.20.4", "enabled": true }
+          {
+            "id": "demo-dr-host-01",
+            "node": "pve-dr-01",
+            "ip": "10.20.20.1",
+            "enabled": true
+          },
+          {
+            "id": "demo-dr-host-02",
+            "node": "pve-dr-02",
+            "ip": "10.20.20.2",
+            "enabled": true
+          },
+          {
+            "id": "demo-dr-host-03",
+            "node": "pve-dr-03",
+            "ip": "10.20.20.3",
+            "enabled": true
+          },
+          {
+            "id": "demo-dr-host-04",
+            "node": "pve-dr-04",
+            "ip": "10.20.20.4",
+            "enabled": true
+          }
         ],
         "sshConfigured": false,
         "sshKeyConfigured": false,
@@ -26902,5 +26922,1661 @@
         "vmid": 4001
       }
     ]
+  },
+  "/api/v1/admin/vdcs": {
+    "data": [
+      {
+        "id": "demo-vdc-acme-prod",
+        "tenantId": "demo-tenant-acme",
+        "tenantName": "Acme Corporation",
+        "connectionId": "demo-pve-cluster-001",
+        "name": "Acme Production",
+        "slug": "acme-prod",
+        "description": "Acme primary production vDC",
+        "pvePoolName": "vdc-acme-acme-prod",
+        "sdnZoneName": "acmeprod",
+        "primaryStorage": "ceph-block",
+        "enabled": true,
+        "createdBy": "demo-user",
+        "createdAt": "2026-01-15T08:00:00.000Z",
+        "updatedAt": "2026-04-22T14:30:00.000Z",
+        "nodes": [
+          "pve-node-01",
+          "pve-node-02",
+          "pve-node-03"
+        ],
+        "storages": [
+          "ceph-block",
+          "pbs:demo-pbs-paris-001"
+        ],
+        "quota": {
+          "maxVcpus": 64,
+          "maxRamMb": 262144,
+          "maxStorageMb": 4194304,
+          "maxVms": 50,
+          "maxSnapshots": 200,
+          "maxBackups": 500,
+          "maxVnets": 8
+        },
+        "usage": {
+          "usedVcpus": 46,
+          "usedRamMb": 152115,
+          "usedStorageMb": 2516582,
+          "usedVms": 28,
+          "usedSnapshots": 87,
+          "usedBackups": 312,
+          "lastSyncedAt": "2026-05-11T07:45:00.000Z"
+        },
+        "sharedBridges": [
+          {
+            "id": "demo-br-acme-1",
+            "vdcId": "demo-vdc-acme-prod",
+            "bridge": "vmbr0",
+            "label": "Public uplink",
+            "createdAt": "2026-01-15T08:00:00.000Z"
+          }
+        ],
+        "vnets": [],
+        "pbsBindings": [
+          {
+            "id": "demo-pbs-bind-acme-1",
+            "vdcId": "demo-vdc-acme-prod",
+            "pbsConnectionId": "demo-pbs-paris-001",
+            "pbsConnectionName": "Paris North 1 PBS",
+            "datastore": "main",
+            "namespace": "tenants/acme",
+            "mode": "auto",
+            "createdAt": "2026-01-15T08:00:00.000Z"
+          }
+        ]
+      },
+      {
+        "id": "demo-vdc-acme-dr",
+        "tenantId": "demo-tenant-acme",
+        "tenantName": "Acme Corporation",
+        "connectionId": "demo-pve-cluster-001",
+        "name": "Acme Disaster Recovery",
+        "slug": "acme-dr",
+        "description": "Acme DR replica vDC",
+        "pvePoolName": "vdc-acme-acme-dr",
+        "sdnZoneName": "acmedr",
+        "primaryStorage": "ceph-block",
+        "enabled": true,
+        "createdBy": "demo-user",
+        "createdAt": "2026-02-01T09:00:00.000Z",
+        "updatedAt": "2026-05-01T11:20:00.000Z",
+        "nodes": [
+          "pve-node-04",
+          "pve-node-05"
+        ],
+        "storages": [
+          "ceph-block",
+          "pbs:demo-pbs-frankfurt-001"
+        ],
+        "quota": {
+          "maxVcpus": 32,
+          "maxRamMb": 131072,
+          "maxStorageMb": 2097152,
+          "maxVms": 25,
+          "maxSnapshots": 100,
+          "maxBackups": 200,
+          "maxVnets": 4
+        },
+        "usage": {
+          "usedVcpus": 18,
+          "usedRamMb": 73728,
+          "usedStorageMb": 943718,
+          "usedVms": 14,
+          "usedSnapshots": 42,
+          "usedBackups": 89,
+          "lastSyncedAt": "2026-05-11T07:45:00.000Z"
+        },
+        "sharedBridges": [],
+        "vnets": [],
+        "pbsBindings": [
+          {
+            "id": "demo-pbs-bind-acme-dr",
+            "vdcId": "demo-vdc-acme-dr",
+            "pbsConnectionId": "demo-pbs-frankfurt-001",
+            "pbsConnectionName": "Frankfurt East 1 PBS",
+            "datastore": "main",
+            "namespace": "tenants/acme-dr",
+            "mode": "auto",
+            "createdAt": "2026-02-01T09:00:00.000Z"
+          }
+        ]
+      },
+      {
+        "id": "demo-vdc-globex-prod",
+        "tenantId": "demo-tenant-globex",
+        "tenantName": "Globex SAS",
+        "connectionId": "demo-pve-cluster-001",
+        "name": "Globex Production",
+        "slug": "globex-prod",
+        "description": "Globex primary vDC",
+        "pvePoolName": "vdc-globex-globex-prod",
+        "sdnZoneName": "globexprod",
+        "primaryStorage": "ceph-block",
+        "enabled": true,
+        "createdBy": "demo-user",
+        "createdAt": "2026-03-10T10:30:00.000Z",
+        "updatedAt": "2026-05-08T16:45:00.000Z",
+        "nodes": [
+          "pve-node-01",
+          "pve-node-02"
+        ],
+        "storages": [
+          "ceph-block",
+          "pbs:demo-pbs-paris-001"
+        ],
+        "quota": {
+          "maxVcpus": 32,
+          "maxRamMb": 131072,
+          "maxStorageMb": 2097152,
+          "maxVms": 30,
+          "maxSnapshots": 120,
+          "maxBackups": 250,
+          "maxVnets": 4
+        },
+        "usage": {
+          "usedVcpus": 22,
+          "usedRamMb": 88473,
+          "usedStorageMb": 1258291,
+          "usedVms": 19,
+          "usedSnapshots": 56,
+          "usedBackups": 134,
+          "lastSyncedAt": "2026-05-11T07:45:00.000Z"
+        },
+        "sharedBridges": [
+          {
+            "id": "demo-br-globex-1",
+            "vdcId": "demo-vdc-globex-prod",
+            "bridge": "vmbr0",
+            "label": "Public uplink",
+            "createdAt": "2026-03-10T10:30:00.000Z"
+          }
+        ],
+        "vnets": [],
+        "pbsBindings": [
+          {
+            "id": "demo-pbs-bind-globex",
+            "vdcId": "demo-vdc-globex-prod",
+            "pbsConnectionId": "demo-pbs-paris-001",
+            "pbsConnectionName": "Paris North 1 PBS",
+            "datastore": "main",
+            "namespace": "tenants/globex",
+            "mode": "auto",
+            "createdAt": "2026-03-10T10:30:00.000Z"
+          }
+        ]
+      },
+      {
+        "id": "demo-vdc-initech-prod",
+        "tenantId": "demo-tenant-initech",
+        "tenantName": "Initech",
+        "connectionId": "demo-pve-cluster-001",
+        "name": "Initech Production",
+        "slug": "initech-prod",
+        "description": "Initech primary vDC",
+        "pvePoolName": "vdc-initech-initech-prod",
+        "sdnZoneName": "initechprod",
+        "primaryStorage": "ceph-block",
+        "enabled": true,
+        "createdBy": "demo-user",
+        "createdAt": "2026-04-02T13:00:00.000Z",
+        "updatedAt": "2026-05-10T09:15:00.000Z",
+        "nodes": [
+          "pve-node-04",
+          "pve-node-05"
+        ],
+        "storages": [
+          "ceph-block",
+          "pbs:demo-pbs-frankfurt-001"
+        ],
+        "quota": {
+          "maxVcpus": 16,
+          "maxRamMb": 65536,
+          "maxStorageMb": 1048576,
+          "maxVms": 15,
+          "maxSnapshots": 60,
+          "maxBackups": 120,
+          "maxVnets": 2
+        },
+        "usage": {
+          "usedVcpus": 11,
+          "usedRamMb": 41943,
+          "usedStorageMb": 524288,
+          "usedVms": 9,
+          "usedSnapshots": 21,
+          "usedBackups": 48,
+          "lastSyncedAt": "2026-05-11T07:45:00.000Z"
+        },
+        "sharedBridges": [],
+        "vnets": [],
+        "pbsBindings": [
+          {
+            "id": "demo-pbs-bind-initech",
+            "vdcId": "demo-vdc-initech-prod",
+            "pbsConnectionId": "demo-pbs-frankfurt-001",
+            "pbsConnectionName": "Frankfurt East 1 PBS",
+            "datastore": "main",
+            "namespace": "tenants/initech",
+            "mode": "auto",
+            "createdAt": "2026-04-02T13:00:00.000Z"
+          }
+        ]
+      }
+    ]
+  },
+  "/api/v1/admin/vdcs/demo-vdc-acme-prod": {
+    "data": {
+      "id": "demo-vdc-acme-prod",
+      "tenantId": "demo-tenant-acme",
+      "tenantName": "Acme Corporation",
+      "connectionId": "demo-pve-cluster-001",
+      "name": "Acme Production",
+      "slug": "acme-prod",
+      "description": "Acme primary production vDC",
+      "pvePoolName": "vdc-acme-acme-prod",
+      "sdnZoneName": "acmeprod",
+      "primaryStorage": "ceph-block",
+      "enabled": true,
+      "createdBy": "demo-user",
+      "createdAt": "2026-01-15T08:00:00.000Z",
+      "updatedAt": "2026-04-22T14:30:00.000Z",
+      "nodes": [
+        "pve-node-01",
+        "pve-node-02",
+        "pve-node-03"
+      ],
+      "storages": [
+        "ceph-block",
+        "pbs:demo-pbs-paris-001"
+      ],
+      "quota": {
+        "maxVcpus": 64,
+        "maxRamMb": 262144,
+        "maxStorageMb": 4194304,
+        "maxVms": 50,
+        "maxSnapshots": 200,
+        "maxBackups": 500,
+        "maxVnets": 8
+      },
+      "usage": {
+        "usedVcpus": 46,
+        "usedRamMb": 152115,
+        "usedStorageMb": 2516582,
+        "usedVms": 28,
+        "usedSnapshots": 87,
+        "usedBackups": 312,
+        "lastSyncedAt": "2026-05-11T07:45:00.000Z"
+      },
+      "sharedBridges": [
+        {
+          "id": "demo-br-acme-1",
+          "vdcId": "demo-vdc-acme-prod",
+          "bridge": "vmbr0",
+          "label": "Public uplink",
+          "createdAt": "2026-01-15T08:00:00.000Z"
+        }
+      ],
+      "vnets": [],
+      "pbsBindings": [
+        {
+          "id": "demo-pbs-bind-acme-1",
+          "vdcId": "demo-vdc-acme-prod",
+          "pbsConnectionId": "demo-pbs-paris-001",
+          "pbsConnectionName": "Paris North 1 PBS",
+          "datastore": "main",
+          "namespace": "tenants/acme",
+          "mode": "auto",
+          "createdAt": "2026-01-15T08:00:00.000Z"
+        }
+      ]
+    }
+  },
+  "/api/v1/admin/vdcs/demo-vdc-acme-dr": {
+    "data": {
+      "id": "demo-vdc-acme-dr",
+      "tenantId": "demo-tenant-acme",
+      "tenantName": "Acme Corporation",
+      "connectionId": "demo-pve-cluster-001",
+      "name": "Acme Disaster Recovery",
+      "slug": "acme-dr",
+      "description": "Acme DR replica vDC",
+      "pvePoolName": "vdc-acme-acme-dr",
+      "sdnZoneName": "acmedr",
+      "primaryStorage": "ceph-block",
+      "enabled": true,
+      "createdBy": "demo-user",
+      "createdAt": "2026-02-01T09:00:00.000Z",
+      "updatedAt": "2026-05-01T11:20:00.000Z",
+      "nodes": [
+        "pve-node-04",
+        "pve-node-05"
+      ],
+      "storages": [
+        "ceph-block",
+        "pbs:demo-pbs-frankfurt-001"
+      ],
+      "quota": {
+        "maxVcpus": 32,
+        "maxRamMb": 131072,
+        "maxStorageMb": 2097152,
+        "maxVms": 25,
+        "maxSnapshots": 100,
+        "maxBackups": 200,
+        "maxVnets": 4
+      },
+      "usage": {
+        "usedVcpus": 18,
+        "usedRamMb": 73728,
+        "usedStorageMb": 943718,
+        "usedVms": 14,
+        "usedSnapshots": 42,
+        "usedBackups": 89,
+        "lastSyncedAt": "2026-05-11T07:45:00.000Z"
+      },
+      "sharedBridges": [],
+      "vnets": [],
+      "pbsBindings": [
+        {
+          "id": "demo-pbs-bind-acme-dr",
+          "vdcId": "demo-vdc-acme-dr",
+          "pbsConnectionId": "demo-pbs-frankfurt-001",
+          "pbsConnectionName": "Frankfurt East 1 PBS",
+          "datastore": "main",
+          "namespace": "tenants/acme-dr",
+          "mode": "auto",
+          "createdAt": "2026-02-01T09:00:00.000Z"
+        }
+      ]
+    }
+  },
+  "/api/v1/admin/vdcs/demo-vdc-globex-prod": {
+    "data": {
+      "id": "demo-vdc-globex-prod",
+      "tenantId": "demo-tenant-globex",
+      "tenantName": "Globex SAS",
+      "connectionId": "demo-pve-cluster-001",
+      "name": "Globex Production",
+      "slug": "globex-prod",
+      "description": "Globex primary vDC",
+      "pvePoolName": "vdc-globex-globex-prod",
+      "sdnZoneName": "globexprod",
+      "primaryStorage": "ceph-block",
+      "enabled": true,
+      "createdBy": "demo-user",
+      "createdAt": "2026-03-10T10:30:00.000Z",
+      "updatedAt": "2026-05-08T16:45:00.000Z",
+      "nodes": [
+        "pve-node-01",
+        "pve-node-02"
+      ],
+      "storages": [
+        "ceph-block",
+        "pbs:demo-pbs-paris-001"
+      ],
+      "quota": {
+        "maxVcpus": 32,
+        "maxRamMb": 131072,
+        "maxStorageMb": 2097152,
+        "maxVms": 30,
+        "maxSnapshots": 120,
+        "maxBackups": 250,
+        "maxVnets": 4
+      },
+      "usage": {
+        "usedVcpus": 22,
+        "usedRamMb": 88473,
+        "usedStorageMb": 1258291,
+        "usedVms": 19,
+        "usedSnapshots": 56,
+        "usedBackups": 134,
+        "lastSyncedAt": "2026-05-11T07:45:00.000Z"
+      },
+      "sharedBridges": [
+        {
+          "id": "demo-br-globex-1",
+          "vdcId": "demo-vdc-globex-prod",
+          "bridge": "vmbr0",
+          "label": "Public uplink",
+          "createdAt": "2026-03-10T10:30:00.000Z"
+        }
+      ],
+      "vnets": [],
+      "pbsBindings": [
+        {
+          "id": "demo-pbs-bind-globex",
+          "vdcId": "demo-vdc-globex-prod",
+          "pbsConnectionId": "demo-pbs-paris-001",
+          "pbsConnectionName": "Paris North 1 PBS",
+          "datastore": "main",
+          "namespace": "tenants/globex",
+          "mode": "auto",
+          "createdAt": "2026-03-10T10:30:00.000Z"
+        }
+      ]
+    }
+  },
+  "/api/v1/admin/vdcs/demo-vdc-initech-prod": {
+    "data": {
+      "id": "demo-vdc-initech-prod",
+      "tenantId": "demo-tenant-initech",
+      "tenantName": "Initech",
+      "connectionId": "demo-pve-cluster-001",
+      "name": "Initech Production",
+      "slug": "initech-prod",
+      "description": "Initech primary vDC",
+      "pvePoolName": "vdc-initech-initech-prod",
+      "sdnZoneName": "initechprod",
+      "primaryStorage": "ceph-block",
+      "enabled": true,
+      "createdBy": "demo-user",
+      "createdAt": "2026-04-02T13:00:00.000Z",
+      "updatedAt": "2026-05-10T09:15:00.000Z",
+      "nodes": [
+        "pve-node-04",
+        "pve-node-05"
+      ],
+      "storages": [
+        "ceph-block",
+        "pbs:demo-pbs-frankfurt-001"
+      ],
+      "quota": {
+        "maxVcpus": 16,
+        "maxRamMb": 65536,
+        "maxStorageMb": 1048576,
+        "maxVms": 15,
+        "maxSnapshots": 60,
+        "maxBackups": 120,
+        "maxVnets": 2
+      },
+      "usage": {
+        "usedVcpus": 11,
+        "usedRamMb": 41943,
+        "usedStorageMb": 524288,
+        "usedVms": 9,
+        "usedSnapshots": 21,
+        "usedBackups": 48,
+        "lastSyncedAt": "2026-05-11T07:45:00.000Z"
+      },
+      "sharedBridges": [],
+      "vnets": [],
+      "pbsBindings": [
+        {
+          "id": "demo-pbs-bind-initech",
+          "vdcId": "demo-vdc-initech-prod",
+          "pbsConnectionId": "demo-pbs-frankfurt-001",
+          "pbsConnectionName": "Frankfurt East 1 PBS",
+          "datastore": "main",
+          "namespace": "tenants/initech",
+          "mode": "auto",
+          "createdAt": "2026-04-02T13:00:00.000Z"
+        }
+      ]
+    }
+  },
+  "/api/v1/admin/vdcs/demo-vdc-acme-prod/usage": {
+    "data": {
+      "quota": {
+        "maxVcpus": 64,
+        "maxRamMb": 262144,
+        "maxStorageMb": 4194304,
+        "maxVms": 50,
+        "maxSnapshots": 200,
+        "maxBackups": 500,
+        "maxVnets": 8
+      },
+      "usage": {
+        "usedVcpus": 46,
+        "usedRamMb": 152115,
+        "usedStorageMb": 2516582,
+        "usedVms": 28,
+        "usedSnapshots": 87,
+        "usedBackups": 312,
+        "lastSyncedAt": "2026-05-11T07:45:00.000Z"
+      }
+    }
+  },
+  "/api/v1/admin/vdcs/demo-vdc-acme-prod/pbs-bindings": {
+    "data": [
+      {
+        "id": "demo-pbs-bind-acme-1",
+        "vdcId": "demo-vdc-acme-prod",
+        "pbsConnectionId": "demo-pbs-paris-001",
+        "datastore": "main",
+        "namespace": "tenants/acme",
+        "mode": "auto",
+        "pbsTokenId": "proxcenter@pbs!demo-acme-prod",
+        "createdAt": "2026-01-15T08:00:00.000Z"
+      }
+    ]
+  },
+  "/api/v1/admin/vdcs/demo-vdc-acme-prod/shared-bridges": {
+    "data": [
+      {
+        "id": "demo-br-acme-1",
+        "vdcId": "demo-vdc-acme-prod",
+        "bridge": "vmbr0",
+        "label": "Public uplink",
+        "createdAt": "2026-01-15T08:00:00.000Z"
+      }
+    ]
+  },
+  "/api/v1/admin/vdcs/demo-vdc-acme-dr/usage": {
+    "data": {
+      "quota": {
+        "maxVcpus": 32,
+        "maxRamMb": 131072,
+        "maxStorageMb": 2097152,
+        "maxVms": 25,
+        "maxSnapshots": 100,
+        "maxBackups": 200,
+        "maxVnets": 4
+      },
+      "usage": {
+        "usedVcpus": 18,
+        "usedRamMb": 73728,
+        "usedStorageMb": 943718,
+        "usedVms": 14,
+        "usedSnapshots": 42,
+        "usedBackups": 89,
+        "lastSyncedAt": "2026-05-11T07:45:00.000Z"
+      }
+    }
+  },
+  "/api/v1/admin/vdcs/demo-vdc-acme-dr/pbs-bindings": {
+    "data": [
+      {
+        "id": "demo-pbs-bind-acme-dr",
+        "vdcId": "demo-vdc-acme-dr",
+        "pbsConnectionId": "demo-pbs-frankfurt-001",
+        "datastore": "main",
+        "namespace": "tenants/acme-dr",
+        "mode": "auto",
+        "pbsTokenId": "proxcenter@pbs!demo-acme-dr",
+        "createdAt": "2026-02-01T09:00:00.000Z"
+      }
+    ]
+  },
+  "/api/v1/admin/vdcs/demo-vdc-acme-dr/shared-bridges": {
+    "data": []
+  },
+  "/api/v1/admin/vdcs/demo-vdc-globex-prod/usage": {
+    "data": {
+      "quota": {
+        "maxVcpus": 32,
+        "maxRamMb": 131072,
+        "maxStorageMb": 2097152,
+        "maxVms": 30,
+        "maxSnapshots": 120,
+        "maxBackups": 250,
+        "maxVnets": 4
+      },
+      "usage": {
+        "usedVcpus": 22,
+        "usedRamMb": 88473,
+        "usedStorageMb": 1258291,
+        "usedVms": 19,
+        "usedSnapshots": 56,
+        "usedBackups": 134,
+        "lastSyncedAt": "2026-05-11T07:45:00.000Z"
+      }
+    }
+  },
+  "/api/v1/admin/vdcs/demo-vdc-globex-prod/pbs-bindings": {
+    "data": [
+      {
+        "id": "demo-pbs-bind-globex",
+        "vdcId": "demo-vdc-globex-prod",
+        "pbsConnectionId": "demo-pbs-paris-001",
+        "datastore": "main",
+        "namespace": "tenants/globex",
+        "mode": "auto",
+        "pbsTokenId": "proxcenter@pbs!demo-globex",
+        "createdAt": "2026-03-10T10:30:00.000Z"
+      }
+    ]
+  },
+  "/api/v1/admin/vdcs/demo-vdc-globex-prod/shared-bridges": {
+    "data": [
+      {
+        "id": "demo-br-globex-1",
+        "vdcId": "demo-vdc-globex-prod",
+        "bridge": "vmbr0",
+        "label": "Public uplink",
+        "createdAt": "2026-03-10T10:30:00.000Z"
+      }
+    ]
+  },
+  "/api/v1/admin/vdcs/demo-vdc-initech-prod/usage": {
+    "data": {
+      "quota": {
+        "maxVcpus": 16,
+        "maxRamMb": 65536,
+        "maxStorageMb": 1048576,
+        "maxVms": 15,
+        "maxSnapshots": 60,
+        "maxBackups": 120,
+        "maxVnets": 2
+      },
+      "usage": {
+        "usedVcpus": 11,
+        "usedRamMb": 41943,
+        "usedStorageMb": 524288,
+        "usedVms": 9,
+        "usedSnapshots": 21,
+        "usedBackups": 48,
+        "lastSyncedAt": "2026-05-11T07:45:00.000Z"
+      }
+    }
+  },
+  "/api/v1/admin/vdcs/demo-vdc-initech-prod/pbs-bindings": {
+    "data": [
+      {
+        "id": "demo-pbs-bind-initech",
+        "vdcId": "demo-vdc-initech-prod",
+        "pbsConnectionId": "demo-pbs-frankfurt-001",
+        "datastore": "main",
+        "namespace": "tenants/initech",
+        "mode": "auto",
+        "pbsTokenId": null,
+        "createdAt": "2026-04-02T13:00:00.000Z"
+      }
+    ]
+  },
+  "/api/v1/admin/vdcs/demo-vdc-initech-prod/shared-bridges": {
+    "data": []
+  },
+  "/api/v1/admin/datacenters": {
+    "data": [
+      {
+        "id": "demo-dc-paris",
+        "tenantId": "default",
+        "name": "Paris North 1",
+        "locationLabel": "Paris, FR",
+        "country": "FR",
+        "latitude": 48.8566,
+        "longitude": 2.3522,
+        "pue": 1.4,
+        "electricityPrice": 0.18,
+        "currency": "EUR",
+        "co2Factor": 0.052,
+        "co2CountryPreset": "FR",
+        "tdpPerCoreW": 10,
+        "wattsPerGbRam": 0.375,
+        "overheadPerNodeW": 50,
+        "comment": null,
+        "isDefault": true,
+        "createdAt": "2026-01-01T00:00:00.000Z",
+        "updatedAt": "2026-01-01T00:00:00.000Z",
+        "clusterCount": 1,
+        "nodeCount": 0
+      },
+      {
+        "id": "demo-dc-frankfurt",
+        "tenantId": "default",
+        "name": "Frankfurt East 1",
+        "locationLabel": "Frankfurt, DE",
+        "country": "DE",
+        "latitude": 50.1109,
+        "longitude": 8.6821,
+        "pue": 1.4,
+        "electricityPrice": 0.18,
+        "currency": "EUR",
+        "co2Factor": 0.338,
+        "co2CountryPreset": "DE",
+        "tdpPerCoreW": 10,
+        "wattsPerGbRam": 0.375,
+        "overheadPerNodeW": 50,
+        "comment": null,
+        "isDefault": false,
+        "createdAt": "2026-01-01T00:00:00.000Z",
+        "updatedAt": "2026-01-01T00:00:00.000Z",
+        "clusterCount": 0,
+        "nodeCount": 2
+      }
+    ]
+  },
+  "/api/v1/admin/datacenters/demo-dc-paris": {
+    "data": {
+      "id": "demo-dc-paris",
+      "tenantId": "default",
+      "name": "Paris North 1",
+      "locationLabel": "Paris, FR",
+      "country": "FR",
+      "latitude": 48.8566,
+      "longitude": 2.3522,
+      "pue": 1.4,
+      "electricityPrice": 0.18,
+      "currency": "EUR",
+      "co2Factor": 0.052,
+      "co2CountryPreset": "FR",
+      "tdpPerCoreW": 10,
+      "wattsPerGbRam": 0.375,
+      "overheadPerNodeW": 50,
+      "comment": null,
+      "isDefault": true,
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "updatedAt": "2026-01-01T00:00:00.000Z"
+    }
+  },
+  "/api/v1/admin/datacenters/demo-dc-frankfurt": {
+    "data": {
+      "id": "demo-dc-frankfurt",
+      "tenantId": "default",
+      "name": "Frankfurt East 1",
+      "locationLabel": "Frankfurt, DE",
+      "country": "DE",
+      "latitude": 50.1109,
+      "longitude": 8.6821,
+      "pue": 1.4,
+      "electricityPrice": 0.18,
+      "currency": "EUR",
+      "co2Factor": 0.338,
+      "co2CountryPreset": "DE",
+      "tdpPerCoreW": 10,
+      "wattsPerGbRam": 0.375,
+      "overheadPerNodeW": 50,
+      "comment": null,
+      "isDefault": false,
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "updatedAt": "2026-01-01T00:00:00.000Z"
+    }
+  },
+  "/api/v1/admin/datacenters/demo-dc-paris/assignments": {
+    "data": {
+      "clusters": [
+        "demo-pve-cluster-001"
+      ],
+      "nodes": []
+    }
+  },
+  "/api/v1/admin/datacenters/demo-dc-frankfurt/assignments": {
+    "data": {
+      "clusters": [],
+      "nodes": [
+        {
+          "connectionId": "demo-pve-cluster-001",
+          "nodeName": "pve-node-04"
+        },
+        {
+          "connectionId": "demo-pve-cluster-001",
+          "nodeName": "pve-node-05"
+        }
+      ]
+    }
+  },
+  "/api/v1/admin/pbs-connections/demo-pbs-paris-001/datastores": {
+    "data": [
+      "main",
+      "provider-archive",
+      "tenants-acme",
+      "tenants-globex"
+    ]
+  },
+  "/api/v1/admin/pbs-connections/demo-pbs-frankfurt-001/datastores": {
+    "data": [
+      "main",
+      "provider-archive",
+      "tenants-acme-dr",
+      "tenants-initech"
+    ]
+  },
+  "/api/v1/vdcs": {
+    "data": [
+      {
+        "id": "demo-vdc-acme-prod",
+        "tenantId": "demo-tenant-acme",
+        "tenantName": "Acme Corporation",
+        "connectionId": "demo-pve-cluster-001",
+        "name": "Acme Production",
+        "slug": "acme-prod",
+        "description": "Acme primary production vDC",
+        "pvePoolName": "vdc-acme-acme-prod",
+        "sdnZoneName": "acmeprod",
+        "primaryStorage": "ceph-block",
+        "enabled": true,
+        "createdBy": "demo-user",
+        "createdAt": "2026-01-15T08:00:00.000Z",
+        "updatedAt": "2026-04-22T14:30:00.000Z",
+        "nodes": [
+          "pve-node-01",
+          "pve-node-02",
+          "pve-node-03"
+        ],
+        "storages": [
+          "ceph-block",
+          "pbs:demo-pbs-paris-001"
+        ],
+        "quota": {
+          "maxVcpus": 64,
+          "maxRamMb": 262144,
+          "maxStorageMb": 4194304,
+          "maxVms": 50,
+          "maxSnapshots": 200,
+          "maxBackups": 500,
+          "maxVnets": 8
+        },
+        "usage": {
+          "usedVcpus": 46,
+          "usedRamMb": 152115,
+          "usedStorageMb": 2516582,
+          "usedVms": 28,
+          "usedSnapshots": 87,
+          "usedBackups": 312,
+          "lastSyncedAt": "2026-05-11T07:45:00.000Z"
+        },
+        "sharedBridges": [
+          {
+            "id": "demo-br-acme-1",
+            "vdcId": "demo-vdc-acme-prod",
+            "bridge": "vmbr0",
+            "label": "Public uplink",
+            "createdAt": "2026-01-15T08:00:00.000Z"
+          }
+        ],
+        "vnets": [],
+        "pbsBindings": [
+          {
+            "id": "demo-pbs-bind-acme-1",
+            "vdcId": "demo-vdc-acme-prod",
+            "pbsConnectionId": "demo-pbs-paris-001",
+            "pbsConnectionName": "Paris North 1 PBS",
+            "datastore": "main",
+            "namespace": "tenants/acme",
+            "mode": "auto",
+            "createdAt": "2026-01-15T08:00:00.000Z"
+          }
+        ]
+      },
+      {
+        "id": "demo-vdc-acme-dr",
+        "tenantId": "demo-tenant-acme",
+        "tenantName": "Acme Corporation",
+        "connectionId": "demo-pve-cluster-001",
+        "name": "Acme Disaster Recovery",
+        "slug": "acme-dr",
+        "description": "Acme DR replica vDC",
+        "pvePoolName": "vdc-acme-acme-dr",
+        "sdnZoneName": "acmedr",
+        "primaryStorage": "ceph-block",
+        "enabled": true,
+        "createdBy": "demo-user",
+        "createdAt": "2026-02-01T09:00:00.000Z",
+        "updatedAt": "2026-05-01T11:20:00.000Z",
+        "nodes": [
+          "pve-node-04",
+          "pve-node-05"
+        ],
+        "storages": [
+          "ceph-block",
+          "pbs:demo-pbs-frankfurt-001"
+        ],
+        "quota": {
+          "maxVcpus": 32,
+          "maxRamMb": 131072,
+          "maxStorageMb": 2097152,
+          "maxVms": 25,
+          "maxSnapshots": 100,
+          "maxBackups": 200,
+          "maxVnets": 4
+        },
+        "usage": {
+          "usedVcpus": 18,
+          "usedRamMb": 73728,
+          "usedStorageMb": 943718,
+          "usedVms": 14,
+          "usedSnapshots": 42,
+          "usedBackups": 89,
+          "lastSyncedAt": "2026-05-11T07:45:00.000Z"
+        },
+        "sharedBridges": [],
+        "vnets": [],
+        "pbsBindings": [
+          {
+            "id": "demo-pbs-bind-acme-dr",
+            "vdcId": "demo-vdc-acme-dr",
+            "pbsConnectionId": "demo-pbs-frankfurt-001",
+            "pbsConnectionName": "Frankfurt East 1 PBS",
+            "datastore": "main",
+            "namespace": "tenants/acme-dr",
+            "mode": "auto",
+            "createdAt": "2026-02-01T09:00:00.000Z"
+          }
+        ]
+      },
+      {
+        "id": "demo-vdc-globex-prod",
+        "tenantId": "demo-tenant-globex",
+        "tenantName": "Globex SAS",
+        "connectionId": "demo-pve-cluster-001",
+        "name": "Globex Production",
+        "slug": "globex-prod",
+        "description": "Globex primary vDC",
+        "pvePoolName": "vdc-globex-globex-prod",
+        "sdnZoneName": "globexprod",
+        "primaryStorage": "ceph-block",
+        "enabled": true,
+        "createdBy": "demo-user",
+        "createdAt": "2026-03-10T10:30:00.000Z",
+        "updatedAt": "2026-05-08T16:45:00.000Z",
+        "nodes": [
+          "pve-node-01",
+          "pve-node-02"
+        ],
+        "storages": [
+          "ceph-block",
+          "pbs:demo-pbs-paris-001"
+        ],
+        "quota": {
+          "maxVcpus": 32,
+          "maxRamMb": 131072,
+          "maxStorageMb": 2097152,
+          "maxVms": 30,
+          "maxSnapshots": 120,
+          "maxBackups": 250,
+          "maxVnets": 4
+        },
+        "usage": {
+          "usedVcpus": 22,
+          "usedRamMb": 88473,
+          "usedStorageMb": 1258291,
+          "usedVms": 19,
+          "usedSnapshots": 56,
+          "usedBackups": 134,
+          "lastSyncedAt": "2026-05-11T07:45:00.000Z"
+        },
+        "sharedBridges": [
+          {
+            "id": "demo-br-globex-1",
+            "vdcId": "demo-vdc-globex-prod",
+            "bridge": "vmbr0",
+            "label": "Public uplink",
+            "createdAt": "2026-03-10T10:30:00.000Z"
+          }
+        ],
+        "vnets": [],
+        "pbsBindings": [
+          {
+            "id": "demo-pbs-bind-globex",
+            "vdcId": "demo-vdc-globex-prod",
+            "pbsConnectionId": "demo-pbs-paris-001",
+            "pbsConnectionName": "Paris North 1 PBS",
+            "datastore": "main",
+            "namespace": "tenants/globex",
+            "mode": "auto",
+            "createdAt": "2026-03-10T10:30:00.000Z"
+          }
+        ]
+      },
+      {
+        "id": "demo-vdc-initech-prod",
+        "tenantId": "demo-tenant-initech",
+        "tenantName": "Initech",
+        "connectionId": "demo-pve-cluster-001",
+        "name": "Initech Production",
+        "slug": "initech-prod",
+        "description": "Initech primary vDC",
+        "pvePoolName": "vdc-initech-initech-prod",
+        "sdnZoneName": "initechprod",
+        "primaryStorage": "ceph-block",
+        "enabled": true,
+        "createdBy": "demo-user",
+        "createdAt": "2026-04-02T13:00:00.000Z",
+        "updatedAt": "2026-05-10T09:15:00.000Z",
+        "nodes": [
+          "pve-node-04",
+          "pve-node-05"
+        ],
+        "storages": [
+          "ceph-block",
+          "pbs:demo-pbs-frankfurt-001"
+        ],
+        "quota": {
+          "maxVcpus": 16,
+          "maxRamMb": 65536,
+          "maxStorageMb": 1048576,
+          "maxVms": 15,
+          "maxSnapshots": 60,
+          "maxBackups": 120,
+          "maxVnets": 2
+        },
+        "usage": {
+          "usedVcpus": 11,
+          "usedRamMb": 41943,
+          "usedStorageMb": 524288,
+          "usedVms": 9,
+          "usedSnapshots": 21,
+          "usedBackups": 48,
+          "lastSyncedAt": "2026-05-11T07:45:00.000Z"
+        },
+        "sharedBridges": [],
+        "vnets": [],
+        "pbsBindings": [
+          {
+            "id": "demo-pbs-bind-initech",
+            "vdcId": "demo-vdc-initech-prod",
+            "pbsConnectionId": "demo-pbs-frankfurt-001",
+            "pbsConnectionName": "Frankfurt East 1 PBS",
+            "datastore": "main",
+            "namespace": "tenants/initech",
+            "mode": "auto",
+            "createdAt": "2026-04-02T13:00:00.000Z"
+          }
+        ]
+      }
+    ]
+  },
+  "/api/v1/vdcs/demo-vdc-acme-prod/datacenters": {
+    "data": [
+      {
+        "id": "demo-dc-paris",
+        "name": "Paris North 1",
+        "locationLabel": "Paris, FR",
+        "country": "FR",
+        "latitude": 48.8566,
+        "longitude": 2.3522,
+        "comment": null,
+        "nodeCount": 3,
+        "vmCount": 28,
+        "runningVmCount": 24,
+        "status": "active",
+        "nodes": [
+          {
+            "name": "pve-node-01",
+            "status": "online",
+            "vmCount": 10,
+            "runningVmCount": 9
+          },
+          {
+            "name": "pve-node-02",
+            "status": "online",
+            "vmCount": 10,
+            "runningVmCount": 8
+          },
+          {
+            "name": "pve-node-03",
+            "status": "online",
+            "vmCount": 8,
+            "runningVmCount": 7
+          }
+        ]
+      }
+    ]
+  },
+  "/api/v1/vdcs/demo-vdc-acme-dr/datacenters": {
+    "data": [
+      {
+        "id": "demo-dc-frankfurt",
+        "name": "Frankfurt East 1",
+        "locationLabel": "Frankfurt, DE",
+        "country": "DE",
+        "latitude": 50.1109,
+        "longitude": 8.6821,
+        "comment": null,
+        "nodeCount": 2,
+        "vmCount": 14,
+        "runningVmCount": 11,
+        "status": "active",
+        "nodes": [
+          {
+            "name": "pve-node-04",
+            "status": "online",
+            "vmCount": 8,
+            "runningVmCount": 6
+          },
+          {
+            "name": "pve-node-05",
+            "status": null,
+            "vmCount": 6,
+            "runningVmCount": 5
+          }
+        ]
+      }
+    ]
+  },
+  "/api/v1/vdcs/demo-vdc-globex-prod/datacenters": {
+    "data": [
+      {
+        "id": "demo-dc-paris",
+        "name": "Paris North 1",
+        "locationLabel": "Paris, FR",
+        "country": "FR",
+        "latitude": 48.8566,
+        "longitude": 2.3522,
+        "comment": null,
+        "nodeCount": 2,
+        "vmCount": 19,
+        "runningVmCount": 17,
+        "status": "active",
+        "nodes": [
+          {
+            "name": "pve-node-01",
+            "status": "online",
+            "vmCount": 10,
+            "runningVmCount": 9
+          },
+          {
+            "name": "pve-node-02",
+            "status": "online",
+            "vmCount": 9,
+            "runningVmCount": 8
+          }
+        ]
+      }
+    ]
+  },
+  "/api/v1/vdcs/demo-vdc-initech-prod/datacenters": {
+    "data": [
+      {
+        "id": "demo-dc-frankfurt",
+        "name": "Frankfurt East 1",
+        "locationLabel": "Frankfurt, DE",
+        "country": "DE",
+        "latitude": 50.1109,
+        "longitude": 8.6821,
+        "comment": null,
+        "nodeCount": 2,
+        "vmCount": 9,
+        "runningVmCount": 7,
+        "status": "active",
+        "nodes": [
+          {
+            "name": "pve-node-04",
+            "status": "online",
+            "vmCount": 5,
+            "runningVmCount": 4
+          },
+          {
+            "name": "pve-node-05",
+            "status": "online",
+            "vmCount": 4,
+            "runningVmCount": 3
+          }
+        ]
+      }
+    ]
+  },
+  "/api/v1/vdcs/demo-vdc-acme-prod/vnets": {
+    "data": [
+      {
+        "id": "demo-vnet-acme-prod-web",
+        "vdcId": "demo-vdc-acme-prod",
+        "pveName": "a1b2c3d4",
+        "displayName": "Web tier",
+        "description": "Public-facing web servers",
+        "vxlanTag": 10100,
+        "firewall": true,
+        "subnet": {
+          "id": "demo-subnet-acme-prod-web",
+          "vnetId": "demo-vnet-acme-prod-web",
+          "cidr": "10.100.10.0/24",
+          "gateway": "10.100.10.1",
+          "dnsServers": [
+            "1.1.1.1",
+            "8.8.8.8"
+          ],
+          "ipamEnabled": true,
+          "createdAt": "2026-01-15T08:00:00.000Z"
+        },
+        "createdBy": "demo-user",
+        "createdAt": "2026-01-15T08:00:00.000Z",
+        "ipamUsage": {
+          "used": 18,
+          "usable": 253
+        }
+      },
+      {
+        "id": "demo-vnet-acme-prod-app",
+        "vdcId": "demo-vdc-acme-prod",
+        "pveName": "e5f6a7b8",
+        "displayName": "App tier",
+        "description": "Internal application servers",
+        "vxlanTag": 10101,
+        "firewall": true,
+        "subnet": {
+          "id": "demo-subnet-acme-prod-app",
+          "vnetId": "demo-vnet-acme-prod-app",
+          "cidr": "10.100.20.0/24",
+          "gateway": "10.100.20.1",
+          "dnsServers": [
+            "1.1.1.1",
+            "8.8.8.8"
+          ],
+          "ipamEnabled": true,
+          "createdAt": "2026-01-15T08:00:00.000Z"
+        },
+        "createdBy": "demo-user",
+        "createdAt": "2026-01-15T08:00:00.000Z",
+        "ipamUsage": {
+          "used": 24,
+          "usable": 253
+        }
+      }
+    ]
+  },
+  "/api/v1/vdcs/demo-vdc-acme-dr/vnets": {
+    "data": [
+      {
+        "id": "demo-vnet-acme-dr-web",
+        "vdcId": "demo-vdc-acme-dr",
+        "pveName": "c9d0e1f2",
+        "displayName": "Web tier",
+        "description": "Public-facing web servers",
+        "vxlanTag": 10110,
+        "firewall": true,
+        "subnet": {
+          "id": "demo-subnet-acme-dr-web",
+          "vnetId": "demo-vnet-acme-dr-web",
+          "cidr": "10.110.10.0/24",
+          "gateway": "10.110.10.1",
+          "dnsServers": [
+            "1.1.1.1",
+            "8.8.8.8"
+          ],
+          "ipamEnabled": true,
+          "createdAt": "2026-02-01T09:00:00.000Z"
+        },
+        "createdBy": "demo-user",
+        "createdAt": "2026-02-01T09:00:00.000Z",
+        "ipamUsage": {
+          "used": 11,
+          "usable": 253
+        }
+      },
+      {
+        "id": "demo-vnet-acme-dr-app",
+        "vdcId": "demo-vdc-acme-dr",
+        "pveName": "b3a4f5e6",
+        "displayName": "App tier",
+        "description": "Internal application servers",
+        "vxlanTag": 10111,
+        "firewall": true,
+        "subnet": {
+          "id": "demo-subnet-acme-dr-app",
+          "vnetId": "demo-vnet-acme-dr-app",
+          "cidr": "10.110.20.0/24",
+          "gateway": "10.110.20.1",
+          "dnsServers": [
+            "1.1.1.1",
+            "8.8.8.8"
+          ],
+          "ipamEnabled": true,
+          "createdAt": "2026-02-01T09:00:00.000Z"
+        },
+        "createdBy": "demo-user",
+        "createdAt": "2026-02-01T09:00:00.000Z",
+        "ipamUsage": {
+          "used": 8,
+          "usable": 253
+        }
+      }
+    ]
+  },
+  "/api/v1/vdcs/demo-vdc-globex-prod/vnets": {
+    "data": [
+      {
+        "id": "demo-vnet-globex-prod-web",
+        "vdcId": "demo-vdc-globex-prod",
+        "pveName": "d7c8b9a0",
+        "displayName": "Web tier",
+        "description": "Public-facing web servers",
+        "vxlanTag": 10120,
+        "firewall": true,
+        "subnet": {
+          "id": "demo-subnet-globex-prod-web",
+          "vnetId": "demo-vnet-globex-prod-web",
+          "cidr": "10.120.10.0/24",
+          "gateway": "10.120.10.1",
+          "dnsServers": [
+            "1.1.1.1",
+            "8.8.8.8"
+          ],
+          "ipamEnabled": true,
+          "createdAt": "2026-03-10T10:30:00.000Z"
+        },
+        "createdBy": "demo-user",
+        "createdAt": "2026-03-10T10:30:00.000Z",
+        "ipamUsage": {
+          "used": 15,
+          "usable": 253
+        }
+      },
+      {
+        "id": "demo-vnet-globex-prod-app",
+        "vdcId": "demo-vdc-globex-prod",
+        "pveName": "1e2f3a4b",
+        "displayName": "App tier",
+        "description": "Internal application servers",
+        "vxlanTag": 10121,
+        "firewall": true,
+        "subnet": {
+          "id": "demo-subnet-globex-prod-app",
+          "vnetId": "demo-vnet-globex-prod-app",
+          "cidr": "10.120.20.0/24",
+          "gateway": "10.120.20.1",
+          "dnsServers": [
+            "1.1.1.1",
+            "8.8.8.8"
+          ],
+          "ipamEnabled": true,
+          "createdAt": "2026-03-10T10:30:00.000Z"
+        },
+        "createdBy": "demo-user",
+        "createdAt": "2026-03-10T10:30:00.000Z",
+        "ipamUsage": {
+          "used": 19,
+          "usable": 253
+        }
+      }
+    ]
+  },
+  "/api/v1/vdcs/demo-vdc-initech-prod/vnets": {
+    "data": [
+      {
+        "id": "demo-vnet-initech-prod-web",
+        "vdcId": "demo-vdc-initech-prod",
+        "pveName": "5c6d7e8f",
+        "displayName": "Web tier",
+        "description": "Public-facing web servers",
+        "vxlanTag": 10130,
+        "firewall": true,
+        "subnet": {
+          "id": "demo-subnet-initech-prod-web",
+          "vnetId": "demo-vnet-initech-prod-web",
+          "cidr": "10.130.10.0/24",
+          "gateway": "10.130.10.1",
+          "dnsServers": [
+            "1.1.1.1",
+            "8.8.8.8"
+          ],
+          "ipamEnabled": true,
+          "createdAt": "2026-04-02T13:00:00.000Z"
+        },
+        "createdBy": "demo-user",
+        "createdAt": "2026-04-02T13:00:00.000Z",
+        "ipamUsage": {
+          "used": 6,
+          "usable": 253
+        }
+      },
+      {
+        "id": "demo-vnet-initech-prod-app",
+        "vdcId": "demo-vdc-initech-prod",
+        "pveName": "9a0b1c2d",
+        "displayName": "App tier",
+        "description": "Internal application servers",
+        "vxlanTag": 10131,
+        "firewall": true,
+        "subnet": {
+          "id": "demo-subnet-initech-prod-app",
+          "vnetId": "demo-vnet-initech-prod-app",
+          "cidr": "10.130.20.0/24",
+          "gateway": "10.130.20.1",
+          "dnsServers": [
+            "1.1.1.1",
+            "8.8.8.8"
+          ],
+          "ipamEnabled": true,
+          "createdAt": "2026-04-02T13:00:00.000Z"
+        },
+        "createdBy": "demo-user",
+        "createdAt": "2026-04-02T13:00:00.000Z",
+        "ipamUsage": {
+          "used": 4,
+          "usable": 253
+        }
+      }
+    ]
+  },
+  "/api/v1/users": {
+    "data": [
+      {
+        "id": "demo-user-001",
+        "email": "admin@demo.proxcenter.io",
+        "name": "Admin Demo",
+        "role": "admin",
+        "auth_provider": "credentials",
+        "enabled": true,
+        "last_login_at": "2026-05-11T08:00:00.000Z",
+        "created_at": "2026-01-01T00:00:00.000Z",
+        "updated_at": "2026-05-11T08:00:00.000Z",
+        "is_super_admin": true,
+        "tenants": [
+          { "id": "demo-tenant-provider", "name": "ProxCenter Demo MSP", "isDefault": true },
+          { "id": "demo-tenant-acme", "name": "Acme Corporation", "isDefault": false },
+          { "id": "demo-tenant-globex", "name": "Globex SAS", "isDefault": false },
+          { "id": "demo-tenant-initech", "name": "Initech", "isDefault": false }
+        ]
+      },
+      {
+        "id": "demo-user-002",
+        "email": "alice@demo.proxcenter.io",
+        "name": "Alice Martin",
+        "role": "admin",
+        "auth_provider": "credentials",
+        "enabled": true,
+        "last_login_at": "2026-05-10T09:00:00.000Z",
+        "created_at": "2026-01-05T00:00:00.000Z",
+        "updated_at": "2026-05-10T09:00:00.000Z",
+        "is_super_admin": true,
+        "tenants": [
+          { "id": "demo-tenant-provider", "name": "ProxCenter Demo MSP", "isDefault": true }
+        ]
+      },
+      {
+        "id": "demo-user-003",
+        "email": "bob@acme.example",
+        "name": "Bob Smith",
+        "role": "user",
+        "auth_provider": "credentials",
+        "enabled": true,
+        "last_login_at": "2026-05-09T14:00:00.000Z",
+        "created_at": "2026-01-20T00:00:00.000Z",
+        "updated_at": "2026-05-09T14:00:00.000Z",
+        "is_super_admin": false,
+        "tenants": [
+          { "id": "demo-tenant-acme", "name": "Acme Corporation", "isDefault": true }
+        ]
+      },
+      {
+        "id": "demo-user-004",
+        "email": "carol@acme.example",
+        "name": "Carol Johnson",
+        "role": "user",
+        "auth_provider": "credentials",
+        "enabled": true,
+        "last_login_at": "2026-05-08T11:00:00.000Z",
+        "created_at": "2026-02-03T00:00:00.000Z",
+        "updated_at": "2026-05-08T11:00:00.000Z",
+        "is_super_admin": false,
+        "tenants": [
+          { "id": "demo-tenant-acme", "name": "Acme Corporation", "isDefault": true }
+        ]
+      },
+      {
+        "id": "demo-user-005",
+        "email": "dave@globex.example",
+        "name": "Dave Wilson",
+        "role": "user",
+        "auth_provider": "credentials",
+        "enabled": true,
+        "last_login_at": "2026-05-07T16:00:00.000Z",
+        "created_at": "2026-03-12T00:00:00.000Z",
+        "updated_at": "2026-05-07T16:00:00.000Z",
+        "is_super_admin": false,
+        "tenants": [
+          { "id": "demo-tenant-globex", "name": "Globex SAS", "isDefault": true }
+        ]
+      },
+      {
+        "id": "demo-user-006",
+        "email": "eve@globex.example",
+        "name": "Eve Brown",
+        "role": "user",
+        "auth_provider": "credentials",
+        "enabled": true,
+        "last_login_at": "2026-05-06T10:00:00.000Z",
+        "created_at": "2026-03-12T00:00:00.000Z",
+        "updated_at": "2026-05-06T10:00:00.000Z",
+        "is_super_admin": false,
+        "tenants": [
+          { "id": "demo-tenant-globex", "name": "Globex SAS", "isDefault": true }
+        ]
+      },
+      {
+        "id": "demo-user-007",
+        "email": "frank@initech.example",
+        "name": "Frank Davis",
+        "role": "user",
+        "auth_provider": "credentials",
+        "enabled": true,
+        "last_login_at": "2026-05-05T12:00:00.000Z",
+        "created_at": "2026-04-05T00:00:00.000Z",
+        "updated_at": "2026-05-05T12:00:00.000Z",
+        "is_super_admin": false,
+        "tenants": [
+          { "id": "demo-tenant-initech", "name": "Initech", "isDefault": true }
+        ]
+      },
+      {
+        "id": "demo-user-008",
+        "email": "grace@initech.example",
+        "name": "Grace Lee",
+        "role": "user",
+        "auth_provider": "credentials",
+        "enabled": true,
+        "last_login_at": "2026-05-04T15:00:00.000Z",
+        "created_at": "2026-04-05T00:00:00.000Z",
+        "updated_at": "2026-05-04T15:00:00.000Z",
+        "is_super_admin": false,
+        "tenants": [
+          { "id": "demo-tenant-initech", "name": "Initech", "isDefault": true }
+        ]
+      }
+    ],
+    "meta": {
+      "total": 8,
+      "adminCount": 2
+    }
+  },
+  "/api/v1/rbac/assignments": {
+    "data": [
+      {
+        "id": "demo-asg-001",
+        "user": { "id": "demo-user-001", "email": "admin@demo.proxcenter.io", "name": "Admin Demo" },
+        "role": { "id": "role_super_admin", "name": "Super Admin", "color": "#ef4444", "is_system": true },
+        "scope_type": "global",
+        "scope_target": null,
+        "granted_at": "2026-01-01T00:00:00.000Z",
+        "granted_by_email": "admin@demo.proxcenter.io",
+        "expires_at": null
+      },
+      {
+        "id": "demo-asg-002",
+        "user": { "id": "demo-user-001", "email": "admin@demo.proxcenter.io", "name": "Admin Demo" },
+        "role": { "id": "role_super_admin", "name": "Super Admin", "color": "#ef4444", "is_system": true },
+        "scope_type": "global",
+        "scope_target": "demo-tenant-acme",
+        "granted_at": "2026-01-01T00:00:00.000Z",
+        "granted_by_email": "admin@demo.proxcenter.io",
+        "expires_at": null
+      },
+      {
+        "id": "demo-asg-003",
+        "user": { "id": "demo-user-001", "email": "admin@demo.proxcenter.io", "name": "Admin Demo" },
+        "role": { "id": "role_super_admin", "name": "Super Admin", "color": "#ef4444", "is_system": true },
+        "scope_type": "global",
+        "scope_target": "demo-tenant-globex",
+        "granted_at": "2026-01-01T00:00:00.000Z",
+        "granted_by_email": "admin@demo.proxcenter.io",
+        "expires_at": null
+      },
+      {
+        "id": "demo-asg-004",
+        "user": { "id": "demo-user-001", "email": "admin@demo.proxcenter.io", "name": "Admin Demo" },
+        "role": { "id": "role_super_admin", "name": "Super Admin", "color": "#ef4444", "is_system": true },
+        "scope_type": "global",
+        "scope_target": "demo-tenant-initech",
+        "granted_at": "2026-01-01T00:00:00.000Z",
+        "granted_by_email": "admin@demo.proxcenter.io",
+        "expires_at": null
+      },
+      {
+        "id": "demo-asg-005",
+        "user": { "id": "demo-user-002", "email": "alice@demo.proxcenter.io", "name": "Alice Martin" },
+        "role": { "id": "role_super_admin", "name": "Super Admin", "color": "#ef4444", "is_system": true },
+        "scope_type": "global",
+        "scope_target": null,
+        "granted_at": "2026-01-05T00:00:00.000Z",
+        "granted_by_email": "admin@demo.proxcenter.io",
+        "expires_at": null
+      },
+      {
+        "id": "demo-asg-006",
+        "user": { "id": "demo-user-003", "email": "bob@acme.example", "name": "Bob Smith" },
+        "role": { "id": "role_tenant_admin", "name": "Tenant Admin", "color": "#3b82f6", "is_system": true },
+        "scope_type": "global",
+        "scope_target": "demo-tenant-acme",
+        "granted_at": "2026-01-20T00:00:00.000Z",
+        "granted_by_email": "admin@demo.proxcenter.io",
+        "expires_at": null
+      },
+      {
+        "id": "demo-asg-007",
+        "user": { "id": "demo-user-004", "email": "carol@acme.example", "name": "Carol Johnson" },
+        "role": { "id": "role_tenant_admin", "name": "Tenant Admin", "color": "#3b82f6", "is_system": true },
+        "scope_type": "global",
+        "scope_target": "demo-tenant-acme",
+        "granted_at": "2026-02-03T00:00:00.000Z",
+        "granted_by_email": "admin@demo.proxcenter.io",
+        "expires_at": null
+      },
+      {
+        "id": "demo-asg-008",
+        "user": { "id": "demo-user-005", "email": "dave@globex.example", "name": "Dave Wilson" },
+        "role": { "id": "role_tenant_admin", "name": "Tenant Admin", "color": "#3b82f6", "is_system": true },
+        "scope_type": "global",
+        "scope_target": "demo-tenant-globex",
+        "granted_at": "2026-03-12T00:00:00.000Z",
+        "granted_by_email": "admin@demo.proxcenter.io",
+        "expires_at": null
+      },
+      {
+        "id": "demo-asg-009",
+        "user": { "id": "demo-user-006", "email": "eve@globex.example", "name": "Eve Brown" },
+        "role": { "id": "role_tenant_admin", "name": "Tenant Admin", "color": "#3b82f6", "is_system": true },
+        "scope_type": "global",
+        "scope_target": "demo-tenant-globex",
+        "granted_at": "2026-03-12T00:00:00.000Z",
+        "granted_by_email": "admin@demo.proxcenter.io",
+        "expires_at": null
+      },
+      {
+        "id": "demo-asg-010",
+        "user": { "id": "demo-user-007", "email": "frank@initech.example", "name": "Frank Davis" },
+        "role": { "id": "role_tenant_admin", "name": "Tenant Admin", "color": "#3b82f6", "is_system": true },
+        "scope_type": "global",
+        "scope_target": "demo-tenant-initech",
+        "granted_at": "2026-04-05T00:00:00.000Z",
+        "granted_by_email": "admin@demo.proxcenter.io",
+        "expires_at": null
+      },
+      {
+        "id": "demo-asg-011",
+        "user": { "id": "demo-user-008", "email": "grace@initech.example", "name": "Grace Lee" },
+        "role": { "id": "role_tenant_admin", "name": "Tenant Admin", "color": "#3b82f6", "is_system": true },
+        "scope_type": "global",
+        "scope_target": "demo-tenant-initech",
+        "granted_at": "2026-04-05T00:00:00.000Z",
+        "granted_by_email": "admin@demo.proxcenter.io",
+        "expires_at": null
+      }
+    ],
+    "meta": {
+      "total": 11
+    }
   }
 }
