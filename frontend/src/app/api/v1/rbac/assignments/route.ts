@@ -337,10 +337,12 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Vérifier que le rôle existe
-    const role = await prisma.rbacRole.findUnique({ where: { id: role_id }, select: { id: true, name: true } })
+    // Vérifier que le rôle existe et qu'il est accessible depuis le tenant
+    // cible. Un rôle custom appartenant au tenant B ne doit pas être
+    // assignable depuis le tenant A même en connaissant son id.
+    const role = await prisma.rbacRole.findUnique({ where: { id: role_id }, select: { id: true, name: true, tenantId: true } })
 
-    if (!role) {
+    if (!role || (role.tenantId !== null && role.tenantId !== targetTenantId)) {
       return NextResponse.json({ error: "Rôle non trouvé" }, { status: 404 })
     }
 

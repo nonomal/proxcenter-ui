@@ -4,6 +4,8 @@ import { NextRequest, NextResponse } from "next/server"
 
 import { getServerSession } from "next-auth"
 
+import { Prisma } from "@prisma/client"
+
 import { authOptions } from "@/lib/auth/config"
 import { prisma } from "@/lib/db/prisma"
 import { audit } from "@/lib/audit"
@@ -44,6 +46,13 @@ async function denyIfProtectedRoleAndCallerIsNot(
   return NextResponse.json({ error: "Rôle non trouvé" }, { status: 404 })
 }
 
+/** A role is reachable from the current tenant if it is global (system role,
+ *  tenantId IS NULL) or owned by that tenant. Anything else 404s to avoid
+ *  leaking the existence of roles belonging to other tenants. */
+function isRoleReachableFromTenant(role: { tenantId: string | null }, currentTenantId: string): boolean {
+  return role.tenantId === null || role.tenantId === currentTenantId
+}
+
 // GET /api/v1/rbac/roles/[id] - Détails d'un rôle
 export async function GET(req: NextRequest, context: RouteContext) {
   const demo = demoResponse(req)
@@ -80,7 +89,7 @@ export async function GET(req: NextRequest, context: RouteContext) {
       },
     })
 
-    if (!role) {
+    if (!role || !isRoleReachableFromTenant(role, tenantId)) {
       return NextResponse.json({ error: "Rôle non trouvé" }, { status: 404 })
     }
 
@@ -92,6 +101,7 @@ export async function GET(req: NextRequest, context: RouteContext) {
         is_system: role.isSystem,
         color: role.color,
         widget_overrides: role.widgetOverrides ?? null,
+        tenant_id: role.tenantId,
         created_at: role.createdAt.toISOString(),
         updated_at: role.updatedAt.toISOString(),
         permissions: role.permissions.map(rp => ({
@@ -149,8 +159,9 @@ export async function PATCH(req: NextRequest, context: RouteContext) {
     if (superAdminBlock) return superAdminBlock
 
     const role = await prisma.rbacRole.findUnique({ where: { id } })
+    const callerTenantId = await getCurrentTenantId()
 
-    if (!role) {
+    if (!role || !isRoleReachableFromTenant(role, callerTenantId)) {
       return NextResponse.json({ error: "Rôle non trouvé" }, { status: 404 })
     }
 
@@ -174,10 +185,11 @@ export async function PATCH(req: NextRequest, context: RouteContext) {
       }
     }
 
-    // Vérifier l'unicité du nom si modifié
+    // Vérifier l'unicité du nom si modifié — scopé au tenant propriétaire du
+    // rôle (compound unique (tenant_id, name) côté DB).
     if (name && name !== role.name) {
       const existing = await prisma.rbacRole.findFirst({
-        where: { name, NOT: { id } },
+        where: { name, tenantId: role.tenantId, NOT: { id } },
         select: { id: true },
       })
 
@@ -198,7 +210,12 @@ export async function PATCH(req: NextRequest, context: RouteContext) {
     if (name !== undefined) updateData.name = name
     if (description !== undefined) updateData.description = description
     if (color !== undefined) updateData.color = color
-    if (normalizedOverrides !== undefined) updateData.widgetOverrides = normalizedOverrides
+    // Prisma Json? distinguishes "skip" (undefined) from "set to SQL NULL"
+    // (Prisma.DbNull) — sending JS null here would either be rejected by
+    // TypeScript or fail at runtime depending on the client version.
+    if (normalizedOverrides !== undefined) {
+      updateData.widgetOverrides = normalizedOverrides === null ? Prisma.DbNull : normalizedOverrides
+    }
 
     const replacePermissions = Array.isArray(permissions)
     const permIds: string[] = replacePermissions ? permissions.filter((p: any) => typeof p === "string") : []
@@ -249,6 +266,7 @@ export async function PATCH(req: NextRequest, context: RouteContext) {
         is_system: updated.isSystem,
         color: updated.color,
         widget_overrides: updated.widgetOverrides ?? null,
+        tenant_id: updated.tenantId,
         created_at: updated.createdAt.toISOString(),
         updated_at: updated.updatedAt.toISOString(),
         permissions: updated.permissions.map(rp => ({
@@ -295,8 +313,9 @@ export async function DELETE(req: NextRequest, context: RouteContext) {
     if (superAdminBlock) return superAdminBlock
 
     const role = await prisma.rbacRole.findUnique({ where: { id } })
+    const callerTenantIdForDelete = await getCurrentTenantId()
 
-    if (!role) {
+    if (!role || !isRoleReachableFromTenant(role, callerTenantIdForDelete)) {
       return NextResponse.json({ error: "Rôle non trouvé" }, { status: 404 })
     }
 

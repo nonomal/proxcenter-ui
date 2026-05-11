@@ -4,6 +4,7 @@ import { NextRequest, NextResponse } from "next/server"
 
 import { getServerSession } from "next-auth"
 
+import { Prisma } from "@prisma/client"
 import { nanoid } from "nanoid"
 
 import { authOptions } from "@/lib/auth/config"
@@ -55,8 +56,19 @@ export async function GET(req: NextRequest) {
     const callerIsSuperAdmin = await isUserSuperAdmin(session.user.id)
     const tenantId = await getCurrentTenantId()
 
+    // Tenant scoping: callers see system/global roles (tenant_id IS NULL) plus
+    // the custom roles owned by their current tenant. Without this filter a
+    // role created from tenant A would leak into tenant B's admin UI.
+    const tenantScopeFilter = {
+      OR: [
+        { tenantId: null },
+        { tenantId },
+      ],
+    }
+    const protectedFilter = callerIsSuperAdmin ? {} : { id: { notIn: [...PROTECTED_ROLE_IDS] } }
+
     const roles = await prisma.rbacRole.findMany({
-      where: callerIsSuperAdmin ? undefined : { id: { notIn: [...PROTECTED_ROLE_IDS] } },
+      where: { AND: [tenantScopeFilter, protectedFilter] },
       select: {
         id: true,
         name: true,
@@ -64,6 +76,7 @@ export async function GET(req: NextRequest) {
         isSystem: true,
         color: true,
         widgetOverrides: true,
+        tenantId: true,
         createdAt: true,
         updatedAt: true,
         permissions: {
@@ -89,6 +102,7 @@ export async function GET(req: NextRequest) {
       is_system: role.isSystem,
       color: role.color,
       widget_overrides: role.widgetOverrides ?? null,
+      tenant_id: role.tenantId,
       created_at: role.createdAt.toISOString(),
       updated_at: role.updatedAt.toISOString(),
       permissions: role.permissions.map(rp => ({
@@ -147,9 +161,15 @@ export async function POST(req: NextRequest) {
     const now = new Date()
     const id = `role_${nanoid(12)}`
     const normalizedOverrides = normalizeWidgetOverrides(widget_overrides)
+    const ownerTenantId = await getCurrentTenantId()
 
-    // Vérifier que le nom n'existe pas déjà
-    const existing = await prisma.rbacRole.findUnique({ where: { name: trimmedName }, select: { id: true } })
+    // Custom roles are scoped to the creator's tenant. The compound unique
+    // (tenant_id, name) lets two tenants reuse the same role name without
+    // colliding, so the existence check is also tenant-scoped.
+    const existing = await prisma.rbacRole.findFirst({
+      where: { name: trimmedName, tenantId: ownerTenantId },
+      select: { id: true },
+    })
 
     if (existing) {
       return NextResponse.json({ error: "Un rôle avec ce nom existe déjà" }, { status: 400 })
@@ -166,7 +186,13 @@ export async function POST(req: NextRequest) {
           description: description || null,
           isSystem: false,
           color: color || "#6366f1",
-          widgetOverrides: normalizedOverrides ?? undefined,
+          // Prisma Json? requires DbNull (not JS null) to write SQL NULL.
+          // undefined = field omitted on create, which is fine for "no override".
+          widgetOverrides:
+            normalizedOverrides === undefined ? undefined :
+            normalizedOverrides === null ? Prisma.DbNull :
+            normalizedOverrides,
+          tenantId: ownerTenantId,
           createdAt: now,
           updatedAt: now,
         },
@@ -214,6 +240,7 @@ export async function POST(req: NextRequest) {
         is_system: newRole.isSystem,
         color: newRole.color,
         widget_overrides: newRole.widgetOverrides ?? null,
+        tenant_id: newRole.tenantId,
         created_at: newRole.createdAt.toISOString(),
         updated_at: newRole.updatedAt.toISOString(),
         permissions: newRole.permissions.map(rp => ({

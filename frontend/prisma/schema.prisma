@@ -458,7 +458,7 @@ model Setting {
 
 model RbacRole {
   id              String   @id
-  name            String   @unique
+  name            String
   description     String?
   isSystem        Boolean  @default(false) @map("is_system")
   color           String?  @default("#6366f1")
@@ -466,14 +466,19 @@ model RbacRole {
   // Shape: { hidden: string[] }. Composed across roles as a union (any role
   // denying a widget hides it for the user).
   widgetOverrides Json?    @map("widget_overrides")
+  // Tenant scoping. Null = global (system roles, visible to every tenant).
+  // Non-null = custom role only visible to that tenant's admins.
+  tenantId        String?  @map("tenant_id")
   createdAt       DateTime @map("created_at")
   updatedAt       DateTime @map("updated_at")
 
   permissions RbacRolePermission[]
   userRoles   RbacUserRole[]
 
+  @@unique([tenantId, name])
   @@index([name])
   @@index([isSystem])
+  @@index([tenantId])
   @@map("rbac_roles")
 }
 
