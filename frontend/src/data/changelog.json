@@ -26,7 +26,7 @@
       { "type": "fix", "text": "PBS timestamps drop milliseconds before being sent to PVE; backupId is parsed correctly when the namespace contains slashes" },
       { "type": "fix", "text": "Network inventory: IP usage column, click-to-detail modal, no flicker" },
       { "type": "fix", "text": "Cross-tenant isolation hardened on inventory, PBS backups and PVE backup jobs (tenant with zero vDCs is no longer treated as provider)" },
-      { "type": "breaking", "text": "Database backend is now Postgres only. SQLite is no longer shipped or supported. Existing installations re-bootstrap their configuration via the UI on first boot. See UPGRADE_NOTES.md." }
+      { "type": "breaking", "text": "Database backend is now Postgres only. SQLite is no longer shipped or supported. Re-run the install script to upgrade (e.g. curl -fsSL https://proxcenter.io/install/community | sudo bash): it adds the Postgres service, generates POSTGRES_PASSWORD and the postgres_data volume. The frontend re-bootstraps its configuration via the UI on first boot." }
     ]
   },
   {
