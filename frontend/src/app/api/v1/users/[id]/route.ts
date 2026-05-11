@@ -53,7 +53,16 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     if (superAdminBlock) return superAdminBlock
 
     const tenantId = await getCurrentTenantId()
-    const user = await findUserInTenant(id, tenantId)
+    const isProviderView = tenantId === DEFAULT_TENANT_ID
+
+    // Provider view reads any user regardless of membership in `default` —
+    // mirrors the GET list which already exposes the full cross-tenant
+    // population to the provider. Tenant-scoped reads stay pinned to the
+    // session tenant so a tenant admin can't enumerate users from another
+    // tenant by guessing IDs.
+    const user = isProviderView
+      ? await prisma.user.findUnique({ where: { id } })
+      : await findUserInTenant(id, tenantId)
 
     if (!user) {
       return NextResponse.json({ error: "Utilisateur non trouvé" }, { status: 404 })
@@ -309,7 +318,15 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ id: s
     if (superAdminBlock) return superAdminBlock
 
     const tenantId = await getCurrentTenantId()
-    const user = await findUserInTenant(id, tenantId)
+    const isProviderView = tenantId === DEFAULT_TENANT_ID
+
+    // Provider view operates on the global user record: the delete button on
+    // /security/users reads from a cross-tenant list, so it must also act
+    // cross-tenant. Tenant-scoped callers still look the user up through
+    // their own membership so they can't reach users in other tenants.
+    const user = isProviderView
+      ? await prisma.user.findUnique({ where: { id } })
+      : await findUserInTenant(id, tenantId)
     if (!user) {
       return NextResponse.json({ error: "Utilisateur non trouvé" }, { status: 404 })
     }
@@ -322,33 +339,43 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ id: s
       )
     }
 
-    // Drop the membership in the current tenant first; then check whether the
-    // user has any other membership left. If not, hard-delete the user from
-    // Postgres (Prisma cascade also drops their userTenant rows but we want
-    // the count check between the two operations).
-    await prisma.userTenant.delete({
-      where: { userId_tenantId: { userId: id, tenantId } },
-    })
-
-    const remainingMemberships = await prisma.userTenant.count({ where: { userId: id } })
-
-    if (remainingMemberships === 0) {
-      // No tenants left: hard-delete the user + all their RBAC grants.
-      // Cascade deletes (defined in the Prisma schema) drop rbac_user_roles +
-      // rbac_user_permissions, but we delete them explicitly first to avoid
-      // any FK-on-delete edge case with concurrent reads.
+    if (isProviderView) {
+      // Provider view: hard-delete the user across every tenant + drop every
+      // RBAC grant. Matches the UX of the global user list — "delete this
+      // user" means remove them from the platform, not from one tenant.
+      // Membership rows cascade off the user delete, but we strip RBAC
+      // explicitly first to avoid FK-on-delete edge cases with concurrent
+      // reads.
       await prisma.$transaction([
         prisma.rbacUserRole.deleteMany({ where: { userId: id } }),
         prisma.rbacUserPermission.deleteMany({ where: { userId: id } }),
+        prisma.userTenant.deleteMany({ where: { userId: id } }),
         prisma.user.delete({ where: { id } }),
       ])
     } else {
-      // Still a member elsewhere: only strip the RBAC grants scoped to the
-      // tenant we just removed them from.
-      await prisma.$transaction([
-        prisma.rbacUserRole.deleteMany({ where: { userId: id, tenantId } }),
-        prisma.rbacUserPermission.deleteMany({ where: { userId: id, tenantId } }),
-      ])
+      // Tenant-scoped view: drop the membership in the current tenant first,
+      // then hard-delete only if no membership remains anywhere. Strips
+      // RBAC grants scoped to that tenant on the partial-delete path so we
+      // don't leave a dead-weight role tied to a tenant the user no longer
+      // belongs to.
+      await prisma.userTenant.delete({
+        where: { userId_tenantId: { userId: id, tenantId } },
+      })
+
+      const remainingMemberships = await prisma.userTenant.count({ where: { userId: id } })
+
+      if (remainingMemberships === 0) {
+        await prisma.$transaction([
+          prisma.rbacUserRole.deleteMany({ where: { userId: id } }),
+          prisma.rbacUserPermission.deleteMany({ where: { userId: id } }),
+          prisma.user.delete({ where: { id } }),
+        ])
+      } else {
+        await prisma.$transaction([
+          prisma.rbacUserRole.deleteMany({ where: { userId: id, tenantId } }),
+          prisma.rbacUserPermission.deleteMany({ where: { userId: id, tenantId } }),
+        ])
+      }
     }
 
     // Audit

@@ -116,7 +116,26 @@ return <Chip size='small' label={t('usersPage.localAuth')} variant='outlined' ic
    User Dialog - Création/Modification
 -------------------------------- */
 
-function UserDialog({ open, onClose, user, onSave, rbacRoles, t, showRbac = true, currentUserId, enableTenantMgmt = false, tenantsList = [] }) {
+// Roles that must NEVER be assigned in a non-default tenant. Mirrors
+// TENANT_FORBIDDEN_ROLE_IDS in /security/rbac and the backend whitelist
+// (PROVIDER_ONLY_ROLE_IDS + PROTECTED_ROLE_IDS in src/lib/rbac/index.ts).
+//
+// Reason: legacy "global" roles (operator / vm_admin / viewer / vm_user)
+// grant automation.view which unlocks DRS / Site Recovery / Network
+// Security / Resources — pages Tenant Admin explicitly excludes. Protected
+// wildcards (super_admin / provider_admin) are provider-scope by design;
+// binding them under a tenant is either meaningless (super_admin is
+// cross-tenant) or an escalation surface (provider_admin → tenant_admin++).
+const TENANT_FORBIDDEN_ROLE_IDS = new Set([
+  'role_super_admin',
+  'role_provider_admin',
+  'role_operator',
+  'role_vm_admin',
+  'role_viewer',
+  'role_vm_user',
+])
+
+function UserDialog({ open, onClose, user, onSave, rbacRoles, t, showRbac = true, currentUserId, currentSessionTenantId = 'default', enableTenantMgmt = false, tenantsList = [] }) {
   // Self-protection: the current user cannot change their own role or disable
   // their own account (matches the backend guards in /users/[id] and
   // /rbac/assignments). Hide those controls in the edit dialog.
@@ -354,9 +373,32 @@ return
           </Alert>
         )}
 
-        {showRbac && !isSelf && (
+        {showRbac && !isSelf && (() => {
+          // Filter roles by the tenants this assignment will land on:
+          //  - Provider view (enableTenantMgmt): the role propagates to every
+          //    selected tenant via PATCH `roleId`, so if any of those tenants
+          //    is non-default, exclude tenant-forbidden roles. Falls back to
+          //    the user's existing memberships when nothing is selected yet
+          //    (edit flow before the operator touches the picker).
+          //  - Tenant-scoped view: assignment lands in the current session
+          //    tenant; if that's non-default, exclude forbidden roles.
+          //
+          // When the user is a member of `default` (in addition to others),
+          // we still hide forbidden roles — the backend would 400 on the
+          // tenant-scoped propagation, so surfacing the option misleads.
+          const targetTenantIds = enableTenantMgmt
+            ? (selectedTenants.length > 0
+                ? selectedTenants
+                : (user?.tenants?.map(tn => tn.id) ?? []))
+            : [currentSessionTenantId]
+          const hasNonDefaultTarget = targetTenantIds.some(id => id !== 'default')
+          const visibleRoles = hasNonDefaultTarget
+            ? rbacRoles.filter(r => !TENANT_FORBIDDEN_ROLE_IDS.has(r.id))
+            : rbacRoles
+
+          return (
           <Autocomplete
-            options={rbacRoles}
+            options={visibleRoles}
             value={selectedRole}
             onChange={(_, newValue) => setSelectedRole(newValue)}
             getOptionLabel={(option) => t && option.is_system ? t(`rbac.roles.${option.id}`) : option.name}
@@ -389,7 +431,8 @@ return
             )}
             sx={{ mb: 2 }}
           />
-        )}
+          )
+        })()}
 
         {isEdit && !isSelf && (
           <FormControlLabel
@@ -849,6 +892,7 @@ return () => setPageInfo('', '', '')
         t={t}
         showRbac={showRbac}
         currentUserId={session?.user?.id}
+        currentSessionTenantId={session?.user?.tenantId || 'default'}
         enableTenantMgmt={enableTenantMgmt}
         tenantsList={tenantsList}
       />

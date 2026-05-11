@@ -8,6 +8,7 @@ import { pbsFetch } from '@/lib/proxmox/pbs-client'
 import { getConnectionById } from '@/lib/connections/getConnection'
 import { prisma } from '@/lib/db/prisma'
 import { decryptSecret } from '@/lib/crypto/secret'
+import { DEFAULT_TENANT_ID } from '@/lib/tenant'
 
 import { generateZoneName, createZone, deleteZone, deleteVnetPve, applySdn } from './sdn'
 
@@ -591,7 +592,49 @@ export async function deleteVdc(id: string): Promise<void> {
   // PBS namespaces are intentionally NOT deleted here — the unbindFromVdc
   // loop in step 1 already handles them, including the PVE-side `pbs:`
   // storage + sub-token cleanup we don't want to duplicate.
-  await prisma.vdc.delete({ where: { id } })
+  //
+  // RBAC assignments that scoped a permission to this vDC's connection
+  // (or to nodes / VMs / pool of it) survive the vDC drop because their
+  // tenantId column has no FK to anything we delete here. Without manual
+  // cleanup they end up dead-weight: the assignment still fires through
+  // `hasPermission`, but the vDC gate denies every API call so the user
+  // sees nothing — and the row pollutes /security/rbac. We remove them in
+  // the same transaction so a half-failed delete either succeeds fully or
+  // leaves the original state untouched.
+  await prisma.$transaction(async tx => {
+    // Only clean up RBAC rows belonging to the same (non-default) tenant.
+    // The provider tenant owns connections directly, so its scoped RBAC
+    // rows aren't dead-weight when a tenant's vDC drops — keep them.
+    if (vdc.tenantId !== DEFAULT_TENANT_ID) {
+      const nodeNames = await tx.vdcNode.findMany({
+        where: { vdcId: id },
+        select: { nodeName: true },
+      })
+      const nodeScopeTargets = nodeNames.map(n => `${vdc.connectionId}:${n.nodeName}`)
+
+      await tx.rbacUserRole.deleteMany({
+        where: {
+          tenantId: vdc.tenantId,
+          OR: [
+            { scopeType: 'connection', scopeTarget: vdc.connectionId },
+            ...(nodeScopeTargets.length > 0
+              ? [{ scopeType: 'node', scopeTarget: { in: nodeScopeTargets } } as any]
+              : []),
+            {
+              // VM-scoped: "connId:node:type:vmid" — startsWith via the
+              // composite key. Prisma's `startsWith` on a String column
+              // generates `LIKE '<connId>:%'` in Postgres.
+              scopeType: 'vm',
+              scopeTarget: { startsWith: `${vdc.connectionId}:` },
+            },
+            { scopeType: 'pool', scopeTarget: vdc.pvePoolName },
+          ],
+        },
+      })
+    }
+
+    await tx.vdc.delete({ where: { id } })
+  })
 }
 
 // ---------------------------------------------------------------------------

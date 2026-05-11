@@ -443,11 +443,24 @@ export async function updateTenant(
 
 /**
  * Delete a tenant (cannot delete 'default').
+ *
+ * RbacUserRole.tenantId is a plain string column with no foreign-key relation
+ * to Tenant (see schema.prisma), so Postgres won't cascade-clean role grants
+ * when a tenant is dropped. Without this we leave orphan rows that surface in
+ * /security/rbac as assignments under tenant UUIDs nobody can resolve. We
+ * remove them in the same transaction as the tenant so a half-failed delete
+ * either rolls back fully or leaves nothing dangling.
  */
 export async function deleteTenant(id: string): Promise<boolean> {
   if (id === DEFAULT_TENANT_ID) return false
-  const result = await prisma.tenant.deleteMany({ where: { id, NOT: { id: "default" } } })
-  return result.count > 0
+
+  const deleted = await prisma.$transaction(async tx => {
+    await tx.rbacUserRole.deleteMany({ where: { tenantId: id } })
+    const result = await tx.tenant.deleteMany({ where: { id, NOT: { id: "default" } } })
+    return result.count > 0
+  })
+
+  return deleted
 }
 
 /**

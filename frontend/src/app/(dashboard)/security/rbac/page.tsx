@@ -17,7 +17,7 @@ import { DataGrid } from '@mui/x-data-grid'
 import { getDateLocale } from '@/lib/i18n/date'
 import { usePageTitle } from "@/contexts/PageTitleContext"
 import EnterpriseGuard from '@/components/guards/EnterpriseGuard'
-import { Features } from '@/contexts/LicenseContext'
+import { Features, useLicense } from '@/contexts/LicenseContext'
 import { useRBAC } from '@/contexts/RBACContext'
 import { CardsSkeleton, TableSkeleton } from '@/components/skeletons'
 
@@ -31,6 +31,30 @@ interface Assignment { id: string; user: User; role: { id: string; name: string;
 // Constants
 const scopeIcons = { global: 'ri-global-line', connection: 'ri-server-line', node: 'ri-computer-line', vm: 'ri-instance-line', tag: 'ri-price-tag-3-line', pool: 'ri-folder-shared-line' }
 const catIcons = { vm: 'ri-instance-line', storage: 'ri-hard-drive-3-line', node: 'ri-computer-line', connection: 'ri-server-line', backup: 'ri-archive-line', admin: 'ri-shield-user-line' }
+
+// Roles that must NEVER be assigned in a non-default tenant. Two reasons
+// stack here:
+//  - Protected wildcard roles (super_admin / provider_admin) only make sense
+//    on the provider tenant: super_admin is cross-tenant by design so binding
+//    it under tenant-1 is misleading, and provider_admin's wildcard would let
+//    a tenant operator escalate inside their own tenant.
+//  - Legacy "global" roles (operator / vm_admin / viewer / vm_user) grant
+//    automation.view which unlocks DRS / Site Recovery / Network Security /
+//    Resources — pages Tenant Admin explicitly excludes.
+//
+// Kept in sync with PROTECTED_ROLE_IDS + PROVIDER_ONLY_ROLE_IDS in
+// src/lib/rbac/index.ts (backend mirror).
+const TENANT_FORBIDDEN_ROLE_IDS = new Set([
+  'role_super_admin',
+  'role_provider_admin',
+  'role_operator',
+  'role_vm_admin',
+  'role_viewer',
+  'role_vm_user',
+])
+
+const isAssignableToTenant = (role: any, tenantId: string) =>
+  tenantId === 'default' || !TENANT_FORBIDDEN_ROLE_IDS.has(role?.id)
 
 // Scope labels function
 const getScopeLabels = (t: any) => ({
@@ -179,9 +203,13 @@ return n })}>
 }
 
 // Assignment Dialog avec sélection dynamique des ressources
-function AssignmentDialog({ open, onClose, roles, users, onSave, t }) {
+function AssignmentDialog({ open, onClose, roles, users, assignments = [], tenants = [], enableTenantMgmt = false, currentTenantId = 'default', onSave, t }) {
   const [user, setUser] = useState(null)
   const [roleId, setRoleId] = useState('')
+  // Provider view: tenant defaults to the session tenant ('default'), but the
+  // operator can pick any enabled tenant — the POST body's tenant_id field is
+  // honored only when the session is in the provider tenant (server check).
+  const [tenantId, setTenantId] = useState<string>(currentTenantId)
   const [scopeType, setScopeType] = useState('global')
   const [selectedTargets, setSelectedTargets] = useState<string[]>([])
   const [loading, setLoading] = useState(false)
@@ -210,12 +238,13 @@ function AssignmentDialog({ open, onClose, roles, users, onSave, t }) {
     if (open) {
       setUser(null)
       setRoleId('')
+      setTenantId(currentTenantId)
       setScopeType('global')
       setSelectedTargets([])
       setSearchFilter('')
       setError('')
     }
-  }, [open])
+  }, [open, currentTenantId])
 
   // Construire les options selon le scope type
   const scopeOptions = useMemo(() => {
@@ -328,19 +357,50 @@ function AssignmentDialog({ open, onClose, roles, users, onSave, t }) {
     }
   }, [inventory, scopeType])
 
-  // Toggle sélection d'un élément
+  // Conflict detection: the backend already rejects duplicates and second
+  // roles per tenant, but surfacing them client-side lets the operator fix the
+  // selection in one pass instead of clicking through error toasts. Three
+  // shapes to detect:
+  //  - `existingDifferentRole`: same (user, tenant) already holds another
+  //    role_id — backend rule "one role per tenant" would 400 the POST.
+  //  - `globalAlreadyExists`: same (user, tenant, role) global row exists.
+  //  - `duplicateTargets`: per-target list of (scope_type, scope_target) that
+  //    are already granted, so we can grey them out in the multi-select.
+  const conflict = useMemo(() => {
+    if (!user?.id || !roleId || !tenantId) {
+      return { existingDifferentRole: null as any, globalAlreadyExists: false, duplicateTargets: new Set<string>() }
+    }
+    const userInTenant = assignments.filter((a: any) => a.user.id === user.id && (a.tenant_id || 'default') === tenantId)
+    const otherRole = userInTenant.find((a: any) => a.role.id !== roleId)
+    const sameRole = userInTenant.filter((a: any) => a.role.id === roleId)
+    const dupTargets = new Set<string>()
+    let globalDup = false
+    for (const a of sameRole) {
+      if (a.scope_type === 'global') {
+        if (scopeType === 'global') globalDup = true
+      } else if (a.scope_type === scopeType && a.scope_target) {
+        dupTargets.add(a.scope_target)
+      }
+    }
+    return { existingDifferentRole: otherRole || null, globalAlreadyExists: globalDup, duplicateTargets: dupTargets }
+  }, [assignments, user, roleId, tenantId, scopeType])
+
+  // Toggle sélection d'un élément (les cibles déjà assignées sont neutralisées
+  // pour ne pas re-soumettre une combinaison que le backend refuserait).
   const toggleTarget = (id: string) => {
+    if (conflict.duplicateTargets.has(id)) return
     setSelectedTargets(prev =>
       prev.includes(id) ? prev.filter(t => t !== id) : [...prev, id]
     )
   }
 
-  // Sélectionner/Désélectionner tout
+  // Sélectionner/Désélectionner tout (ignore les cibles déjà assignées).
   const toggleAll = () => {
-    if (selectedTargets.length === scopeOptions.length) {
+    const selectable = scopeOptions.filter((o: any) => !conflict.duplicateTargets.has(o.id))
+    if (selectedTargets.length === selectable.length) {
       setSelectedTargets([])
     } else {
-      setSelectedTargets(scopeOptions.map((o: any) => o.id))
+      setSelectedTargets(selectable.map((o: any) => o.id))
     }
   }
 
@@ -387,7 +447,11 @@ return
             user_id: user.id,
             role_id: roleId,
             scope_type: scopeType,
-            scope_target: target
+            scope_target: target,
+            // tenant_id is honored server-side only when the caller is in the
+            // provider tenant. Sending it from any other context is harmless
+            // — the route ignores it and falls back to the session tenant.
+            ...(enableTenantMgmt ? { tenant_id: tenantId } : {}),
           })
         })
 
@@ -452,20 +516,42 @@ return
             </li>
           )}
         />
-        
-        {/* Sélection rôle */}
+
+        {/* Tenant (provider view only) — scopes the assignment to a specific
+            membership. Required because a user with memberships in multiple
+            tenants can hold a different role in each, and the backend stores
+            them as separate RbacUserRole rows keyed on tenantId. */}
+        {enableTenantMgmt && (
+          <FormControl fullWidth sx={{ mt: 2 }}>
+            <InputLabel>{t('vdc.tenant')}</InputLabel>
+            <Select value={tenantId} label={t('vdc.tenant')} onChange={e => setTenantId(e.target.value)}>
+              {tenants.map((tn: any) => (
+                <MenuItem key={tn.id} value={tn.id}>
+                  <Typography variant='body2'>{tn.name}</Typography>
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+        )}
+
+        {/* Sélection rôle (filtré par tenant cible : les rôles "global"
+            legacy (operator, vm_admin, viewer, vm_user) ne sortent que sur
+            le tenant provider pour éviter d'exposer DRS / Site Recovery /
+            Network / Resources à un opérateur tenant). */}
         <FormControl fullWidth sx={{ mt: 2 }}>
           <InputLabel>{t('rbac.title')}</InputLabel>
           <Select value={roleId} label={t('rbac.title')} onChange={e => setRoleId(e.target.value)}>
-            {roles.map((r: any) => (
-              <MenuItem key={r.id} value={r.id}>
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                  <Box sx={{ width: 12, height: 12, borderRadius: '50%', bgcolor: r.color }} />
-                  {r.name}
-                  {r.is_system && <Chip label={t('rbacPage.systemRole')} size='small' sx={{ height: 18, fontSize: '0.7rem' }} />}
-                </Box>
-              </MenuItem>
-            ))}
+            {roles
+              .filter((r: any) => isAssignableToTenant(r, tenantId))
+              .map((r: any) => (
+                <MenuItem key={r.id} value={r.id}>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                    <Box sx={{ width: 12, height: 12, borderRadius: '50%', bgcolor: r.color }} />
+                    {r.name}
+                    {r.is_system && <Chip label={t('rbacPage.systemRole')} size='small' sx={{ height: 18, fontSize: '0.7rem' }} />}
+                  </Box>
+                </MenuItem>
+              ))}
           </Select>
         </FormControl>
 
@@ -534,6 +620,25 @@ return
           </Select>
         </FormControl>
 
+        {/* Conflict notices — surface what the backend would refuse before
+            the operator clicks Save, so they can fix the selection in one go
+            instead of round-tripping through error toasts. */}
+        {user && conflict.existingDifferentRole && (
+          <Alert severity='warning' sx={{ mt: 2 }} icon={<i className='ri-error-warning-line' />}>
+            {t('rbacPage.userAlreadyHasRole', {
+              defaultValue: 'This user already holds the role "{role}" on this tenant. Remove it first or edit the existing assignment.',
+              role: conflict.existingDifferentRole.role?.name || conflict.existingDifferentRole.role?.id,
+            })}
+          </Alert>
+        )}
+        {user && conflict.globalAlreadyExists && (
+          <Alert severity='warning' sx={{ mt: 2 }} icon={<i className='ri-error-warning-line' />}>
+            {t('rbacPage.duplicateGlobalAssignment', {
+              defaultValue: 'This user already has this role on every resource (global) for this tenant.',
+            })}
+          </Alert>
+        )}
+
         {/* Sélection des ressources */}
         {scopeType !== 'global' && (
           <Box sx={{ mt: 2 }}>
@@ -570,14 +675,17 @@ return
             ) : (
               <Paper variant='outlined' sx={{ maxHeight: 250, overflow: 'auto' }}>
                 <List dense disablePadding>
-                  {filteredOptions.map((option: any) => (
+                  {filteredOptions.map((option: any) => {
+                    const alreadyAssigned = conflict.duplicateTargets.has(option.id)
+                    return (
                     <ListItem
                       key={option.id}
                       sx={{
                         borderBottom: '1px solid',
                         borderColor: 'divider',
-                        cursor: 'pointer',
-                        '&:hover': { bgcolor: 'action.hover' }
+                        cursor: alreadyAssigned ? 'not-allowed' : 'pointer',
+                        opacity: alreadyAssigned ? 0.45 : 1,
+                        '&:hover': { bgcolor: alreadyAssigned ? undefined : 'action.hover' }
                       }}
                       onClick={() => toggleTarget(option.id)}
                     >
@@ -585,6 +693,7 @@ return
                         <Checkbox
                           checked={selectedTargets.includes(option.id)}
                           size='small'
+                          disabled={alreadyAssigned}
                           onClick={e => e.stopPropagation()}
                           onChange={() => toggleTarget(option.id)}
                         />
@@ -604,12 +713,20 @@ return
                                 sx={{ height: 18, fontSize: '0.7rem' }}
                               />
                             )}
+                            {alreadyAssigned && (
+                              <Chip
+                                label={t('rbacPage.alreadyAssigned', { defaultValue: 'Already assigned' })}
+                                size='small'
+                                variant='outlined'
+                                sx={{ height: 18, fontSize: '0.7rem' }}
+                              />
+                            )}
                           </Box>
                         }
                         secondary={option.sublabel}
                       />
                     </ListItem>
-                  ))}
+                  )})}
                 </List>
               </Paper>
             )}
@@ -618,7 +735,15 @@ return
 
         {scopeType === 'global' && (
           <Alert severity='info' sx={{ mt: 2 }}>
-            <span dangerouslySetInnerHTML={{ __html: t('rbacPage.userHasRoleOnAll') }} />
+            {/* Translation contains <strong>…</strong> as inline rich text.
+                next-intl's `t.rich` substitutes the tag with the React node we
+                provide — keeps formatting intent without resorting to HTML
+                injection. Tenant context: "all resources" really means "every
+                resource the tenant's vDC exposes", because the vDC gate denies
+                out-of-scope infra downstream of RBAC. */}
+            {t.rich(tenantId === 'default' ? 'rbacPage.userHasRoleOnAll' : 'rbacPage.userHasRoleOnAllVdc', {
+              strong: (chunks: any) => <strong>{chunks}</strong>,
+            })}
           </Alert>
         )}
       </DialogContent>
@@ -627,7 +752,14 @@ return
         <Button
           variant='contained'
           onClick={handleSave}
-          disabled={saving || !user || !roleId || (scopeType !== 'global' && selectedTargets.length === 0)}
+          disabled={
+            saving ||
+            !user ||
+            !roleId ||
+            !!conflict.existingDifferentRole ||
+            (scopeType === 'global' && conflict.globalAlreadyExists) ||
+            (scopeType !== 'global' && selectedTargets.length === 0)
+          }
         >
           {saving ? t('common.saving') : selectedTargets.length > 1 ? `${t('common.save')} (${selectedTargets.length})` : t('common.save')}
         </Button>
@@ -724,8 +856,8 @@ return }
   )
 }
 
-// Assignments Tab avec regroupement par utilisateur/rôle/scope_type
-function AssignmentsTab({ assignments, roles, users, onRefresh, t }) {
+// Assignments Tab avec regroupement par utilisateur/rôle/tenant/scope_type
+function AssignmentsTab({ assignments, roles, users, tenants = [], enableTenantMgmt = false, currentTenantId = 'default', onRefresh, t }) {
   const dateLocale = getDateLocale(useLocale())
   const { data: session } = useSession()
   const currentUserId = session?.user?.id
@@ -737,18 +869,24 @@ function AssignmentsTab({ assignments, roles, users, onRefresh, t }) {
   const [deleting, setDeleting] = useState(false)
   const [filter, setFilter] = useState('')
 
-  // Regrouper les assignations par user_id + role_id + scope_type
+  // Regrouper les assignations par user_id + role_id + tenant_id + scope_type.
+  // Including tenant_id in the key keeps per-tenant rows separate in provider
+  // view — a user holding tenant_admin on tenant-1 AND tenant_viewer on
+  // tenant-2 must show as two rows, not one collapsed entry with mixed targets.
   const groupedAssignments = useMemo(() => {
     const groups = new Map<string, any>()
-    
+
     assignments.forEach((a: any) => {
-      const key = `${a.user.id}:${a.role.id}:${a.scope_type}`
-      
+      const tenantId = a.tenant_id || 'default'
+      const key = `${a.user.id}:${a.role.id}:${tenantId}:${a.scope_type}`
+
       if (!groups.has(key)) {
         groups.set(key, {
           id: key,
           user: a.user,
           role: a.role,
+          tenant_id: tenantId,
+          tenant_name: a.tenant_name || null,
           scope_type: a.scope_type,
           scope_targets: [],
           assignments: [],
@@ -756,7 +894,7 @@ function AssignmentsTab({ assignments, roles, users, onRefresh, t }) {
           granted_by_email: a.granted_by_email
         })
       }
-      
+
       const group = groups.get(key)
 
       if (a.scope_target) {
@@ -764,25 +902,27 @@ function AssignmentsTab({ assignments, roles, users, onRefresh, t }) {
       }
 
       group.assignments.push(a)
-      
+
       // Garder la date la plus récente
       if (new Date(a.granted_at) > new Date(group.granted_at)) {
         group.granted_at = a.granted_at
         group.granted_by_email = a.granted_by_email
       }
     })
-    
+
     return Array.from(groups.values())
   }, [assignments])
 
   const filtered = useMemo(() => {
     if (!filter) return groupedAssignments
-    
-return groupedAssignments.filter(a => 
-      a.user.email.toLowerCase().includes(filter.toLowerCase()) || 
-      a.user.name?.toLowerCase().includes(filter.toLowerCase())
+    const f = filter.toLowerCase()
+
+return groupedAssignments.filter(a =>
+      a.user.email.toLowerCase().includes(f) ||
+      a.user.name?.toLowerCase().includes(f) ||
+      (enableTenantMgmt && a.tenant_name?.toLowerCase().includes(f))
     )
-  }, [groupedAssignments, filter])
+  }, [groupedAssignments, filter, enableTenantMgmt])
 
   // All users are available for assignment (a user can have multiple roles)
   const availableUsers = users
@@ -893,6 +1033,28 @@ return (
     { field: 'role', headerName: t('rbac.title'), width: 130, renderCell: (p: any) => (
       <Chip label={p.row.role.is_system ? t(`rbac.roles.${p.row.role.id}`, { defaultValue: p.row.role.name }) : p.row.role.name} size='small' sx={{ bgcolor: alpha(p.row.role.color, 0.15), color: p.row.role.color, fontWeight: 500, height: 24 }} />
     )},
+    // Tenant column (Enterprise + provider view only). Mirrors the column
+    // added to /security/users so the same operator sees the same per-tenant
+    // breakdown across the two pages without losing the row-per-tenant grain.
+    ...(enableTenantMgmt ? [{
+      field: 'tenant',
+      headerName: t('vdc.tenant'),
+      width: 160,
+      sortable: false,
+      renderCell: (p: any) => {
+        const name = p.row.tenant_name || p.row.tenant_id
+        const isProviderTenant = p.row.tenant_id === 'default'
+        return (
+          <Chip
+            size='small'
+            label={name}
+            color={isProviderTenant ? 'primary' : 'default'}
+            variant={isProviderTenant ? 'filled' : 'outlined'}
+            sx={{ height: 22, fontSize: '0.75rem' }}
+          />
+        )
+      },
+    }] : []),
     { field: 'scope_type', headerName: t('rbacPage.scope'), width: 140, renderCell: (p: any) => (
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
         <i className={scopeIcons[p.row.scope_type]} style={{ opacity: 0.6, fontSize: 14 }} />
@@ -925,7 +1087,7 @@ return (
         </Box>
       )
     }}
-  ], [t, scopeLabels, currentUserId])
+  ], [t, scopeLabels, currentUserId, enableTenantMgmt])
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, flex: 1 }}>
@@ -958,8 +1120,8 @@ return (
           }} 
         />
       </Box>
-      <AssignmentDialog open={dialogOpen} onClose={() => setDialogOpen(false)} roles={roles} users={availableUsers} onSave={onRefresh} t={t} />
-      <EditAssignmentDialog open={editDialogOpen} onClose={() => setEditDialogOpen(false)} assignmentGroup={toEdit} roles={roles} onSave={onRefresh} t={t} />
+      <AssignmentDialog open={dialogOpen} onClose={() => setDialogOpen(false)} roles={roles} users={availableUsers} assignments={assignments} tenants={tenants} enableTenantMgmt={enableTenantMgmt} currentTenantId={currentTenantId} onSave={onRefresh} t={t} />
+      <EditAssignmentDialog open={editDialogOpen} onClose={() => setEditDialogOpen(false)} assignmentGroup={toEdit} roles={roles} enableTenantMgmt={enableTenantMgmt} onSave={onRefresh} t={t} />
       <DeleteDialog
         open={deleteOpen}
         onClose={() => setDeleteOpen(false)}
@@ -974,7 +1136,7 @@ return (
 }
 
 // Edit Assignment Dialog avec multi-sélection (travaille sur un groupe d'assignations)
-function EditAssignmentDialog({ open, onClose, assignmentGroup, roles, onSave, t }) {
+function EditAssignmentDialog({ open, onClose, assignmentGroup, roles, enableTenantMgmt = false, onSave, t }) {
   const [roleId, setRoleId] = useState('')
   const [scopeType, setScopeType] = useState('global')
   const [selectedTargets, setSelectedTargets] = useState<string[]>([])
@@ -1233,7 +1395,15 @@ return
         }
       }
 
-      // Créer les nouvelles assignations
+      // Créer les nouvelles assignations. tenant_id is forwarded in provider
+      // view so the re-created rows land in the same tenant as the assignment
+      // group being edited — without it the POST defaults to the session
+      // tenant and the operator would silently move a tenant-1 assignment to
+      // `default` while editing it.
+      const tenantPayload = enableTenantMgmt && assignmentGroup?.tenant_id
+        ? { tenant_id: assignmentGroup.tenant_id }
+        : {}
+
       for (const target of toAdd) {
         const res = await fetch('/api/v1/rbac/assignments', {
           method: 'POST',
@@ -1242,7 +1412,8 @@ return
             user_id: assignmentGroup.user.id,
             role_id: roleId,
             scope_type: scopeType,
-            scope_target: target
+            scope_target: target,
+            ...tenantPayload,
           })
         })
 
@@ -1267,7 +1438,8 @@ return
             user_id: assignmentGroup.user.id,
             role_id: roleId,
             scope_type: 'global',
-            scope_target: null
+            scope_target: null,
+            ...tenantPayload,
           })
         })
 
@@ -1315,18 +1487,34 @@ return
 
         <TextField fullWidth label={t('navigation.users')} value={assignmentGroup?.user?.email || ''} disabled sx={{ mt: 2 }} />
 
+        {/* Tenant context (read-only). Showing it explicitly avoids the silent
+            mistake of editing the "wrong" row when a user holds the same role
+            in multiple tenants. The assignment's tenant cannot change in
+            place — moving requires a delete + recreate. */}
+        {enableTenantMgmt && assignmentGroup?.tenant_id && (
+          <TextField
+            fullWidth
+            label={t('vdc.tenant')}
+            value={assignmentGroup.tenant_name || assignmentGroup.tenant_id}
+            disabled
+            sx={{ mt: 2 }}
+          />
+        )}
+
         <FormControl fullWidth sx={{ mt: 2 }}>
           <InputLabel>{t('rbac.title')}</InputLabel>
           <Select value={roleId} label={t('rbac.title')} onChange={e => setRoleId(e.target.value)}>
-            {roles.map((r: any) => (
-              <MenuItem key={r.id} value={r.id}>
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                  <Box sx={{ width: 12, height: 12, borderRadius: '50%', bgcolor: r.color }} />
-                  {r.name}
-                  {r.is_system && <Chip label={t('rbacPage.systemRole')} size='small' sx={{ height: 18, fontSize: '0.7rem' }} />}
-                </Box>
-              </MenuItem>
-            ))}
+            {roles
+              .filter((r: any) => isAssignableToTenant(r, assignmentGroup?.tenant_id || 'default'))
+              .map((r: any) => (
+                <MenuItem key={r.id} value={r.id}>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                    <Box sx={{ width: 12, height: 12, borderRadius: '50%', bgcolor: r.color }} />
+                    {r.name}
+                    {r.is_system && <Chip label={t('rbacPage.systemRole')} size='small' sx={{ height: 18, fontSize: '0.7rem' }} />}
+                  </Box>
+                </MenuItem>
+              ))}
           </Select>
         </FormControl>
 
@@ -1335,7 +1523,7 @@ return
           <Select
             value={scopeType}
             label={t('rbacPage.scope')}
-            onChange={e => { 
+            onChange={e => {
               setScopeType(e.target.value)
               setSelectedTargets([])
             }}
@@ -1481,7 +1669,12 @@ return
 
         {scopeType === 'global' && (
           <Alert severity='info' sx={{ mt: 2 }}>
-            <span dangerouslySetInnerHTML={{ __html: t('rbacPage.userHasRoleOnAll') }} />
+            {t.rich(
+              (assignmentGroup?.tenant_id || 'default') === 'default'
+                ? 'rbacPage.userHasRoleOnAll'
+                : 'rbacPage.userHasRoleOnAllVdc',
+              { strong: (chunks: any) => <strong>{chunks}</strong> },
+            )}
           </Alert>
         )}
       </DialogContent>
@@ -1503,12 +1696,24 @@ return
 export default function RBACPage() {
   const { data: session } = useSession()
   const t = useTranslations()
+  const { hasFeature } = useLicense()
+
+  // Cross-tenant management on the Assignments tab mirrors /security/users:
+  // visible only when the Enterprise multi-tenancy feature is enabled AND the
+  // operator is in the provider tenant. Community editions and tenant-scoped
+  // sessions stay on the single-tenant flow.
+  const showTenants = hasFeature(Features.MULTI_TENANCY)
+  const isInDefaultTenant = (session?.user?.tenantId || 'default') === 'default'
+  const enableTenantMgmt = showTenants && isInDefaultTenant
+  const currentTenantId = session?.user?.tenantId || 'default'
+
   const [tab, setTab] = useState(0)
   const [roles, setRoles] = useState([])
   const [permissions, setPermissions] = useState([])
   const [categories, setCategories] = useState([])
   const [assignments, setAssignments] = useState([])
   const [users, setUsers] = useState([])
+  const [tenants, setTenants] = useState<Array<{ id: string; name: string }>>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
@@ -1524,19 +1729,29 @@ return () => setPageInfo('', '', '')
     setLoading(true); setError('')
 
     try {
-      const [rolesRes, permsRes, assignRes, usersRes] = await Promise.all([
-        fetch('/api/v1/rbac/roles'), fetch('/api/v1/rbac/permissions'),
-        fetch('/api/v1/rbac/assignments'), fetch('/api/v1/users')
-      ])
+      // Tenants are only loaded from the provider view — /api/v1/tenants
+      // is gated server-side by requireProviderTenant; calling it from any
+      // other context would return 403 and noise the console.
+      const requests: Promise<Response>[] = [
+        fetch('/api/v1/rbac/roles'),
+        fetch('/api/v1/rbac/permissions'),
+        fetch('/api/v1/rbac/assignments'),
+        fetch('/api/v1/users'),
+      ]
+      if (enableTenantMgmt) requests.push(fetch('/api/v1/tenants'))
 
-      const [rolesData, permsData, assignData, usersData] = await Promise.all([rolesRes.json(), permsRes.json(), assignRes.json(), usersRes.json()])
+      const responses = await Promise.all(requests)
+      const [rolesRes, permsRes, assignRes, usersRes, tenantsRes] = responses
+      const payloads = await Promise.all(responses.map(r => r.json()))
+      const [rolesData, permsData, assignData, usersData, tenantsData] = payloads
 
       if (rolesRes.ok) setRoles(rolesData.data || [])
       if (permsRes.ok) { setPermissions(permsData.data || []); setCategories(permsData.categories || []) }
       if (assignRes.ok) setAssignments(assignData.data || [])
       if (usersRes.ok) setUsers(usersData.data || [])
+      if (enableTenantMgmt && tenantsRes?.ok) setTenants(tenantsData?.data || [])
     } catch (e) { setError(t('errors.loadingError')) } finally { setLoading(false) }
-  }, [t])
+  }, [t, enableTenantMgmt])
 
   useEffect(() => { loadData() }, [loadData])
 
@@ -1554,7 +1769,7 @@ return () => setPageInfo('', '', '')
           {loading ? <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, flex: 1, p: 2 }}><CardsSkeleton count={3} columns={3} /><TableSkeleton rows={4} columns={5} /></Box> : (
             <>
               {tab === 0 && <RolesTab roles={roles} categories={categories} onRefresh={loadData} t={t} />}
-              {tab === 1 && <AssignmentsTab assignments={assignments} roles={roles} users={users} onRefresh={loadData} t={t} />}
+              {tab === 1 && <AssignmentsTab assignments={assignments} roles={roles} users={users} tenants={tenants} enableTenantMgmt={enableTenantMgmt} currentTenantId={currentTenantId} onRefresh={loadData} t={t} />}
               {tab === 2 && (
                 <Box>
                   <Typography variant='body2' sx={{ mb: 2, opacity: 0.6 }}>{t('rbacPage.permissionsAvailable', { count: permissions.length, categories: categories.length })}</Typography>

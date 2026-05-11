@@ -215,17 +215,21 @@ function checkScopeMatch(
       return resourceId.startsWith(scopeTarget || "")
 
     case "node":
-      // Le scope node correspond si la ressource est sur ce nœud
-      // Format attendu pour resourceId: "connection_id:node:..."
+      // Node scope matches when the resource sits on this node. Both
+      // scopeTarget and resourceId carry the cluster prefix:
+      //   scopeTarget : "connectionId:nodeName"
+      //   resourceId  : "connectionId:nodeName"             (node itself)
+      //              or "connectionId:nodeName:type:vmid"   (VM/CT on the node)
+      // The previous `parts[1] === scopeTarget` check compared just the
+      // nodeName against the full composite key and always failed, so
+      // /security/users showed empty effective-permission lists for any
+      // node-scoped grant — diverging from the canonical `scopeMatches`
+      // in src/lib/rbac/index.ts that the rest of the API uses.
       if (scopeTarget) {
-        const parts = resourceId.split(":")
-
-
-return parts[1] === scopeTarget
+        return resourceId === scopeTarget || resourceId.startsWith(scopeTarget + ":")
       }
 
-
-return false
+      return false
 
     case "vm":
       // Le scope VM correspond exactement

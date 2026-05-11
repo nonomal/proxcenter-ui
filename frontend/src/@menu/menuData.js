@@ -72,6 +72,7 @@ export const menuData = (t = (key) => key) => [
     label: t('navigation.orchestration'),
     icon: 'ri-robot-line',
     permissions: ['automation.view'], // Provider-scope orchestration: DRS, SR, flows, resources
+    requires: { isProviderTenant: true }, // Hidden in tenant view: these pages drive fleet-wide ops the tenant can't act on
     requiredFeature: 'drs', // Whole section requires DRS feature
     children: [
       {
@@ -79,6 +80,7 @@ export const menuData = (t = (key) => key) => [
         icon: 'ri-loop-left-fill',
         href: '/automation/drs',
         permissions: ['automation.view'],
+        requires: { isProviderTenant: true },
         requiredFeature: 'drs'
       },
       {
@@ -86,6 +88,7 @@ export const menuData = (t = (key) => key) => [
         icon: 'ri-shield-star-line',
         href: '/automation/site-recovery',
         permissions: ['automation.view'],
+        requires: { isProviderTenant: true },
         requiredFeature: 'ceph_replication'
       },
       {
@@ -93,6 +96,7 @@ export const menuData = (t = (key) => key) => [
         icon: 'ri-shield-flash-fill',
         href: '/automation/network',
         permissions: ['automation.view'],
+        requires: { isProviderTenant: true },
         requiredFeature: 'microsegmentation'
       },
       {
@@ -100,6 +104,7 @@ export const menuData = (t = (key) => key) => [
         icon: 'ri-flow-chart',
         href: '/operations/network-flows',
         permissions: ['automation.view'],
+        requires: { isProviderTenant: true },
         requiredFeature: 'sflow_monitoring'
       },
       {
@@ -107,6 +112,7 @@ export const menuData = (t = (key) => key) => [
         icon: 'ri-pie-chart-fill',
         href: '/infrastructure/resources',
         permissions: ['automation.view'],
+        requires: { isProviderTenant: true },
         requiredFeature: 'green_metrics' // Requires Enterprise license
       }
     ]

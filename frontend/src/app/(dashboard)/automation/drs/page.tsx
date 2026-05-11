@@ -11,6 +11,7 @@ import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip,
 import ChartContainer from '@/components/ChartContainer'
 
 import EnterpriseGuard from '@/components/guards/EnterpriseGuard'
+import ProviderTenantGuard from '@/components/guards/ProviderTenantGuard'
 import { Features, useLicense } from '@/contexts/LicenseContext'
 
 
@@ -2038,6 +2039,7 @@ return next
   }, [clusters])
 
   return (
+    <ProviderTenantGuard>
     <EnterpriseGuard requiredFeature={Features.DRS} featureName={`${t('drs.title')} (${t('drs.subtitle')})`}>
       <Box sx={{ p: 3 }}>
       {/* DRS Health Banner */}
@@ -2706,5 +2708,6 @@ return next
       </Snackbar>
     </Box>
     </EnterpriseGuard>
+    </ProviderTenantGuard>
   )
 }

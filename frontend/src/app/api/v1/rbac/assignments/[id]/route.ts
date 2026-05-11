@@ -7,9 +7,20 @@ import { getServerSession } from "next-auth"
 import { authOptions } from "@/lib/auth/config"
 import { prisma } from "@/lib/db/prisma"
 import { audit } from "@/lib/audit"
-import { hasPermission, isUserSuperAdmin, isUserProtected, PROTECTED_ROLE_IDS } from "@/lib/rbac"
-import { getCurrentTenantId } from "@/lib/tenant"
+import { hasPermission, isUserSuperAdmin, isUserProtected, PROTECTED_ROLE_IDS, PROVIDER_ONLY_ROLE_IDS } from "@/lib/rbac"
+import { DEFAULT_TENANT_ID, getCurrentTenantId } from "@/lib/tenant"
 import { demoResponse } from "@/lib/demo/demo-api"
+
+/**
+ * Build the `where` clause for a single-assignment lookup. Provider-tenant
+ * callers ({@link DEFAULT_TENANT_ID}) reach assignments in every tenant — this
+ * mirrors the GET list endpoint and lets /security/rbac edit / delete the
+ * per-tenant rows it surfaces in provider view. Tenant-scoped operators stay
+ * pinned to their own tenant so they can't touch assignments outside scope.
+ */
+function buildAssignmentWhere(id: string, sessionTenantId: string) {
+  return sessionTenantId === DEFAULT_TENANT_ID ? { id } : { id, tenantId: sessionTenantId }
+}
 
 interface RouteContext {
   params: Promise<{ id: string }>
@@ -52,7 +63,7 @@ export async function GET(req: NextRequest, context: RouteContext) {
     const tenantId = await getCurrentTenantId()
 
     const assignment = await prisma.rbacUserRole.findFirst({
-      where: { id, tenantId },
+      where: buildAssignmentWhere(id, tenantId),
       include: {
         user: { select: { id: true, email: true, name: true } },
         role: { select: { id: true, name: true, color: true } },
@@ -121,7 +132,7 @@ export async function DELETE(req: NextRequest, context: RouteContext) {
 
     // Récupérer l'assignation pour l'audit (scoped by tenant)
     const assignment = await prisma.rbacUserRole.findFirst({
-      where: { id, tenantId },
+      where: buildAssignmentWhere(id, tenantId),
       include: {
         user: { select: { email: true } },
         role: { select: { name: true } },
@@ -147,7 +158,7 @@ export async function DELETE(req: NextRequest, context: RouteContext) {
     }
 
     // Supprimer l'assignation
-    await prisma.rbacUserRole.deleteMany({ where: { id, tenantId } })
+    await prisma.rbacUserRole.deleteMany({ where: buildAssignmentWhere(id, tenantId) })
 
     // Audit
     await audit({
@@ -203,7 +214,7 @@ export async function PATCH(req: NextRequest, context: RouteContext) {
 
     // Récupérer l'assignation existante (scoped by tenant)
     const assignment = await prisma.rbacUserRole.findFirst({
-      where: { id, tenantId },
+      where: buildAssignmentWhere(id, tenantId),
       include: {
         user: { select: { email: true } },
         role: { select: { name: true } },
@@ -237,6 +248,21 @@ export async function PATCH(req: NextRequest, context: RouteContext) {
       (PROTECTED_ROLE_IDS as readonly string[]).includes(role_id)
     ) {
       return NextResponse.json({ error: "Rôle non trouvé" }, { status: 404 })
+    }
+
+    // Same guard as POST: tenant rows must reject both legacy "global" roles
+    // (operator family — automation.view leakage) and protected wildcards
+    // (super_admin / provider_admin — provider-scoped by design).
+    const tenantForbiddenRoles = [...PROVIDER_ONLY_ROLE_IDS, ...PROTECTED_ROLE_IDS] as readonly string[]
+    if (
+      role_id &&
+      assignment.tenantId !== DEFAULT_TENANT_ID &&
+      tenantForbiddenRoles.includes(role_id)
+    ) {
+      return NextResponse.json(
+        { error: "Ce rôle ne peut être assigné que dans le tenant provider (default)" },
+        { status: 400 }
+      )
     }
 
     // Construire le payload Prisma en ne touchant que les champs fournis
@@ -273,11 +299,11 @@ export async function PATCH(req: NextRequest, context: RouteContext) {
       return NextResponse.json({ error: "Aucun champ à mettre à jour" }, { status: 400 })
     }
 
-    await prisma.rbacUserRole.updateMany({ where: { id, tenantId }, data })
+    await prisma.rbacUserRole.updateMany({ where: buildAssignmentWhere(id, tenantId), data })
 
     // Récupérer l'assignation mise à jour
     const updated = await prisma.rbacUserRole.findFirst({
-      where: { id, tenantId },
+      where: buildAssignmentWhere(id, tenantId),
       include: {
         user: { select: { id: true, email: true } },
         role: { select: { id: true, name: true, color: true } },
