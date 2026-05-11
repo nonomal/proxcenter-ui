@@ -189,6 +189,24 @@ function UserDialog({ open, onClose, user, onSave, rbacRoles, t, showRbac = true
     setError('')
   }, [user, open])
 
+  // Clear the role state when the selected tenants make the current role
+  // tenant-forbidden. Without this, the role disappears from the dropdown
+  // (filtered visually) but stays in component state and rides along on
+  // submit — the backend would still refuse, but with a non-obvious 400
+  // toast far from where the operator made the change.
+  useEffect(() => {
+    if (!selectedRole) return
+    const targetTenantIds = enableTenantMgmt
+      ? (selectedTenants.length > 0
+          ? selectedTenants
+          : (user?.tenants?.map(tn => tn.id) ?? []))
+      : [currentSessionTenantId]
+    const hasNonDefaultTarget = targetTenantIds.some(id => id !== 'default')
+    if (hasNonDefaultTarget && TENANT_FORBIDDEN_ROLE_IDS.has(selectedRole.id)) {
+      setSelectedRole(null)
+    }
+  }, [selectedTenants, selectedRole, enableTenantMgmt, currentSessionTenantId, user])
+
   const handleSave = async () => {
     setError('')
 

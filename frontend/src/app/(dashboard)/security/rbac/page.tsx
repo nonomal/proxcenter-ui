@@ -246,6 +246,18 @@ function AssignmentDialog({ open, onClose, roles, users, assignments = [], tenan
     }
   }, [open, currentTenantId])
 
+  // Clear the role when switching to a tenant that forbids it. The Select
+  // already hides the option visually, but its state value would still ride
+  // along on submit — the backend refuses with a 400, but the UX is
+  // confusing because the operator no longer sees the role they "have"
+  // selected. Resetting forces a re-pick from the filtered list.
+  useEffect(() => {
+    if (!roleId) return
+    if (tenantId !== 'default' && TENANT_FORBIDDEN_ROLE_IDS.has(roleId)) {
+      setRoleId('')
+    }
+  }, [tenantId, roleId])
+
   // Construire les options selon le scope type
   const scopeOptions = useMemo(() => {
     if (!inventory?.clusters) return []

@@ -6,7 +6,7 @@ import { getServerSession } from "next-auth"
 import { authOptions } from "@/lib/auth/config"
 import { prisma } from "@/lib/db/prisma"
 import { hashPassword } from "@/lib/auth/password"
-import { checkPermission, PERMISSIONS, isUserSuperAdmin, isUserProtected, PROTECTED_ROLE_IDS } from "@/lib/rbac"
+import { checkPermission, PERMISSIONS, isUserSuperAdmin, isUserProtected, PROTECTED_ROLE_IDS, PROVIDER_ONLY_ROLE_IDS } from "@/lib/rbac"
 import { nanoid } from "nanoid"
 import { DEFAULT_TENANT_ID, addUserToTenant, removeUserFromTenant, TenantMembershipError, getCurrentTenantId } from "@/lib/tenant"
 
@@ -217,6 +217,26 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
         where: { userId: id },
         select: { tenantId: true },
       })
+
+      // Tenant-forbidden roles (legacy "global" roles: operator / vm_admin /
+      // viewer / vm_user) grant automation.view, which would unlock DRS /
+      // Site Recovery / Network Security / Resources for a tenant user.
+      // The POST /api/v1/rbac/assignments guard already refuses them on
+      // non-default tenants; this propagation path was the missing
+      // bypass — a direct PATCH with roleId would otherwise propagate
+      // such a role across every membership, including tenant clients.
+      // Mirror the same rule here.
+      if (
+        typeof roleId === "string" &&
+        roleId.length > 0 &&
+        (PROVIDER_ONLY_ROLE_IDS as readonly string[]).includes(roleId) &&
+        memberships.some(m => m.tenantId !== DEFAULT_TENANT_ID)
+      ) {
+        return NextResponse.json(
+          { error: "Ce rôle ne peut être assigné que dans le tenant provider (default)" },
+          { status: 400 }
+        )
+      }
       const grantedById = session?.user?.id || null
       const now = new Date()
 
