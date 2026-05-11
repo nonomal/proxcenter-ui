@@ -17,6 +17,8 @@ const reportsFetcher = async () => {
   if (typesRes.ok) {
     const data = await typesRes.json()
     reportTypes = Array.isArray(data) ? data : []
+  } else if (typesRes.status === 403 || typesRes.status === 401) {
+    throw new Error('Session not ready')
   }
   if (reportsRes.ok) {
     const data = await reportsRes.json()
@@ -39,6 +41,6 @@ export function useReportsData(isEnterprise: boolean) {
   return useSWR(
     isEnterprise ? 'reports/data' : null,
     reportsFetcher,
-    { refreshInterval }
+    { refreshInterval, errorRetryInterval: 3000, errorRetryCount: 5 }
   )
 }

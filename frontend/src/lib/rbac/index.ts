@@ -39,6 +39,12 @@ export function hasPermission(check: PermissionCheck): boolean {
       AND (ur.expires_at IS NULL OR ur.expires_at > datetime('now'))
   `).all(userId, tid) as any[]
 
+  if (userRoles.length === 0) {
+    console.warn(`[RBAC] No roles found for user=${userId} tenant=${tid} perm=${permission}`)
+  } else {
+    console.warn(`[RBAC] Found ${userRoles.length} roles for user=${userId} tenant=${tid} perm=${permission}: ${userRoles.map((r: any) => r.role_id).join(',')}`)
+  }
+
   // Check if any role grants this permission with matching scope
   for (const role of userRoles) {
     // Check if role has the permission

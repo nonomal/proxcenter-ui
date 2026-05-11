@@ -2,8 +2,10 @@
 import { NextRequest, NextResponse } from 'next/server'
 
 import { orchestratorFetch } from '@/lib/orchestrator'
-import { getTenantConnectionIds } from '@/lib/tenant'
+import { getTenantConnectionIds, getCurrentTenantId, DEFAULT_TENANT_ID } from '@/lib/tenant'
 import { checkPermission, PERMISSIONS } from '@/lib/rbac'
+
+const VDC_ALLOWED_REPORT_TYPES = new Set(['alerts', 'utilization', 'inventory'])
 
 export const runtime = 'nodejs'
 
@@ -57,6 +59,15 @@ export async function POST(request: NextRequest) {
     if (denied) return denied
 
     const body = await request.json()
+
+    // Validate report type for vDC tenants
+    const tenantId = await getCurrentTenantId()
+    if (tenantId !== DEFAULT_TENANT_ID && !VDC_ALLOWED_REPORT_TYPES.has(body.type)) {
+      return NextResponse.json(
+        { error: `Report type '${body.type}' is not available for this tenant` },
+        { status: 403 }
+      )
+    }
 
     // Inject tenant connection_ids so the orchestrator only includes this tenant's data
     const tenantConnectionIds = await getTenantConnectionIds()

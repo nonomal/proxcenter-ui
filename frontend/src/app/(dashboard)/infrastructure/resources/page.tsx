@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useMemo, useCallback } from 'react'
+import { useEffect, useState, useMemo } from 'react'
 
 import { useLocale, useTranslations } from 'next-intl'
 import { getDateLocale } from '@/lib/i18n/date'
@@ -23,7 +23,6 @@ import { calculateImprovedPredictions } from './algorithms/improvedPrediction'
 import { calculateHealthScoreWithDetails } from './algorithms/healthScore'
 
 import { RefreshIcon } from './components/icons'
-import { exportResourcesPdf } from './lib/exportPdf'
 import GlobalHealthScore from './components/GlobalHealthScore'
 import PredictiveAlertsCard from './components/PredictiveAlertsCard'
 import ProjectionChart from './components/ProjectionChart'
@@ -42,7 +41,6 @@ export default function ResourcesPage() {
 
   // Cluster drill-down (F4)
   const [selectedConnection, setSelectedConnection] = useState('all')
-  const [exporting, setExporting] = useState(false)
   const [drawerVm, setDrawerVm] = useState<VmIdentity | null>(null)
 
   // Data hook
@@ -80,26 +78,6 @@ export default function ResourcesPage() {
     setAiAnalysis({ summary: '', recommendations: [], loading: false })
   }
 
-  const handleExportPdf = useCallback(async () => {
-    if (!kpis || !healthBreakdown) return
-    setExporting(true)
-    try {
-      await exportResourcesPdf({
-        kpis,
-        healthScore,
-        healthBreakdown,
-        alerts,
-        overprovisioning,
-        green,
-        networkMetrics,
-        topCpuVms,
-        topRamVms,
-      })
-    } finally {
-      setExporting(false)
-    }
-  }, [kpis, healthScore, healthBreakdown, alerts, overprovisioning, green, networkMetrics, topCpuVms, topRamVms])
-
   return (
     <EnterpriseGuard requiredFeature={Features.GREEN_METRICS} featureName={t('resources.greenMetricsFeature')}>
       <Box sx={{ p: 3 }}>
@@ -114,15 +92,6 @@ export default function ResourcesPage() {
 
           {/* Right: actions */}
           <Stack direction="row" spacing={1}>
-            <Button
-              variant="outlined"
-              startIcon={exporting ? <CircularProgress size={16} /> : <i className="ri-file-pdf-2-line" style={{ fontSize: 18 }} />}
-              onClick={handleExportPdf}
-              disabled={exporting || loading || !kpis}
-              sx={{ borderRadius: 2 }}
-            >
-              {t('resources.exportPdf')}
-            </Button>
             <Button
               variant="outlined"
               startIcon={loading ? <CircularProgress size={16} /> : <RefreshIcon />}
