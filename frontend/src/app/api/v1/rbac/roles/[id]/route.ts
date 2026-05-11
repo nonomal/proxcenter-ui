@@ -11,6 +11,25 @@ import { isUserSuperAdmin, PROTECTED_ROLE_IDS } from "@/lib/rbac"
 import { getCurrentTenantId } from "@/lib/tenant"
 import { demoResponse } from "@/lib/demo/demo-api"
 
+/** See POST /api/v1/rbac/roles — same shape, same dedup rules. */
+function normalizeWidgetOverrides(raw: unknown): { hidden: string[] } | null | undefined {
+  if (raw === undefined) return undefined
+  if (raw === null) return null
+  if (typeof raw !== "object") return null
+
+  const hidden = (raw as any).hidden
+  if (!Array.isArray(hidden)) return null
+
+  const clean = Array.from(new Set(
+    hidden
+      .filter((h: any) => typeof h === "string")
+      .map((h: string) => h.trim())
+      .filter(Boolean),
+  ))
+
+  return clean.length === 0 ? null : { hidden: clean }
+}
+
 interface RouteContext {
   params: Promise<{ id: string }>
 }
@@ -72,6 +91,7 @@ export async function GET(req: NextRequest, context: RouteContext) {
         description: role.description,
         is_system: role.isSystem,
         color: role.color,
+        widget_overrides: role.widgetOverrides ?? null,
         created_at: role.createdAt.toISOString(),
         updated_at: role.updatedAt.toISOString(),
         permissions: role.permissions.map(rp => ({
@@ -134,13 +154,25 @@ export async function PATCH(req: NextRequest, context: RouteContext) {
       return NextResponse.json({ error: "Rôle non trouvé" }, { status: 404 })
     }
 
-    if (role.isSystem) {
-      return NextResponse.json({ error: "Impossible de modifier un rôle système" }, { status: 400 })
-    }
-
     const body = await req.json()
-    const { name, description, color, permissions } = body
+    const { name, description, color, permissions, widget_overrides } = body
     const now = new Date()
+    const normalizedOverrides = normalizeWidgetOverrides(widget_overrides)
+
+    // System roles are immutable except for widget overrides — those purely
+    // hide UI elements and grant no privileges, so admins can tailor the
+    // dashboard for system roles without forking them.
+    if (role.isSystem) {
+      const touchedSystemImmutable =
+        name !== undefined ||
+        description !== undefined ||
+        color !== undefined ||
+        Array.isArray(permissions)
+
+      if (touchedSystemImmutable) {
+        return NextResponse.json({ error: "Impossible de modifier un rôle système" }, { status: 400 })
+      }
+    }
 
     // Vérifier l'unicité du nom si modifié
     if (name && name !== role.name) {
@@ -154,12 +186,19 @@ export async function PATCH(req: NextRequest, context: RouteContext) {
       }
     }
 
-    const updateData: { name?: string; description?: string | null; color?: string; updatedAt: Date } = {
+    const updateData: {
+      name?: string
+      description?: string | null
+      color?: string
+      widgetOverrides?: any
+      updatedAt: Date
+    } = {
       updatedAt: now,
     }
     if (name !== undefined) updateData.name = name
     if (description !== undefined) updateData.description = description
     if (color !== undefined) updateData.color = color
+    if (normalizedOverrides !== undefined) updateData.widgetOverrides = normalizedOverrides
 
     const replacePermissions = Array.isArray(permissions)
     const permIds: string[] = replacePermissions ? permissions.filter((p: any) => typeof p === "string") : []
@@ -209,6 +248,7 @@ export async function PATCH(req: NextRequest, context: RouteContext) {
         description: updated.description,
         is_system: updated.isSystem,
         color: updated.color,
+        widget_overrides: updated.widgetOverrides ?? null,
         created_at: updated.createdAt.toISOString(),
         updated_at: updated.updatedAt.toISOString(),
         permissions: updated.permissions.map(rp => ({

@@ -4816,6 +4816,11 @@
     "nodes": "节点",
     "clusters": "集群",
     "permissionsCount": "权限（{count}）",
+    "widgetVisibility": {
+      "title": "小组件可见性",
+      "desc": "勾选要为此角色用户隐藏的小组件。叠加于按 Scope 自动过滤之上。",
+      "hiddenCount": "已隐藏 {count} 个"
+    },
     "globalScope": "全局",
     "tagScope": "标签",
     "limitedToTag": "限定到具有特定标签的 VM",

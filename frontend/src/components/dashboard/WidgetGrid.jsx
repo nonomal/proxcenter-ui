@@ -217,13 +217,13 @@ function NameDialog({ open, title, label, submitLabel, initialValue = '', onClos
 }
 
 // Dialog pour ajouter un widget
-function AddWidgetDialog({ open, onClose, onAdd, hasInfraScope, t }) {
+function AddWidgetDialog({ open, onClose, onAdd, hasInfraScope, hiddenWidgets, t }) {
   const [tab, setTab] = useState(0)
 
-  // Drop categories that would be empty once scope-filtering is applied
+  // Drop categories that would be empty once scope + denylist are applied
   const categories = useMemo(
-    () => WIDGET_CATEGORIES.filter(cat => getWidgetsByCategory(cat.id, { hasInfraScope }).length > 0),
-    [hasInfraScope],
+    () => WIDGET_CATEGORIES.filter(cat => getWidgetsByCategory(cat.id, { hasInfraScope, hiddenWidgets }).length > 0),
+    [hasInfraScope, hiddenWidgets],
   )
 
   // Get translated category name
@@ -270,7 +270,7 @@ function AddWidgetDialog({ open, onClose, onAdd, hasInfraScope, t }) {
         </Tabs>
         <Box sx={{ p: 2 }}>
           <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 1.5 }}>
-            {getWidgetsByCategory(categories[tab]?.id, { hasInfraScope }).map((widget) => (
+            {getWidgetsByCategory(categories[tab]?.id, { hasInfraScope, hiddenWidgets }).map((widget) => (
               <Card
                 key={widget.type}
                 variant='outlined'
@@ -310,7 +310,7 @@ function AddWidgetDialog({ open, onClose, onAdd, hasInfraScope, t }) {
 export default function WidgetGrid({ data, loading, onRefresh, refreshLoading }) {
   const t = useTranslations()
   const theme = useTheme()
-  const { hasInfraScope, loading: visibilityLoading } = useWidgetVisibility()
+  const { hasInfraScope, hiddenWidgets, loading: visibilityLoading } = useWidgetVisibility()
   const [layout, setLayout] = useState(DEFAULT_LAYOUT)
   const [editMode, setEditMode] = useState(false)
   const [addDialogOpen, setAddDialogOpen] = useState(false)
@@ -464,7 +464,7 @@ return hidden
   // and silently drop saved widgets the current user is no longer allowed to
   // see (e.g. infra-only widgets when the user has a tag/VM/pool-only scope).
   const visibleLayout = (editMode ? layout : layout.filter(w => !hiddenBySection.has(w.id)))
-    .filter(w => isWidgetVisibleForScope(w.type, { hasInfraScope }))
+    .filter(w => isWidgetVisibleForScope(w.type, { hasInfraScope, hiddenWidgets }))
 
   // Convertir notre layout en format react-grid-layout (registry overrides saved min/max)
   const gridLayout = visibleLayout.map(w => {
@@ -1055,6 +1055,7 @@ return () => document.removeEventListener('fullscreenchange', handler)
         onClose={() => setAddDialogOpen(false)}
         onAdd={handleAddWidget}
         hasInfraScope={hasInfraScope}
+        hiddenWidgets={hiddenWidgets}
         t={t}
       />
 

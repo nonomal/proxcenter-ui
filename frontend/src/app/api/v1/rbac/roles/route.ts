@@ -13,6 +13,30 @@ import { audit } from "@/lib/audit"
 import { isUserSuperAdmin, PROTECTED_ROLE_IDS } from "@/lib/rbac"
 import { getCurrentTenantId } from "@/lib/tenant"
 
+/**
+ * Normalize a client-supplied widget_overrides payload into the shape we
+ * persist: `{ hidden: string[] }` with deduped, trimmed entries. Returns
+ * `null` when the user explicitly clears the override, or `undefined` to
+ * leave the column untouched.
+ */
+function normalizeWidgetOverrides(raw: unknown): { hidden: string[] } | null | undefined {
+  if (raw === undefined) return undefined
+  if (raw === null) return null
+  if (typeof raw !== "object") return null
+
+  const hidden = (raw as any).hidden
+  if (!Array.isArray(hidden)) return null
+
+  const clean = Array.from(new Set(
+    hidden
+      .filter((h: any) => typeof h === "string")
+      .map((h: string) => h.trim())
+      .filter(Boolean),
+  ))
+
+  return clean.length === 0 ? null : { hidden: clean }
+}
+
 // GET /api/v1/rbac/roles - Liste tous les rôles
 export async function GET(req: NextRequest) {
   const demo = demoResponse(req)
@@ -39,6 +63,7 @@ export async function GET(req: NextRequest) {
         description: true,
         isSystem: true,
         color: true,
+        widgetOverrides: true,
         createdAt: true,
         updatedAt: true,
         permissions: {
@@ -63,6 +88,7 @@ export async function GET(req: NextRequest) {
       description: role.description,
       is_system: role.isSystem,
       color: role.color,
+      widget_overrides: role.widgetOverrides ?? null,
       created_at: role.createdAt.toISOString(),
       updated_at: role.updatedAt.toISOString(),
       permissions: role.permissions.map(rp => ({
@@ -111,7 +137,7 @@ export async function POST(req: NextRequest) {
     }
 
     const body = await req.json()
-    const { name, description, color, permissions } = body
+    const { name, description, color, permissions, widget_overrides } = body
 
     if (!name || typeof name !== "string" || name.trim().length === 0) {
       return NextResponse.json({ error: "Nom du rôle requis" }, { status: 400 })
@@ -120,6 +146,7 @@ export async function POST(req: NextRequest) {
     const trimmedName = name.trim()
     const now = new Date()
     const id = `role_${nanoid(12)}`
+    const normalizedOverrides = normalizeWidgetOverrides(widget_overrides)
 
     // Vérifier que le nom n'existe pas déjà
     const existing = await prisma.rbacRole.findUnique({ where: { name: trimmedName }, select: { id: true } })
@@ -139,6 +166,7 @@ export async function POST(req: NextRequest) {
           description: description || null,
           isSystem: false,
           color: color || "#6366f1",
+          widgetOverrides: normalizedOverrides ?? undefined,
           createdAt: now,
           updatedAt: now,
         },
@@ -185,6 +213,7 @@ export async function POST(req: NextRequest) {
         description: newRole.description,
         is_system: newRole.isSystem,
         color: newRole.color,
+        widget_overrides: newRole.widgetOverrides ?? null,
         created_at: newRole.createdAt.toISOString(),
         updated_at: newRole.updatedAt.toISOString(),
         permissions: newRole.permissions.map(rp => ({

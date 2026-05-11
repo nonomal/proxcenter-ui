@@ -20,6 +20,7 @@ import EnterpriseGuard from '@/components/guards/EnterpriseGuard'
 import { Features, useLicense } from '@/contexts/LicenseContext'
 import { useRBAC } from '@/contexts/RBACContext'
 import { CardsSkeleton, TableSkeleton } from '@/components/skeletons'
+import { WIDGET_REGISTRY, WIDGET_CATEGORIES } from '@/components/dashboard/widgetRegistry'
 
 // Types
 interface Permission { id: string; name: string; category: string; description: string; is_dangerous: boolean }
@@ -83,9 +84,11 @@ function RoleDialog({ open, onClose, role, categories, onSave, t }) {
   const [description, setDescription] = useState('')
   const [color, setColor] = useState('#6366f1')
   const [selectedPerms, setSelectedPerms] = useState(new Set())
+  const [hiddenWidgets, setHiddenWidgets] = useState(new Set())
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [expanded, setExpanded] = useState(new Set())
+  const [widgetExpanded, setWidgetExpanded] = useState(new Set())
   const isEdit = !!role
 
   useEffect(() => {
@@ -94,13 +97,35 @@ function RoleDialog({ open, onClose, role, categories, onSave, t }) {
       setDescription(role.description || '')
       setColor(role.color || '#6366f1')
       setSelectedPerms(new Set(role.permissions.map(p => p.id)))
+      setHiddenWidgets(new Set(role.widget_overrides?.hidden || []))
     } else {
-      setName(''); setDescription(''); setColor('#6366f1'); setSelectedPerms(new Set())
+      setName(''); setDescription(''); setColor('#6366f1'); setSelectedPerms(new Set()); setHiddenWidgets(new Set())
     }
 
     setExpanded(new Set(categories.map(c => c.id)))
+    setWidgetExpanded(new Set())
     setError('')
   }, [role, open, categories])
+
+  const toggleWidget = (widgetType) => setHiddenWidgets(p => { const n = new Set(p);
+
+ n.has(widgetType) ? n.delete(widgetType) : n.add(widgetType);
+
+return n })
+
+  const toggleWidgetCat = (catId) => {
+    const cats = WIDGET_REGISTRY ? Object.values(WIDGET_REGISTRY).filter(w => w.category === catId && !w.isSection) : []
+
+    if (cats.length === 0) return
+    const types = cats.map(w => w.type)
+    const allHidden = types.every(t => hiddenWidgets.has(t))
+
+    setHiddenWidgets(p => { const n = new Set(p);
+
+ types.forEach(t => allHidden ? n.delete(t) : n.add(t));
+
+return n })
+  }
 
   const togglePerm = (id) => setSelectedPerms(p => { const n = new Set(p);
 
@@ -123,17 +148,24 @@ return n })
   }
 
   const handleSave = async () => {
-    if (!name.trim()) { setError(t('common.error'));
+    if (!role?.is_system && !name.trim()) { setError(t('common.error'));
 
 return }
 
     setLoading(true); setError('')
 
+    // System roles only accept widget_overrides edits — the backend rejects
+    // any other field change. For custom roles we send the full payload.
+    const widgetOverrides = hiddenWidgets.size > 0 ? { hidden: Array.from(hiddenWidgets) } : null
+    const payload = role?.is_system
+      ? { widget_overrides: widgetOverrides }
+      : { name: name.trim(), description: description.trim() || null, color, permissions: Array.from(selectedPerms), widget_overrides: widgetOverrides }
+
     try {
       const res = await fetch(isEdit ? `/api/v1/rbac/roles/${role.id}` : '/api/v1/rbac/roles', {
         method: isEdit ? 'PATCH' : 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: name.trim(), description: description.trim() || null, color, permissions: Array.from(selectedPerms) })
+        body: JSON.stringify(payload)
       })
 
       const data = await res.json()
@@ -193,10 +225,68 @@ return n })}>
             )
           })}
         </Paper>
+
+        {/* Widget visibility (denylist) — admins tick widgets to hide for users
+            carrying this role. Always editable, including on system roles. */}
+        <Box sx={{ mt: 3 }}>
+          <Typography variant='subtitle2' sx={{ mb: 0.5, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 1 }}>
+            <i className='ri-layout-grid-line' style={{ fontSize: '1.1rem' }} />
+            {t('rbacPage.widgetVisibility.title')}
+            {hiddenWidgets.size > 0 && (
+              <Chip size='small' label={t('rbacPage.widgetVisibility.hiddenCount', { count: hiddenWidgets.size })} color='warning' variant='outlined' />
+            )}
+          </Typography>
+          <Typography variant='caption' sx={{ display: 'block', mb: 1, opacity: 0.7 }}>
+            {t('rbacPage.widgetVisibility.desc')}
+          </Typography>
+          <Paper variant='outlined' sx={{ maxHeight: 280, overflow: 'auto' }}>
+            {WIDGET_CATEGORIES.map(wcat => {
+              const widgets = Object.values(WIDGET_REGISTRY).filter(w => w.category === wcat.id && !w.isSection)
+
+              if (widgets.length === 0) return null
+              const types = widgets.map(w => w.type)
+              const hiddenInCat = types.filter(t2 => hiddenWidgets.has(t2)).length
+              const isExp = widgetExpanded.has(wcat.id)
+
+              return (
+                <Box key={wcat.id}>
+                  <Box sx={{ display: 'flex', alignItems: 'center', px: 2, py: 1, bgcolor: 'action.hover', cursor: 'pointer' }} onClick={() => setWidgetExpanded(p => { const n = new Set(p);
+
+ n.has(wcat.id) ? n.delete(wcat.id) : n.add(wcat.id);
+
+return n })}>
+                    <IconButton size='small'><i className={isExp ? 'ri-arrow-down-s-line' : 'ri-arrow-right-s-line'} /></IconButton>
+                    <i className={wcat.icon} style={{ margin: '0 8px' }} />
+                    <Typography variant='subtitle2' sx={{ flex: 1 }}>{t(`dashboard.categories.${wcat.id}`, { defaultValue: wcat.name })}</Typography>
+                    <Chip size='small' label={`${hiddenInCat}/${widgets.length}`} color={hiddenInCat > 0 ? 'warning' : 'default'} variant='outlined' sx={{ mr: 1 }} />
+                    <Checkbox checked={hiddenInCat === widgets.length} indeterminate={hiddenInCat > 0 && hiddenInCat < widgets.length} onChange={() => toggleWidgetCat(wcat.id)} onClick={e => e.stopPropagation()} size='small' />
+                  </Box>
+                  <Collapse in={isExp}>
+                    <List dense disablePadding>
+                      {widgets.map(w => {
+                        const widgetNameKey = w.type.replace(/-([a-z])/g, (m, c) => c.toUpperCase())
+                        const widgetName = t(`dashboard.widgetNames.${widgetNameKey}`, { defaultValue: w.name })
+                        const widgetDesc = t(`dashboard.widgetDescs.${widgetNameKey}`, { defaultValue: w.description })
+
+                        return (
+                          <ListItem key={w.type} sx={{ pl: 6, borderBottom: '1px solid', borderColor: 'divider' }}>
+                            <ListItemIcon sx={{ minWidth: 32 }}><i className={w.icon} style={{ fontSize: '1.1rem', opacity: 0.7 }} /></ListItemIcon>
+                            <ListItemText primary={widgetName} secondary={widgetDesc} />
+                            <ListItemSecondaryAction><Checkbox checked={hiddenWidgets.has(w.type)} onChange={() => toggleWidget(w.type)} size='small' /></ListItemSecondaryAction>
+                          </ListItem>
+                        )
+                      })}
+                    </List>
+                  </Collapse>
+                </Box>
+              )
+            })}
+          </Paper>
+        </Box>
       </DialogContent>
       <DialogActions>
         <Button onClick={onClose}>{t('common.cancel')}</Button>
-        {!role?.is_system && <Button variant='contained' onClick={handleSave} disabled={loading}>{loading ? t('common.saving') : isEdit ? t('common.update') : t('common.create')}</Button>}
+        <Button variant='contained' onClick={handleSave} disabled={loading}>{loading ? t('common.saving') : isEdit ? t('common.update') : t('common.create')}</Button>
       </DialogActions>
     </Dialog>
   )

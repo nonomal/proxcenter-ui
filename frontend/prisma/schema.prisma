@@ -457,13 +457,17 @@ model Setting {
 // ─────────────── §1.3 RBAC ───────────────
 
 model RbacRole {
-  id          String   @id
-  name        String   @unique
-  description String?
-  isSystem    Boolean  @default(false) @map("is_system")
-  color       String?  @default("#6366f1")
-  createdAt   DateTime @map("created_at")
-  updatedAt   DateTime @map("updated_at")
+  id              String   @id
+  name            String   @unique
+  description     String?
+  isSystem        Boolean  @default(false) @map("is_system")
+  color           String?  @default("#6366f1")
+  // Denylist of dashboard widget types hidden for users carrying this role.
+  // Shape: { hidden: string[] }. Composed across roles as a union (any role
+  // denying a widget hides it for the user).
+  widgetOverrides Json?    @map("widget_overrides")
+  createdAt       DateTime @map("created_at")
+  updatedAt       DateTime @map("updated_at")
 
   permissions RbacRolePermission[]
   userRoles   RbacUserRole[]

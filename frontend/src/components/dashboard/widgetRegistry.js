@@ -407,22 +407,27 @@ export const WIDGET_CATEGORIES = [
 ]
 
 export function getWidgetsByCategory(category, opts = {}) {
-  const { hasInfraScope = true } = opts
+  const { hasInfraScope = true, hiddenWidgets } = opts
 
   return Object.values(WIDGET_REGISTRY).filter(w => {
     if (w.category !== category) return false
+    // Section headers are structural primitives added via a dedicated toolbar
+    // button, not browsed by category in the picker.
+    if (w.isSection) return false
     if (w.requiresInfraScope && !hasInfraScope) return false
+    if (hiddenWidgets && hiddenWidgets.has && hiddenWidgets.has(w.type)) return false
 
     return true
   })
 }
 
 export function isWidgetVisibleForScope(type, opts = {}) {
-  const { hasInfraScope = true } = opts
+  const { hasInfraScope = true, hiddenWidgets } = opts
   const w = WIDGET_REGISTRY[type]
 
   if (!w) return false
   if (w.requiresInfraScope && !hasInfraScope) return false
+  if (hiddenWidgets && hiddenWidgets.has && hiddenWidgets.has(type)) return false
 
   return true
 }

@@ -86,6 +86,8 @@ export async function GET(req: NextRequest) {
             scope_type: "global",
             scope_target: null,
           })),
+          // Super admins never carry widget denylists — they see everything.
+          hidden_widgets: [],
         },
       })
     }
@@ -103,6 +105,7 @@ export async function GET(req: NextRequest) {
             id: true,
             name: true,
             color: true,
+            widgetOverrides: true,
             permissions: {
               select: { permission: { select: { id: true, name: true, category: true } } },
             },
@@ -165,6 +168,20 @@ export async function GET(req: NextRequest) {
 
     const isSuperAdmin = userRoles.some(ur => ur.role.id === "role_super_admin")
 
+    // Aggregate widget denylists across all of the user's active roles. Union
+    // semantics: if any role hides a widget, it's hidden for the user.
+    const hiddenWidgets = new Set<string>()
+
+    for (const ur of userRoles) {
+      const overrides = ur.role.widgetOverrides as { hidden?: string[] } | null
+
+      if (overrides?.hidden && Array.isArray(overrides.hidden)) {
+        for (const w of overrides.hidden) {
+          if (typeof w === "string" && w) hiddenWidgets.add(w)
+        }
+      }
+    }
+
     return NextResponse.json({
       data: {
         user_id: targetUserId,
@@ -178,6 +195,7 @@ export async function GET(req: NextRequest) {
         })),
         permissions: Array.from(effectivePermissions),
         permission_details: permissionDetails,
+        hidden_widgets: Array.from(hiddenWidgets),
       },
     })
 

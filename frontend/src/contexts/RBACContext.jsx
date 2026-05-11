@@ -12,6 +12,7 @@ const RBACContext = createContext({
   permissions: [],
   roles: [],
   isAdmin: false,
+  hiddenWidgets: [],
   loading: true,
   // Default stubs accept an argument so TypeScript consumers inferring the
   // context type (e.g. `rbac.hasPermission('connection.manage')`) don't trip
@@ -28,6 +29,7 @@ export function RBACProvider({ children }) {
   const [permissions, setPermissions] = useState([])
   const [roles, setRoles] = useState([])
   const [isAdmin, setIsAdmin] = useState(false)
+  const [hiddenWidgets, setHiddenWidgets] = useState([])
   const [loading, setLoading] = useState(true)
 
   // Charger les permissions de l'utilisateur
@@ -36,6 +38,7 @@ export function RBACProvider({ children }) {
       setPermissions([])
       setRoles([])
       setIsAdmin(false)
+      setHiddenWidgets([])
       setLoading(false)
 
 return
@@ -49,6 +52,7 @@ return
         setPermissions(json.data.permissions || [])
         setRoles(json.data.roles || [])
         setIsAdmin(json.data.is_super_admin || false)
+        setHiddenWidgets(json.data.hidden_widgets || [])
       }
     } catch (e) {
       console.error('Failed to load RBAC permissions:', e)
@@ -89,6 +93,7 @@ return perms.every(p => permissions.includes(p))
       permissions,
       roles,
       isAdmin,
+      hiddenWidgets,
       loading,
       hasPermission,
       hasAnyPermission,

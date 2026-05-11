@@ -4811,6 +4811,11 @@
     "nodes": "Nodes",
     "clusters": "Cluster",
     "permissionsCount": "Berechtigungen ({count})",
+    "widgetVisibility": {
+      "title": "Widget-Sichtbarkeit",
+      "desc": "Widgets ankreuzen, die für Benutzer mit dieser Rolle ausgeblendet werden sollen. Zusätzlich zum automatischen Scope-Filter.",
+      "hiddenCount": "{count} ausgeblendet"
+    },
     "globalScope": "Global",
     "tagScope": "Tag",
     "limitedToTag": "Begrenzt auf VMs mit einem bestimmten Tag",
