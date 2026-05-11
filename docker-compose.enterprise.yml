@@ -86,25 +86,6 @@ services:
       timeout: 10s
       retries: 3
       start_period: 15s
-    depends_on:
-      reporting:
-        condition: service_healthy
-
-  # ========================================
-  # Reporting (WeasyPrint PDF Renderer)
-  # ========================================
-  reporting:
-    image: ghcr.io/adminsyspro/proxcenter-reporting:${VERSION:-latest}
-    container_name: proxcenter-reporting
-    restart: unless-stopped
-    networks:
-      - proxcenter
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
 
 # ========================================
 # Networks

@@ -353,10 +353,6 @@ license:
 logging:
   level: info
   format: json
-
-reporting:
-  url: "http://reporting:5000"
-  timeout: 60s
 EOF
 
     chmod 600 "$INSTALL_DIR/.env"
