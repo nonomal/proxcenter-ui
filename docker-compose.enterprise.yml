@@ -144,9 +144,11 @@ services:
   # into PDF documents. Built from `weasyprint/Dockerfile`. Without it, the
   # orchestrator boots fine but PDF generation is disabled.
   weasyprint:
-    build:
-      context: ./weasyprint
-    image: proxcenter-weasyprint:${VERSION:-latest}
+    image: ghcr.io/adminsyspro/proxcenter-weasyprint:${VERSION:-latest}
+    # Uncomment to rebuild from source instead of pulling the pinned image
+    # (useful when iterating on weasyprint/server.py or the Dockerfile).
+    # build:
+    #   context: ./weasyprint
     container_name: proxcenter-weasyprint
     restart: unless-stopped
     networks:
