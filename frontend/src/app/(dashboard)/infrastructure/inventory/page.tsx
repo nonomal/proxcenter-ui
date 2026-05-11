@@ -190,6 +190,26 @@ export default function InventoryPage() {
   // Référence pour détecter les migrations terminées
   const prevMigratingVmsRef = useRef<MigratingVm[]>([])
 
+  // Track every running task whose completion changes the inventory tree
+  // (created/deleted/restored/cloned VMs and CTs). The migration watcher
+  // below already handles the move case; this second ref catches the
+  // template-deploy chain (qmcreate, vzcreate, qmrestore, qmclone, imgcopy
+  // and their delete counterparts) which would otherwise require a manual
+  // F5 to surface the new VM in the tree.
+  const prevInventoryAffectingTaskIdsRef = useRef<Set<string>>(new Set())
+
+  // PVE task types that should trigger an inventory refresh once they
+  // disappear from /tasks/running. Kept narrow on purpose — config edits
+  // / start / stop don't reshape the tree, so we skip them and let the
+  // RRD polling refresh the badges instead.
+  const INVENTORY_AFFECTING_TASK_TYPES = new Set([
+    'qmcreate', 'vzcreate',     // template deploy / VM-CT create
+    'qmrestore', 'vzrestore',   // restore from backup
+    'qmclone',                  // clone (deploy from existing VM)
+    'imgcopy',                  // image-copy step of a deploy chain
+    'qmdel', 'vzdel', 'qmdestroy', 'vzdestroy', // deletion
+  ])
+
   // Detect migrations from shared running-tasks SWR (no duplicate polling)
   const { data: runningTasksData } = useRunningTasks()
 
@@ -224,6 +244,35 @@ export default function InventoryPage() {
     }
 
     prevMigratingVmsRef.current = migrations
+
+    // Detect finished create / delete / restore / clone tasks the same way.
+    // We key on the PVE task UPID (unique per task) and treat "was running,
+    // is no longer" as completion. Fires a single refresh after a small
+    // debounce so a chain of imgcopy → qmcreate triggers only one reload.
+    const currentInventoryTaskIds = new Set<string>(
+      tasks
+        .filter((t: any) => INVENTORY_AFFECTING_TASK_TYPES.has(t.type))
+        .map((t: any) => String(t.id ?? t.upid ?? `${t.connectionId}:${t.node}:${t.type}:${t.entity}`))
+    )
+
+    let hasFinishedInventoryTask = false
+    for (const prevId of prevInventoryAffectingTaskIdsRef.current) {
+      if (!currentInventoryTaskIds.has(prevId)) {
+        hasFinishedInventoryTask = true
+        break
+      }
+    }
+
+    if (hasFinishedInventoryTask) {
+      // 1.5 s gives PVE time to flush /cluster/resources after the task
+      // ends — without the delay the refresh sometimes lands while the new
+      // VM is still in "creating" / pre-published state on the API.
+      setTimeout(() => {
+        if (refreshTree) refreshTree()
+      }, 1500)
+    }
+
+    prevInventoryAffectingTaskIdsRef.current = currentInventoryTaskIds
 
     setMigratingVms(prev => {
       const prevKey = prev.map(m => `${m.connId}:${m.vmid}`).sort((a, b) => a.localeCompare(b)).join(',')

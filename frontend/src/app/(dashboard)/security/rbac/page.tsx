@@ -1773,15 +1773,15 @@ return () => setPageInfo('', '', '')
         {error && <Alert severity='error'>{error}</Alert>}
         <Card variant='outlined' sx={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
           <Tabs value={tab} onChange={(_, v) => setTab(v)} sx={{ borderBottom: 1, borderColor: 'divider' }}>
-            <Tab label={<Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}><i className='ri-shield-keyhole-line' />{t('rbacPage.roles')}<Chip label={roles.length} size='small' sx={{ height: 18 }} /></Box>} />
             <Tab label={<Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}><i className='ri-user-settings-line' />{t('rbacPage.assignments')}<Chip label={assignments.length} size='small' sx={{ height: 18 }} /></Box>} />
+            <Tab label={<Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}><i className='ri-shield-keyhole-line' />{t('rbacPage.roles')}<Chip label={roles.length} size='small' sx={{ height: 18 }} /></Box>} />
             <Tab label={<Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}><i className='ri-key-line' />{t('rbacPage.permissionsTab')}<Chip label={permissions.length} size='small' sx={{ height: 18 }} /></Box>} />
           </Tabs>
         <CardContent sx={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
           {loading ? <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, flex: 1, p: 2 }}><CardsSkeleton count={3} columns={3} /><TableSkeleton rows={4} columns={5} /></Box> : (
             <>
-              {tab === 0 && <RolesTab roles={roles} categories={categories} onRefresh={loadData} t={t} />}
-              {tab === 1 && <AssignmentsTab assignments={assignments} roles={roles} users={users} tenants={tenants} enableTenantMgmt={enableTenantMgmt} currentTenantId={currentTenantId} onRefresh={loadData} t={t} />}
+              {tab === 0 && <AssignmentsTab assignments={assignments} roles={roles} users={users} tenants={tenants} enableTenantMgmt={enableTenantMgmt} currentTenantId={currentTenantId} onRefresh={loadData} t={t} />}
+              {tab === 1 && <RolesTab roles={roles} categories={categories} onRefresh={loadData} t={t} />}
               {tab === 2 && (
                 <Box>
                   <Typography variant='body2' sx={{ mb: 2, opacity: 0.6 }}>{t('rbacPage.permissionsAvailable', { count: permissions.length, categories: categories.length })}</Typography>

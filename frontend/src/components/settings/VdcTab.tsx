@@ -1151,6 +1151,11 @@ export default function VdcTab() {
 
       <Card>
         <CardContent>
+          {/* A vDC always lives in a non-default tenant — the provider tenant
+              owns connections directly and the create form filters `default`
+              out of the picker. When no other tenant exists yet, disable the
+              Create buttons so the operator doesn't open an empty-dropdown
+              form they can't submit. */}
           <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
             <Box>
               <Typography variant="h6">{t('vdc.title')}</Typography>
@@ -1158,9 +1163,18 @@ export default function VdcTab() {
                 {t('vdc.subtitle')}
               </Typography>
             </Box>
-            <Button variant="contained" startIcon={<i className="ri-add-line" />} onClick={handleCreate}>
-              {t('vdc.newVdc')}
-            </Button>
+            <Tooltip title={tenants.filter(tn => tn.id !== 'default').length === 0 ? t('vdc.createNeedsTenant') : ''}>
+              <span>
+                <Button
+                  variant="contained"
+                  startIcon={<i className="ri-add-line" />}
+                  onClick={handleCreate}
+                  disabled={tenants.filter(tn => tn.id !== 'default').length === 0}
+                >
+                  {t('vdc.newVdc')}
+                </Button>
+              </span>
+            </Tooltip>
           </Box>
 
           {loading ? (
@@ -1172,11 +1186,22 @@ export default function VdcTab() {
                 {t('vdc.noVdcs')}
               </Typography>
               <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-                {t('vdc.noVdcsDesc')}
+                {tenants.filter(tn => tn.id !== 'default').length === 0
+                  ? t('vdc.createNeedsTenant')
+                  : t('vdc.noVdcsDesc')}
               </Typography>
-              <Button variant="contained" startIcon={<i className="ri-add-line" />} onClick={handleCreate}>
-                {t('vdc.newVdc')}
-              </Button>
+              <Tooltip title={tenants.filter(tn => tn.id !== 'default').length === 0 ? t('vdc.createNeedsTenant') : ''}>
+                <span>
+                  <Button
+                    variant="contained"
+                    startIcon={<i className="ri-add-line" />}
+                    onClick={handleCreate}
+                    disabled={tenants.filter(tn => tn.id !== 'default').length === 0}
+                  >
+                    {t('vdc.newVdc')}
+                  </Button>
+                </span>
+              </Tooltip>
             </Box>
           ) : (
             <DataGrid

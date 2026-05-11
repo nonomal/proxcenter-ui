@@ -6507,6 +6507,7 @@
     "refreshUsage": "Refresh usage",
     "noVdcs": "No Virtual Datacenters configured",
     "noVdcsDesc": "Create a vDC to allocate cluster resources to a tenant.",
+    "createNeedsTenant": "Create a non-default tenant first. vDCs cannot be created on the provider tenant.",
     "deleteConfirm": "Delete vDC \"{name}\"?",
     "deleteWarning": "The PVE pool \"{pool}\" will also be removed. This cannot be undone.",
     "deleteBlocked": "Cannot delete: VMs still exist in this vDC.",

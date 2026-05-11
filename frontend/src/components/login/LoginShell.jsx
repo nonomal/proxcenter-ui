@@ -19,7 +19,17 @@ export default function LoginShell({ branding, brandingLoading, ...formProps }) 
 
   return (
     <ThemeProvider theme={darkLoginTheme}>
+      {/* Login is rendered on a dark gradient regardless of the session theme.
+          MUI v7 here is set up with cssVariables.colorSchemeSelector='data',
+          so the CSS variables actually consumed by Inputs (background, border,
+          action.*) live under [data-mui-color-scheme="..."] at the html root.
+          The inner ThemeProvider flips the JS theme but not the data
+          attribute, so when the visitor's saved skin is light, the TextField
+          chrome still resolves to the light vars (white fill, light borders)
+          on top of our dark page. Setting data-mui-color-scheme="dark" on
+          the shell forces every descendant Input to pick up the dark vars. */}
       <Box
+        data-mui-color-scheme='dark'
         sx={{
           position: 'relative',
           minHeight: '100vh',

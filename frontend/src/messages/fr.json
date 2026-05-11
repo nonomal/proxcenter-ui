@@ -6508,6 +6508,7 @@
     "refreshUsage": "Rafraîchir l'utilisation",
     "noVdcs": "Aucun Datacenter Virtuel configuré",
     "noVdcsDesc": "Créez un vDC pour allouer des ressources de cluster à un tenant.",
+    "createNeedsTenant": "Créez d'abord un tenant non-default. Les vDC ne peuvent pas être créés sur le tenant provider.",
     "deleteConfirm": "Supprimer le vDC \"{name}\" ?",
     "deleteWarning": "Le pool PVE \"{pool}\" sera également supprimé. Cette action est irréversible.",
     "deleteBlocked": "Suppression impossible : des VMs existent encore dans ce vDC.",

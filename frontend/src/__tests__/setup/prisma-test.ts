@@ -30,8 +30,34 @@ function readDsn(): string {
 
 const dsn = readDsn()
 
+/**
+ * PrismaPg ignores the libpq-style `?schema=` query parameter on the
+ * connection string — that's a Prisma migration / CLI extension, not a
+ * pg-protocol field. The adapter only honours its own `schema` option;
+ * without it, every query hits the connection's default schema (`public`),
+ * which is the same one the dev server writes to. We then watched test
+ * fixtures (tenant-1 / VDC1 / pve-conn / pbs-conn) bleed into the
+ * developer's working database and wipe the user_tenants membership on
+ * cascade when teardown dropped the test schema. Parse `schema=` out of
+ * the DSN here and pass it explicitly so tests stay in their own sandbox.
+ */
+function extractSchema(connectionString: string): string {
+  try {
+    const url = new URL(connectionString)
+    const fromQuery = url.searchParams.get('schema')
+    if (fromQuery && fromQuery.length > 0) return fromQuery
+  } catch {
+    // fall through
+  }
+  return 'public'
+}
+
+const schema = extractSchema(dsn)
+
+// PrismaPg's first arg is the pg pool config (connectionString lives there);
+// the schema goes in the second arg PrismaPgOptions.
 export const prismaTest = new PrismaClient({
-  adapter: new PrismaPg({ connectionString: dsn }),
+  adapter: new PrismaPg({ connectionString: dsn }, { schema }),
 })
 
 /**

@@ -252,6 +252,16 @@ export async function getVdcById(id: string): Promise<VdcWithDetails | null> {
 // ---------------------------------------------------------------------------
 
 export async function createVdc(input: CreateVdcInput, createdBy: string | null): Promise<VdcWithDetails> {
+  // 0. The provider tenant (default) owns connections directly — it never
+  // consumes its own infra through a vDC slice. Allowing a vDC on default
+  // would also create a tenantHasVdc==true state that flips parts of the
+  // UI into "tenant mode" for the provider, which is the wrong shape.
+  // /settings?tab=vdc filters `default` out of the picker, but a direct
+  // POST would bypass that — refuse here so the rule survives any client.
+  if (input.tenantId === DEFAULT_TENANT_ID) {
+    throw new Error('vDCs cannot be created on the provider tenant (default)')
+  }
+
   // 1. Resolve tenant slug.
   const tenantRow = await prisma.tenant.findUnique({
     where: { id: input.tenantId },
