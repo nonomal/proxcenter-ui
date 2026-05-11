@@ -682,14 +682,6 @@ return null
       fMemMax += n._memMax || 0
     }
 
-    const fCpuPct = fCpuCores > 0 ? round1((fCpuUsed / fCpuCores) * 100) : 0
-    const fRamPct = fMemMax > 0 ? round1((fMemUsed / fMemMax) * 100) : 0
-
-    // Use real storage pool data aggregated from /cluster/resources (not rootfs)
-    const fStorageUsed = globalStorageUsed
-    const fStorageMax = globalStorageMax
-    const fStoragePct = fStorageMax > 0 ? round1((fStorageUsed / fStorageMax) * 100) : 0
-
     // Compute provisioned resources (allocated to all VMs + LXCs, excluding templates)
     const allGuests = [...filteredVms, ...filteredLxcs].filter((g: any) => g.template !== 1)
     let provCpu = 0, provMem = 0, provDisk = 0
@@ -698,9 +690,64 @@ return null
       provMem += Number(g.maxmem || 0)
       provDisk += Number(g.maxdisk || 0)
     }
-    const provCpuPct = fCpuCores > 0 ? round1((provCpu / fCpuCores) * 100) : 0
-    const provMemPct = fMemMax > 0 ? round1((provMem / fMemMax) * 100) : 0
-    const provStoragePct = fStorageMax > 0 ? round1((provDisk / fStorageMax) * 100) : 0
+
+    // RBAC scope-aware resource view:
+    //   - infra scopes (global/connection/node) → gauges from nodes (current
+    //     behavior). Provisioned bars show allocation against cluster capacity.
+    //   - non-infra scopes (tag/pool/vm) → no nodes are accessible, so we
+    //     aggregate from the user's VMs+LXCs instead. CPU is a weighted
+    //     average of utilization, RAM/Storage are sums across guests. The
+    //     "provisioned vs capacity" bars are zeroed since capacity has no
+    //     meaning here.
+    const useVmAggregates = filteredNodes.length === 0 && allGuests.length > 0
+
+    let fCpuPct: number, fRamPct: number, fStoragePct: number
+    let outCpuCores: number, outMemUsed: number, outMemMax: number
+    let outStorageUsed: number, outStorageMax: number
+    let provCpuPct: number, provMemPct: number, provStoragePct: number
+
+    if (useVmAggregates) {
+      let sumCpuUsed = 0, sumMaxCpu = 0
+      let sumMemUsed = 0, sumMaxMem = 0
+      let sumDiskUsed = 0, sumMaxDisk = 0
+
+      for (const g of allGuests as any[]) {
+        const cores = Number(g.maxcpu || 0)
+        sumMaxCpu += cores
+        // PVE reports cpu as 0..1 utilization of allocated cores
+        if (g.status === 'running') sumCpuUsed += Number(g.cpu || 0) * cores
+        sumMemUsed += Number(g.mem || 0)
+        sumMaxMem += Number(g.maxmem || 0)
+        sumDiskUsed += Number(g.disk || 0)
+        sumMaxDisk += Number(g.maxdisk || 0)
+      }
+
+      outCpuCores = sumMaxCpu
+      fCpuPct = sumMaxCpu > 0 ? round1((sumCpuUsed / sumMaxCpu) * 100) : 0
+      outMemUsed = sumMemUsed
+      outMemMax = sumMaxMem
+      fRamPct = sumMaxMem > 0 ? round1((sumMemUsed / sumMaxMem) * 100) : 0
+      outStorageUsed = sumDiskUsed
+      outStorageMax = sumMaxDisk
+      fStoragePct = sumMaxDisk > 0 ? round1((sumDiskUsed / sumMaxDisk) * 100) : 0
+      // No cluster capacity to compare against — skip provisioned bars.
+      provCpuPct = 0
+      provMemPct = 0
+      provStoragePct = 0
+    } else {
+      outCpuCores = fCpuCores
+      fCpuPct = fCpuCores > 0 ? round1((fCpuUsed / fCpuCores) * 100) : 0
+      outMemUsed = fMemUsed
+      outMemMax = fMemMax
+      fRamPct = fMemMax > 0 ? round1((fMemUsed / fMemMax) * 100) : 0
+      // Use real storage pool data aggregated from /cluster/resources (not rootfs)
+      outStorageUsed = globalStorageUsed
+      outStorageMax = globalStorageMax
+      fStoragePct = outStorageMax > 0 ? round1((outStorageUsed / outStorageMax) * 100) : 0
+      provCpuPct = fCpuCores > 0 ? round1((provCpu / fCpuCores) * 100) : 0
+      provMemPct = fMemMax > 0 ? round1((provMem / fMemMax) * 100) : 0
+      provStoragePct = outStorageMax > 0 ? round1((provDisk / outStorageMax) * 100) : 0
+    }
 
     // Recompute VM/LXC stats from filtered lists
     const fVmsTemplates = filteredVms.filter((v: any) => v.template === 1).length
@@ -805,10 +852,11 @@ return null
           template: lxc.template === 1,
         })),
         resources: {
-          cpuCores: fCpuCores, cpuPct: fCpuPct,
-          memUsed: fMemUsed, memMax: fMemMax, memUsedFormatted: formatBytes(fMemUsed), memMaxFormatted: formatBytes(fMemMax), ramPct: fRamPct,
-          storageUsed: fStorageUsed, storageMax: fStorageMax, storageUsedFormatted: formatBytes(fStorageUsed), storageMaxFormatted: formatBytes(fStorageMax), storagePct: fStoragePct,
+          cpuCores: outCpuCores, cpuPct: fCpuPct,
+          memUsed: outMemUsed, memMax: outMemMax, memUsedFormatted: formatBytes(outMemUsed), memMaxFormatted: formatBytes(outMemMax), ramPct: fRamPct,
+          storageUsed: outStorageUsed, storageMax: outStorageMax, storageUsedFormatted: formatBytes(outStorageUsed), storageMaxFormatted: formatBytes(outStorageMax), storagePct: fStoragePct,
           provCpu, provCpuPct, provMem, provMemPct, provMemFormatted: formatBytes(provMem), provDisk, provStoragePct, provDiskFormatted: formatBytes(provDisk),
+          scope: useVmAggregates ? 'vm' : 'cluster',
         },
         ceph: cephGlobal,
         cephClusters,
