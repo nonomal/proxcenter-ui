@@ -2121,6 +2121,36 @@ export function demoResponse(req: Request): NextResponse | Response | null {
     return NextResponse.json({ data }, { headers: demoHeaders })
   }
 
+  // --- Dynamic per-VM Green Score endpoint ---
+  if (cleanPath.match(/\/api\/v1\/connections\/[^/]+\/guests\/[^/]+\/[^/]+\/[^/]+\/green$/)) {
+    const nowSec = Math.floor(Date.now() / 1000)
+    return NextResponse.json({
+      hasEnoughData: true,
+      windowDays: 30,
+      samples: {
+        count: 720,
+        fromTs: nowSec - 30 * 86400,
+        toTs: nowSec,
+        avgCpuPct: 7.2,
+        avgMemPct: 42.0,
+        runningRatio: 0.95,
+      },
+      metrics: {
+        power: { current: 28, max: 65, monthly: 20, yearly: 245 },
+        co2: { hourly: 0.001, daily: 0.03, monthly: 0.9, yearly: 12, factor: 0.052, equivalentKmCar: 47, equivalentTrees: 0.5 },
+        cost: { hourly: 0.005, daily: 0.13, monthly: 4, yearly: 48, pricePerKwh: 0.18, currency: 'EUR' },
+        efficiency: { pue: 1.4, vmPerKw: 32, score: 72 },
+      },
+      insight: {
+        kind: 'idle_cpu',
+        severity: 'warning',
+        titleKey: 'green.insights.idleCpu.title',
+        suggestionKey: 'green.insights.idleCpu.suggestion',
+        placeholders: { cpu: 7, suggestedVcpus: 2 },
+      },
+    }, { headers: demoHeaders })
+  }
+
   // --- Dynamic RRD endpoints ---
   if (cleanPath.match(/\/api\/v1\/connections\/[^/]+\/rrd/) || cleanPath.match(/\/api\/v1\/connections\/[^/]+\/ceph\/rrd/)) {
     const timeframe = urlObj.searchParams.get('timeframe') || 'hour'

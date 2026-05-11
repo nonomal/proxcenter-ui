@@ -121,6 +121,7 @@ import { useDetailData } from './hooks/useDetailData'
 import { useVmActions } from './hooks/useVmActions'
 import { useHardwareHandlers } from './hooks/useHardwareHandlers'
 import VmDetailTabs from './tabs/VmDetailTabs'
+import GreenScoreCard from '@/components/inventory/GreenScoreCard'
 import ClusterTabs from './tabs/ClusterTabs'
 import NodeTabs from './tabs/NodeTabs'
 import { UploadDialog } from '@/components/storage/StorageContentBrowser'
@@ -200,7 +201,7 @@ export default function InventoryDetails({
     const connIds = new Set(allVms.map((vm: any) => vm.connId).filter(Boolean))
     connIds.forEach(id => loadConnection(id))
   }, [allVms, loadConnection])
-  const { hasFeature, loading: licenseLoading } = useLicense()
+  const { hasFeature, isEnterprise, loading: licenseLoading } = useLicense()
   const toast = useToast()
   // LXC sharing the host kernel doesn't give strong-enough multi-tenant
   // isolation. Tenants on a shared cluster see only "Create VM" — the
@@ -2972,6 +2973,19 @@ return vm?.isCluster ?? false
                       onVmTagsChange?.(connId, vmid, newTags)
                     }}
                   />
+
+                  {/* Green Score — Enterprise only, hidden for templates */}
+                  {isEnterprise && !data.isTemplate && connId && node && vmid && (
+                    <Box sx={{ flexShrink: 1, minWidth: 0, overflow: 'hidden' }}>
+                      <GreenScoreCard
+                        inline
+                        connId={connId}
+                        node={node}
+                        type={isLxc ? 'lxc' : 'qemu'}
+                        vmid={vmid}
+                      />
+                    </Box>
+                  )}
 
                   {/* Refresh + Actions — poussées à droite */}
                   <Box sx={{ ml: 'auto', flexShrink: 0, display: 'flex', alignItems: 'center', gap: 0.5 }}>

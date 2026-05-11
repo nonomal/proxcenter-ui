@@ -2759,6 +2759,42 @@
       }
     }
   },
+  "green": {
+    "score": {
+      "title": "Green Score",
+      "window": "30 derniers jours",
+      "energy": "énergie",
+      "cost": "coût",
+      "emissions": "émissions",
+      "equivKm": "≈ {km} km voiture",
+      "equivTrees": "{trees, plural, =1 {# arbre/an} other {# arbres/an}}",
+      "notEnoughData": "Pas assez de données, repassez dans 48h.",
+      "breakdownTitle": "Calcul du score",
+      "breakdownBase": "Score de départ",
+      "breakdownCpu": "CPU moyen {cpu}%",
+      "breakdownPue": "PUE {pue}",
+      "breakdownTotal": "Score final",
+      "breakdownRuntime": "VM active {pct}% du temps (n'affecte pas le score, uniquement la conso)"
+    },
+    "insights": {
+      "idleCpu": {
+        "title": "VM sous-utilisée (CPU moyen {cpu}% sur 30j)",
+        "suggestion": "{suggestedVcpus} vCPU sembleraient suffisants"
+      },
+      "oversizedRam": {
+        "title": "RAM surdimensionnée ({memPct}% utilisée en moyenne)",
+        "suggestion": "Envisagez de réduire l'allocation RAM"
+      },
+      "mostlyStopped": {
+        "title": "Souvent éteinte ({offPct}% du temps)",
+        "suggestion": "Envisagez de l'arrêter définitivement ou de réduire les ressources"
+      },
+      "efficientDc": {
+        "title": "DC performant (PUE {pue})",
+        "suggestion": ""
+      }
+    }
+  },
   "profile": {
     "title": "Profil",
     "updated": "Profil mis à jour avec succès",

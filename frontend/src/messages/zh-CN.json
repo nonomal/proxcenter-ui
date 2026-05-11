@@ -2729,6 +2729,42 @@
       }
     }
   },
+  "green": {
+    "score": {
+      "title": "绿色评分",
+      "window": "最近30天",
+      "energy": "能耗",
+      "cost": "成本",
+      "emissions": "排放",
+      "equivKm": "≈ {km} 公里（汽车）",
+      "equivTrees": "{trees, plural, other {# 棵树/年}}",
+      "notEnoughData": "数据不足,请48小时后再查看。",
+      "breakdownTitle": "评分计算",
+      "breakdownBase": "起始分",
+      "breakdownCpu": "平均 CPU {cpu}%",
+      "breakdownPue": "PUE {pue}",
+      "breakdownTotal": "最终分",
+      "breakdownRuntime": "VM 运行时间占比 {pct}%（不影响评分，仅影响能耗）"
+    },
+    "insights": {
+      "idleCpu": {
+        "title": "VM 利用率低（30天平均 CPU {cpu}%）",
+        "suggestion": "{suggestedVcpus} 个 vCPU 应该足够"
+      },
+      "oversizedRam": {
+        "title": "内存配置过大（平均使用 {memPct}%）",
+        "suggestion": "考虑减少内存分配"
+      },
+      "mostlyStopped": {
+        "title": "大多数时间处于关闭状态（{offPct}%）",
+        "suggestion": "考虑永久停用或缩减资源"
+      },
+      "efficientDc": {
+        "title": "高效数据中心（PUE {pue}）",
+        "suggestion": ""
+      }
+    }
+  },
   "profile": {
     "title": "个人资料",
     "updated": "个人资料更新成功",

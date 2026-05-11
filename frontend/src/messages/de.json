@@ -2727,6 +2727,42 @@
       }
     }
   },
+  "green": {
+    "score": {
+      "title": "Green Score",
+      "window": "Letzte 30 Tage",
+      "energy": "Energie",
+      "cost": "Kosten",
+      "emissions": "Emissionen",
+      "equivKm": "≈ {km} km mit dem Auto",
+      "equivTrees": "{trees, plural, =1 {# Baum/Jahr} other {# Bäume/Jahr}}",
+      "notEnoughData": "Nicht genug Daten, in 48 Std. erneut prüfen.",
+      "breakdownTitle": "Score-Berechnung",
+      "breakdownBase": "Startwert",
+      "breakdownCpu": "Ø CPU {cpu}%",
+      "breakdownPue": "PUE {pue}",
+      "breakdownTotal": "Endgültiger Score",
+      "breakdownRuntime": "VM läuft {pct}% der Zeit (kein Einfluss auf den Score, nur auf den Verbrauch)"
+    },
+    "insights": {
+      "idleCpu": {
+        "title": "Wenig genutzte VM (Ø CPU {cpu}% über 30 Tage)",
+        "suggestion": "{suggestedVcpus} vCPU sollten ausreichen"
+      },
+      "oversizedRam": {
+        "title": "Überdimensionierter RAM (Ø {memPct}% genutzt)",
+        "suggestion": "RAM-Zuweisung verringern"
+      },
+      "mostlyStopped": {
+        "title": "Meistens aus ({offPct}% der Zeit)",
+        "suggestion": "Dauerhaft abschalten oder Ressourcen reduzieren"
+      },
+      "efficientDc": {
+        "title": "Effizientes Rechenzentrum (PUE {pue})",
+        "suggestion": ""
+      }
+    }
+  },
   "profile": {
     "title": "Profil",
     "updated": "Profil aktualisierend erfolgreich",
