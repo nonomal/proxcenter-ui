@@ -873,8 +873,12 @@ return () => clearTimeout(timer)
       {/* Graphiques de tendances */}
       {selectedPbs && <BackupTrendsChart pbsId={selectedPbs} />}
 
-      {/* Jobs de sauvegarde PVE et PBS avec onglets */}
-      {(pveConnections.length > 0 || pbsConnections.length > 0) && (
+      {/* Jobs de sauvegarde PVE et PBS avec onglets.
+          Masqué en mode vDC tenant : la politique de sauvegarde est gérée
+          par le super admin (offre managée). Les tenants gardent les
+          backups ponctuels par VM dans /infrastructure/inventory et le
+          quota maxBackups s'applique sur ces backups ad-hoc. */}
+      {!isVdcTenant && (pveConnections.length > 0 || pbsConnections.length > 0) && (
         <BackupJobsTabs pveConnections={pveConnections} pbsConnections={pbsConnections} />
       )}
 

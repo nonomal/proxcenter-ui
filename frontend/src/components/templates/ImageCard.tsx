@@ -53,32 +53,9 @@ export default function ImageCard({ image, onDeploy, isCustom, onEdit, onDelete 
               alignItems: 'center',
               justifyContent: 'center',
               flexShrink: 0,
-              position: 'relative',
             }}
           >
             <VendorLogo vendor={image.vendor} size={36} />
-            {/* Format badge — disc for ISO, cloud for cloud-images. Tucked
-                in the bottom-right corner of the vendor logo so it's
-                visible without dominating the card. */}
-            <Box
-              sx={{
-                position: 'absolute',
-                right: -4,
-                bottom: -4,
-                width: 18,
-                height: 18,
-                borderRadius: '50%',
-                bgcolor: isIso ? 'warning.main' : 'info.main',
-                color: '#fff',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                border: '2px solid',
-                borderColor: 'background.paper',
-              }}
-            >
-              <Box component="i" className={isIso ? 'ri-disc-line' : 'ri-cloud-line'} sx={{ fontSize: 10 }} />
-            </Box>
           </Box>
           <Box sx={{ flex: 1, minWidth: 0 }}>
             <Typography variant="subtitle2" sx={{ fontWeight: 600, lineHeight: 1.3 }} noWrap>

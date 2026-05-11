@@ -59,7 +59,7 @@ export default function TemplatesPage() {
   }, [searchParams, router])
 
   useEffect(() => {
-    setPageInfo(t('templates.title'), t('templates.catalogSubtitle'), 'ri-cloud-line')
+    setPageInfo(t('templates.title'), t('templates.catalogSubtitle'), 'ri-instance-line')
     return () => setPageInfo('', '', '')
   }, [setPageInfo, t])
 
