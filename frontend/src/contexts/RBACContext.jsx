@@ -12,6 +12,7 @@ const RBACContext = createContext({
   permissions: [],
   roles: [],
   isAdmin: false,
+  scopeTypes: [],
   hiddenWidgets: [],
   loading: true,
   // Default stubs accept an argument so TypeScript consumers inferring the
@@ -29,6 +30,7 @@ export function RBACProvider({ children }) {
   const [permissions, setPermissions] = useState([])
   const [roles, setRoles] = useState([])
   const [isAdmin, setIsAdmin] = useState(false)
+  const [scopeTypes, setScopeTypes] = useState([])
   const [hiddenWidgets, setHiddenWidgets] = useState([])
   const [loading, setLoading] = useState(true)
 
@@ -38,6 +40,7 @@ export function RBACProvider({ children }) {
       setPermissions([])
       setRoles([])
       setIsAdmin(false)
+      setScopeTypes([])
       setHiddenWidgets([])
       setLoading(false)
 
@@ -52,6 +55,7 @@ return
         setPermissions(json.data.permissions || [])
         setRoles(json.data.roles || [])
         setIsAdmin(json.data.is_super_admin || false)
+        setScopeTypes(json.data.scope_types || [])
         setHiddenWidgets(json.data.hidden_widgets || [])
       }
     } catch (e) {
@@ -93,6 +97,7 @@ return perms.every(p => permissions.includes(p))
       permissions,
       roles,
       isAdmin,
+      scopeTypes,
       hiddenWidgets,
       loading,
       hasPermission,

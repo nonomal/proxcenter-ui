@@ -86,6 +86,7 @@ export async function GET(req: NextRequest) {
             scope_type: "global",
             scope_target: null,
           })),
+          scope_types: ["global"],
           // Super admins never carry widget denylists — they see everything.
           hidden_widgets: [],
         },
@@ -182,6 +183,20 @@ export async function GET(req: NextRequest) {
       }
     }
 
+    // Aggregate scope types across roles AND direct user permissions, so
+    // downstream consumers (e.g. dashboard widget visibility) don't have to
+    // re-derive it and don't miss users whose access comes from a direct
+    // permission grant rather than a role.
+    const scopeTypes = new Set<string>()
+
+    for (const ur of userRoles) {
+      if (ur.scopeType) scopeTypes.add(ur.scopeType)
+    }
+
+    for (const dp of directPermissions) {
+      if (dp.scopeType) scopeTypes.add(dp.scopeType)
+    }
+
     return NextResponse.json({
       data: {
         user_id: targetUserId,
@@ -195,6 +210,7 @@ export async function GET(req: NextRequest) {
         })),
         permissions: Array.from(effectivePermissions),
         permission_details: permissionDetails,
+        scope_types: Array.from(scopeTypes),
         hidden_widgets: Array.from(hiddenWidgets),
       },
     })

@@ -90,6 +90,12 @@ function ResourcesGaugesWidget({ data, loading }) {
   const c = widgetColors(isDark)
   const resources = data?.resources || {}
 
+  // In VM-aggregate mode (non-infra scopes), gauges are computed from the
+  // user's visible guests instead of nodes. The "provisioned vs cluster
+  // capacity" bars don't apply — they'd render as 0% next to non-zero
+  // allocations, which is misleading.
+  const isVmScope = resources.scope === 'vm'
+
   const trackColor = isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.08)'
 
   const gauges = [
@@ -169,8 +175,9 @@ function ResourcesGaugesWidget({ data, loading }) {
         ))}
       </Box>
 
-      {/* Provisioning stats row */}
-      <Box sx={{
+      {/* Provisioning stats row — only meaningful when comparing against
+          cluster capacity (infra scopes). Hidden in VM-aggregate mode. */}
+      {!isVmScope && <Box sx={{
         display: 'flex',
         justifyContent: 'space-around',
         alignItems: 'center',
@@ -201,7 +208,7 @@ function ResourcesGaugesWidget({ data, loading }) {
             </Typography>
           </Box>
         ))}
-      </Box>
+      </Box>}
     </Box>
   )
 }

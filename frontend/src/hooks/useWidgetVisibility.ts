@@ -26,7 +26,7 @@ export type WidgetVisibility = {
  *    admins always carry an empty denylist (they see everything).
  */
 export function useWidgetVisibility(): WidgetVisibility {
-  const { roles, isAdmin, hiddenWidgets: hiddenWidgetIds, loading } = useRBAC()
+  const { scopeTypes, isAdmin, hiddenWidgets: hiddenWidgetIds, loading } = useRBAC()
   const { currentTenant, loading: tenantLoading } = useTenant()
 
   return useMemo(() => {
@@ -48,11 +48,12 @@ export function useWidgetVisibility(): WidgetVisibility {
 
     if (isAdmin) return { hasInfraScope: true, hiddenWidgets, loading: false }
 
-    const scopeTypes = new Set<string>(
-      (roles || []).map((r: any) => r.scope_type).filter(Boolean),
-    )
-    const hasInfra = [...scopeTypes].some(s => INFRA_SCOPES.has(s))
+    // Use the aggregated scope_types from /rbac/effective which already unions
+    // role scopes AND direct-permission scopes, so a user with a direct
+    // global/connection/node grant (no role) is correctly detected as infra.
+    const userScopes = Array.isArray(scopeTypes) ? scopeTypes : []
+    const hasInfra = userScopes.some((s: string) => INFRA_SCOPES.has(s))
 
     return { hasInfraScope: hasInfra, hiddenWidgets, loading: false }
-  }, [roles, isAdmin, hiddenWidgetIds, loading, currentTenant, tenantLoading])
+  }, [scopeTypes, isAdmin, hiddenWidgetIds, loading, currentTenant, tenantLoading])
 }
