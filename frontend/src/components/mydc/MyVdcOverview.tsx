@@ -3,7 +3,7 @@
 import { useMemo } from 'react'
 import { useTranslations } from 'next-intl'
 
-import { Box, Paper, Typography } from '@mui/material'
+import { Box, CircularProgress, IconButton, Paper, Tooltip, Typography } from '@mui/material'
 import { alpha, useTheme } from '@mui/material/styles'
 
 import QuotaDonut from './QuotaDonut'
@@ -13,6 +13,8 @@ import MyDatacentersMapCard from './MyDatacentersMapCard'
 
 interface Props {
   vdc: any
+  onRefresh?: () => void
+  refreshing?: boolean
 }
 
 /**
@@ -21,7 +23,7 @@ interface Props {
  * backups) lives in /infrastructure/inventory; this view focuses on the
  * usage signals tenants actually care about day-to-day.
  */
-export default function MyVdcOverview({ vdc }: Props) {
+export default function MyVdcOverview({ vdc, onRefresh, refreshing = false }: Props) {
   const t = useTranslations()
   const theme = useTheme()
   const accent = theme.palette.primary.main
@@ -69,10 +71,28 @@ export default function MyVdcOverview({ vdc }: Props) {
           }}
         />
         <Box sx={{ position: 'relative' }}>
-          <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 1.5, display: 'flex', alignItems: 'center', gap: 1 }}>
-            <i className="ri-gauge-line" />
-            {t('myVdc.quotas')}
-          </Typography>
+          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1.5 }}>
+            <Typography variant="subtitle1" sx={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: 1 }}>
+              <i className="ri-gauge-line" />
+              {t('myVdc.quotas')}
+            </Typography>
+            {onRefresh && (
+              <Tooltip title={t('common.refresh')}>
+                <span>
+                  <IconButton
+                    size="small"
+                    onClick={onRefresh}
+                    disabled={refreshing}
+                    aria-label={t('common.refresh')}
+                  >
+                    {refreshing
+                      ? <CircularProgress size={16} thickness={5} />
+                      : <i className="ri-refresh-line" style={{ fontSize: 18 }} />}
+                  </IconButton>
+                </span>
+              </Tooltip>
+            )}
+          </Box>
           <Box
             sx={{
               display: 'grid',
