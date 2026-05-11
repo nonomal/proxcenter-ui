@@ -2914,7 +2914,8 @@
       "backup": "Backups",
       "admin": "Administration",
       "automation": "Automatisierung",
-      "operations": "Betrieb"
+      "operations": "Betrieb",
+      "sdn": "SDN"
     },
     "permDesc": {
       "vm": {
@@ -2985,7 +2986,8 @@
         "rbac": "Manage roles and Berechtigungen",
         "settings": "Modify Einstellungen",
         "audit": "Audit-Logs anzeigen",
-        "compliance": "Manage compliance and Sicherheit policies"
+        "compliance": "Manage compliance and Sicherheit policies",
+        "tenants": "Tenants verwalten (Mandantenfähigkeit)"
       },
       "sdn": {
         "vnet": {

@@ -2916,7 +2916,8 @@
       "backup": "备份",
       "admin": "管理",
       "automation": "自动化",
-      "operations": "运维"
+      "operations": "运维",
+      "sdn": "SDN"
     },
     "permDesc": {
       "vm": {
@@ -2987,7 +2988,8 @@
         "rbac": "管理角色和权限",
         "settings": "修改设置",
         "audit": "查看审计日志",
-        "compliance": "管理合规与安全策略"
+        "compliance": "管理合规与安全策略",
+        "tenants": "管理租户（多租户）"
       },
       "sdn": {
         "vnet": {
