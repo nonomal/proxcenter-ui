@@ -275,7 +275,7 @@
     "widgetRemoved": "小组件已移除",
     "layoutApplied": "布局“{name}”已应用",
     "layoutReset": "布局已重置",
-    "emptyTitle": "您的指挥中心已就绪",
+    "emptyTitle": "The Proxmox Datacenter Management Platform",
     "emptyDesc": "构建您的专属仪表盘。添加小组件以一目了然地监控、管理和优化您的 Proxmox 基础设施。",
     "categories": {
       "infrastructure": "基础设施",

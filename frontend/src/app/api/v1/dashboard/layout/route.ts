@@ -90,7 +90,7 @@ export async function GET(req: Request) {
     }
 
     return NextResponse.json({
-      data: { id: null, name: 'Default', widgets: DEFAULT_LAYOUT, isActive: true, updatedAt: null }
+      data: { id: null, name: 'Default', widgets: [], isActive: true, updatedAt: null }
     })
   } catch (e: any) {
     console.error("[dashboard/layout] GET error:", e)

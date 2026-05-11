@@ -11,9 +11,10 @@ import {
   Button, Chip, Tabs, Tab, Snackbar, Alert, useTheme, TextField, ListItemIcon, ListItemText, Divider
 } from '@mui/material'
 
-import { WIDGET_REGISTRY, WIDGET_CATEGORIES, getWidgetsByCategory } from './widgetRegistry'
+import { WIDGET_REGISTRY, WIDGET_CATEGORIES, getWidgetsByCategory, isWidgetVisibleForScope } from './widgetRegistry'
 import { DEFAULT_LAYOUT, PRESET_LAYOUTS } from './types'
 import { CardsSkeleton } from '@/components/skeletons'
+import { useWidgetVisibility } from '@/hooks/useWidgetVisibility'
 
 const GRID_COLS = { lg: 12, md: 12, sm: 12, xs: 12, xxs: 12 }
 const ROW_HEIGHT = 40
@@ -216,9 +217,14 @@ function NameDialog({ open, title, label, submitLabel, initialValue = '', onClos
 }
 
 // Dialog pour ajouter un widget
-function AddWidgetDialog({ open, onClose, onAdd, t }) {
+function AddWidgetDialog({ open, onClose, onAdd, hasInfraScope, t }) {
   const [tab, setTab] = useState(0)
-  const categories = WIDGET_CATEGORIES
+
+  // Drop categories that would be empty once scope-filtering is applied
+  const categories = useMemo(
+    () => WIDGET_CATEGORIES.filter(cat => getWidgetsByCategory(cat.id, { hasInfraScope }).length > 0),
+    [hasInfraScope],
+  )
 
   // Get translated category name
   const getCategoryName = (cat) => t(`dashboard.categories.${cat.id}`, { defaultValue: cat.name })
@@ -264,7 +270,7 @@ function AddWidgetDialog({ open, onClose, onAdd, t }) {
         </Tabs>
         <Box sx={{ p: 2 }}>
           <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 1.5 }}>
-            {getWidgetsByCategory(categories[tab]?.id).map((widget) => (
+            {getWidgetsByCategory(categories[tab]?.id, { hasInfraScope }).map((widget) => (
               <Card
                 key={widget.type}
                 variant='outlined'
@@ -304,6 +310,7 @@ function AddWidgetDialog({ open, onClose, onAdd, t }) {
 export default function WidgetGrid({ data, loading, onRefresh, refreshLoading }) {
   const t = useTranslations()
   const theme = useTheme()
+  const { hasInfraScope, loading: visibilityLoading } = useWidgetVisibility()
   const [layout, setLayout] = useState(DEFAULT_LAYOUT)
   const [editMode, setEditMode] = useState(false)
   const [addDialogOpen, setAddDialogOpen] = useState(false)
@@ -378,8 +385,8 @@ return 'hour'
         if (json.data?.widgets && Array.isArray(json.data.widgets)) {
           const cleaned = json.data.widgets.filter(w => WIDGET_REGISTRY[w.type])
 
-          // Only fallback to DEFAULT_LAYOUT if this is the "Default" dashboard with no saved data
-          setLayout(json.data.id ? cleaned : (cleaned.length > 0 ? cleaned : DEFAULT_LAYOUT.map(w => ({ ...w, id: generateId() }))))
+          // No saved data -> empty layout (user starts from a blank dashboard and picks widgets)
+          setLayout(cleaned)
           setCurrentDashboard(json.data.name || 'Default')
         }
       }
@@ -453,8 +460,11 @@ return 'hour'
 return hidden
   }, [layout])
 
-  // Visible layout (hide widgets in collapsed sections, unless in edit mode)
-  const visibleLayout = editMode ? layout : layout.filter(w => !hiddenBySection.has(w.id))
+  // Visible layout: hide widgets in collapsed sections (unless in edit mode),
+  // and silently drop saved widgets the current user is no longer allowed to
+  // see (e.g. infra-only widgets when the user has a tag/VM/pool-only scope).
+  const visibleLayout = (editMode ? layout : layout.filter(w => !hiddenBySection.has(w.id)))
+    .filter(w => isWidgetVisibleForScope(w.type, { hasInfraScope }))
 
   // Convertir notre layout en format react-grid-layout (registry overrides saved min/max)
   const gridLayout = visibleLayout.map(w => {
@@ -720,7 +730,7 @@ return () => document.removeEventListener('fullscreenchange', handler)
     setDragOverName(null)
   }, [])
 
-  if (!layoutLoaded) {
+  if (!layoutLoaded || visibilityLoading) {
     return (
       <Box sx={{ pt: 2 }}>
         <CardsSkeleton count={6} columns={3} />
@@ -967,7 +977,7 @@ return () => document.removeEventListener('fullscreenchange', handler)
       </Box>
 
       {/* Empty state */}
-      {layout.length === 0 && (
+      {visibleLayout.length === 0 && (
         <Box sx={{
           position: 'absolute',
           inset: 0,
@@ -1044,6 +1054,7 @@ return () => document.removeEventListener('fullscreenchange', handler)
         open={addDialogOpen}
         onClose={() => setAddDialogOpen(false)}
         onAdd={handleAddWidget}
+        hasInfraScope={hasInfraScope}
         t={t}
       />
 

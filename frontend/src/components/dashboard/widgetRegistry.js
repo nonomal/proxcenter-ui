@@ -71,6 +71,7 @@ export const WIDGET_REGISTRY = {
     minSize: { w: 1, h: 1 },
     maxSize: { w: 12, h: 20 },
     noContainer: true,
+    requiresInfraScope: true,
     component: KpiClustersWidget,
   },
   'kpi-vms': {
@@ -167,6 +168,7 @@ export const WIDGET_REGISTRY = {
     minSize: { w: 4, h: 3 },
     maxSize: { w: 12, h: 20 },
     noContainer: true,
+    requiresInfraScope: true,
     component: NodesTableWidget,
   },
   'uptime-nodes': {
@@ -179,6 +181,7 @@ export const WIDGET_REGISTRY = {
     minSize: { w: 3, h: 3 },
     maxSize: { w: 12, h: 20 },
     noContainer: true,
+    requiresInfraScope: true,
     component: UptimeNodesWidget,
   },
   'pbs-overview': {
@@ -191,6 +194,7 @@ export const WIDGET_REGISTRY = {
     minSize: { w: 2, h: 3 },
     maxSize: { w: 12, h: 20 },
     noContainer: true,
+    requiresInfraScope: true,
     component: PbsOverviewWidget,
   },
   'backup-calendar': {
@@ -227,6 +231,7 @@ export const WIDGET_REGISTRY = {
     minSize: { w: 3, h: 2 },
     maxSize: { w: 12, h: 20 },
     noContainer: true,
+    requiresInfraScope: true,
     component: ClustersListWidget,
   },
   'guests-summary': {
@@ -275,6 +280,7 @@ export const WIDGET_REGISTRY = {
     minSize: { w: 3, h: 3 },
     maxSize: { w: 12, h: 20 },
     noContainer: true,
+    requiresInfraScope: true,
     component: StoragePoolsWidget,
   },
   'ceph-status': {
@@ -287,6 +293,7 @@ export const WIDGET_REGISTRY = {
     minSize: { w: 1, h: 1 },
     maxSize: { w: 12, h: 20 },
     noContainer: true,
+    requiresInfraScope: true,
     component: CephStatusWidget,
   },
 
@@ -300,6 +307,7 @@ export const WIDGET_REGISTRY = {
     minSize: { w: 4, h: 4 },
     maxSize: { w: 12, h: 20 },
     noContainer: true,
+    requiresInfraScope: true,
     component: InfraGlobalChartWidget,
   },
   'vm-heatmap': {
@@ -328,6 +336,7 @@ export const WIDGET_REGISTRY = {
     minSize: { w: 3, h: 3 },
     maxSize: { w: 12, h: 20 },
     noContainer: true,
+    requiresInfraScope: true,
     component: NodesGaugesWidget,
   },
   'clusters-gauges': {
@@ -340,6 +349,7 @@ export const WIDGET_REGISTRY = {
     minSize: { w: 3, h: 3 },
     maxSize: { w: 12, h: 20 },
     noContainer: true,
+    requiresInfraScope: true,
     component: ClustersGaugesWidget,
   },
   'cluster-health': {
@@ -352,6 +362,7 @@ export const WIDGET_REGISTRY = {
     minSize: { w: 3, h: 4 },
     maxSize: { w: 12, h: 20 },
     noContainer: true,
+    requiresInfraScope: true,
     component: ClusterHealthWidget,
   },
 
@@ -368,6 +379,7 @@ export const WIDGET_REGISTRY = {
     minSize: { w: 1, h: 1 },
     maxSize: { w: 12, h: 20 },
     noContainer: true,
+    requiresInfraScope: true,
     component: DrsStatusWidget,
   },
   'site-recovery': {
@@ -380,6 +392,7 @@ export const WIDGET_REGISTRY = {
     minSize: { w: 3, h: 3 },
     maxSize: { w: 12, h: 20 },
     noContainer: true,
+    requiresInfraScope: true,
     component: SiteRecoveryWidget,
   },
 }
@@ -393,6 +406,23 @@ export const WIDGET_CATEGORIES = [
   { id: 'automation', name: 'Automation', icon: 'ri-robot-2-line' },
 ]
 
-export function getWidgetsByCategory(category) {
-  return Object.values(WIDGET_REGISTRY).filter(w => w.category === category)
+export function getWidgetsByCategory(category, opts = {}) {
+  const { hasInfraScope = true } = opts
+
+  return Object.values(WIDGET_REGISTRY).filter(w => {
+    if (w.category !== category) return false
+    if (w.requiresInfraScope && !hasInfraScope) return false
+
+    return true
+  })
+}
+
+export function isWidgetVisibleForScope(type, opts = {}) {
+  const { hasInfraScope = true } = opts
+  const w = WIDGET_REGISTRY[type]
+
+  if (!w) return false
+  if (w.requiresInfraScope && !hasInfraScope) return false
+
+  return true
 }

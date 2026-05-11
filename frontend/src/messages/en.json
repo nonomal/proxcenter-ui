@@ -287,7 +287,7 @@
     "renameDashboard": "Rename dashboard",
     "duplicateDashboard": "Duplicate dashboard",
     "maxDashboards": "Maximum number of dashboards reached",
-    "emptyTitle": "Your command center awaits",
+    "emptyTitle": "The Proxmox Datacenter Management Platform",
     "emptyDesc": "Build your perfect dashboard. Add widgets to monitor, manage and optimize your Proxmox infrastructure at a glance.",
     "categories": {
       "infrastructure": "Infrastructure",

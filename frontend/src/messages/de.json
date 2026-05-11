@@ -272,7 +272,7 @@
     "widgetRemoved": "Widget entfernend",
     "layoutApplied": "Layout „{name}\" angewendet",
     "layoutReset": "Layout zurückgesetzt",
-    "emptyTitle": "Ihre Kommandozentrale wartet",
+    "emptyTitle": "The Proxmox Datacenter Management Platform",
     "emptyDesc": "Erstellen Sie Ihr perfektes Dashboard. Fügen Sie Widgets hinzu, um Ihre Proxmox-Infrastruktur auf einen Blick zu überwachen, zu verwalten und zu optimieren.",
     "categories": {
       "infrastructure": "Infrastruktur",
