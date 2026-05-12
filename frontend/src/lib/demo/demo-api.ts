@@ -1866,7 +1866,7 @@ function buildInventorySSE(): Response {
  * if (demo) return demo
  * ```
  */
-export function demoResponse(req: Request): NextResponse | Response | null {
+export function demoResponse(req: Request): NextResponse | Response | Promise<NextResponse | Response> | null {
   // 1. Check demo mode
   if (process.env.DEMO_MODE !== 'true') return null
 
@@ -1887,10 +1887,62 @@ export function demoResponse(req: Request): NextResponse | Response | null {
   const urlObj = new URL(req.url)
   const cleanPath = stripQuery(pathname)
 
+  // ── Demo tenant switching ────────────────────────────────────────────
+  // The demo user logs in as a provider admin on the 'default' tenant. The
+  // mock-data ships vDCs for four fictitious customer tenants (Acme,
+  // Globex, Initech and one Acme-DR). To let visitors browse them through
+  // /my-vdc without running a real session backend, we keep the active
+  // tenant in a client-side cookie that the demo handlers below read.
+  const DEMO_TENANT_COOKIE = 'demo-tenant'
+  const DEMO_TENANTS = [
+    { id: 'default',             slug: 'default',  name: 'Provider (default)',   description: 'Provider workspace, manages every tenant.' },
+    { id: 'demo-tenant-acme',    slug: 'acme',     name: 'Acme Corporation',     description: 'Customer with prod + DR vDCs.' },
+    { id: 'demo-tenant-globex',  slug: 'globex',   name: 'Globex',               description: 'Customer with a single production vDC.' },
+    { id: 'demo-tenant-initech', slug: 'initech',  name: 'Initech',              description: 'Customer with a single production vDC.' },
+  ]
+  const parseCookies = (raw: string | null): Record<string, string> => {
+    const out: Record<string, string> = {}
+    if (!raw) return out
+    for (const part of raw.split(';')) {
+      const eq = part.indexOf('=')
+      if (eq < 0) continue
+      out[part.slice(0, eq).trim()] = decodeURIComponent(part.slice(eq + 1).trim())
+    }
+    return out
+  }
+  const currentDemoTenantId = (() => {
+    const c = parseCookies(req.headers.get('cookie'))
+    const v = c[DEMO_TENANT_COOKIE]
+    return DEMO_TENANTS.some(t => t.id === v) ? v : 'default'
+  })()
+
   // 3. For any mutating request (POST/PUT/PATCH/DELETE), return a generic
   //    "action disabled" response — UNLESS we have a specific mock for it
   //    (e.g. POST /api/v1/auth/callback/credentials)
   if (method !== 'GET') {
+    // --- POST: tenant switching is a navigation, not a destructive
+    //     mutation; we allow it and persist the choice in a client cookie.
+    //     The handler is async because we need to await req.json() to read
+    //     the target tenant id; Next.js route handlers happily await a
+    //     Promise<Response> returned from `return demoResponse(req)`. ---
+    if (method === 'POST' && cleanPath === '/api/v1/auth/switch-tenant') {
+      return (async () => {
+        let target = 'default'
+        try {
+          const body = await req.json()
+          if (typeof body?.tenantId === 'string' && body.tenantId) target = body.tenantId
+        } catch {
+          // No body / not JSON: fall back to default
+        }
+        const valid = DEMO_TENANTS.some(t => t.id === target) ? target : 'default'
+        const res = NextResponse.json({ data: { ok: true, tenantId: valid } }, { headers: demoHeaders })
+        // 30 days, scoped to the demo origin. SameSite=Lax keeps the
+        // cookie present across the full-page reload that switchTenant()
+        // triggers immediately after the fetch resolves.
+        res.cookies.set(DEMO_TENANT_COOKIE, valid, { path: '/', sameSite: 'lax', maxAge: 60 * 60 * 24 * 30 })
+        return res
+      })()
+    }
     // --- POST: node/guest trends ---
     if (method === 'POST' && cleanPath.match(/\/api\/v1\/connections\/[^/]+\/(nodes|guests)\/trends/)) {
       // Widget expects { data: { "node-name": [{ t: "HH:MM", cpu, ram }, ...] } }
@@ -2098,6 +2150,31 @@ export function demoResponse(req: Request): NextResponse | Response | null {
     return NextResponse.json({ data: [
       { id: 'demo-layout', name: 'Default', isActive: true, updatedAt: new Date().toISOString() },
     ] }, { headers: demoHeaders })
+  }
+
+  // --- Tenant list + current tenant for the demo switcher ---
+  // The provider admin demo user lands on 'default' (no vDC, see /home).
+  // The switcher exposes the four mock customer tenants so visitors can
+  // hop into /my-vdc and explore the cockpit. currentTenantId is read
+  // from the `demo-tenant` cookie that POST /auth/switch-tenant sets.
+  if (cleanPath === '/api/v1/auth/me/tenants') {
+    return NextResponse.json({
+      data: DEMO_TENANTS,
+      currentTenantId: currentDemoTenantId,
+    }, { headers: demoHeaders })
+  }
+
+  // --- User-scoped vDC list, filtered by the active demo tenant ---
+  // On 'default' the provider admin has no personal vDC (return empty so
+  // /home doesn't redirect to /my-vdc). When the visitor switches to a
+  // customer tenant, return that tenant's vDCs from the mock dataset.
+  if (cleanPath === '/api/v1/vdcs') {
+    if (currentDemoTenantId === 'default') {
+      return NextResponse.json({ data: [] }, { headers: demoHeaders })
+    }
+    const allVdcs = ((MOCK_DATA['/api/v1/vdcs'] as any)?.data || []) as any[]
+    const scoped = allVdcs.filter(v => v.tenantId === currentDemoTenantId)
+    return NextResponse.json({ data: scoped }, { headers: demoHeaders })
   }
 
   // --- PBS backups/trends ---
