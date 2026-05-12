@@ -455,36 +455,46 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Generate release notes
+      # Release notes are curated, never auto-generated from git log. Every
+      # tagged version must ship with a hand-written RELEASE_NOTES_<TAG>.md
+      # committed at the tagged SHA. The job hard-fails if the file is
+      # missing, so a tag-push without notes can never overwrite an existing
+      # release with a raw commit dump (regression observed on v1.4.0 after
+      # a hot-fix force-push).
+      - name: Build release body from curated notes
         id: notes
+        env:
+          TAG: ${{ github.ref_name }}
         run: |
-          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
-          if [ -n "$PREV_TAG" ]; then
-            NOTES=$(git log "${PREV_TAG}..HEAD" --pretty=format:"- %s" --no-merges)
-          else
-            NOTES="Initial release"
+          NOTES_FILE="RELEASE_NOTES_${TAG}.md"
+          if [ ! -f "$NOTES_FILE" ]; then
+            echo "::error file=${NOTES_FILE}::Curated release notes are missing."
+            echo "::error::Refusing to publish the GitHub release without ${NOTES_FILE}."
+            echo "::error::Commit RELEASE_NOTES_${TAG}.md at the tagged SHA, then re-push the tag."
+            exit 1
           fi
-          echo "notes<<NOTESEOF" >> "$GITHUB_OUTPUT"
-          echo "$NOTES" >> "$GITHUB_OUTPUT"
-          echo "NOTESEOF" >> "$GITHUB_OUTPUT"
+          {
+            cat "$NOTES_FILE"
+            cat <<EOF
+
+
+## Docker Images
+
+\`\`\`bash
+docker pull ghcr.io/adminsyspro/proxcenter-frontend:${TAG}
+docker pull ghcr.io/adminsyspro/proxcenter-orchestrator:${TAG}
+docker pull ghcr.io/adminsyspro/proxcenter-weasyprint:${TAG}
+\`\`\`
+EOF
+          } > /tmp/release-body.md
+          echo "body_path=/tmp/release-body.md" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
-          body: |
-            ## Changes
-
-            ${{ steps.notes.outputs.notes }}
-
-            ## Docker Images
-
-            ```bash
-            docker pull ghcr.io/adminsyspro/proxcenter-frontend:${{ github.ref_name }}
-            docker pull ghcr.io/adminsyspro/proxcenter-orchestrator:${{ github.ref_name }}
-            docker pull ghcr.io/adminsyspro/proxcenter-weasyprint:${{ github.ref_name }}
-            ```
+          body_path: ${{ steps.notes.outputs.body_path }}
           draft: false
           prerelease: false
           make_latest: true
