@@ -586,6 +586,18 @@ return migratingVmIds.has(`${connId}:${vmid}`)
 
       const savedMigrationExpanded = localStorage.getItem('inventoryMigrationExpandedItems')
       if (savedMigrationExpanded) setMigrationExpandedItems(JSON.parse(savedMigrationExpanded))
+
+      // Network state is persisted too so "Expand all" survives navigation
+      // symmetrically with the other sub-trees. The actual fetch is deferred
+      // until `clusters` arrives via SSE — see the effect that watches
+      // `expandedNetSections` + `clusters.length` below.
+      const savedNetSections = localStorage.getItem('inventoryExpandedNetSections')
+      if (savedNetSections) {
+        const parsed = JSON.parse(savedNetSections)
+        if (Array.isArray(parsed)) setExpandedNetSections(new Set(parsed))
+      }
+      const savedNetTreeExpanded = localStorage.getItem('inventoryNetworkTreeExpandedItems')
+      if (savedNetTreeExpanded) setNetworkTreeExpandedItems(JSON.parse(savedNetTreeExpanded))
     } catch {}
     setIsHydrated(true)
   }, [])
@@ -619,6 +631,11 @@ return migratingVmIds.has(`${connId}:${vmid}`)
   useEffect(() => {
     if (isHydrated) localStorage.setItem('inventoryMigrationExpandedItems', JSON.stringify(migrationExpandedItems))
   }, [migrationExpandedItems, isHydrated])
+
+  // Persistence + re-trigger effects for `expandedNetSections` /
+  // `networkTreeExpandedItems` live further down, after their `useState`
+  // declarations, to avoid a TDZ on the dependency array (these state
+  // hooks are declared in the Network block around line ~2300).
 
   // Exposer la fonction refresh au parent
   useEffect(() => {
@@ -1965,15 +1982,17 @@ return items
     // Open all section headers
     setCollapsedSections(new Set())
 
-    // Expand all Storage tree items
+    // Expand all Storage tree items. The Storage section is flat (no cluster
+    // wrapper, matches native Proxmox VE layout), so only `storage-node:` itemIds
+    // are expandable branches. The previous `storage-cluster:` entries pointed
+    // at TreeItems that no longer exist and were silently ignored by MUI; the
+    // `cs.isCluster` gate also kept standalone-host storages collapsed even
+    // though the per-node branches are rendered for them too.
     const storageItems: string[] = []
     clusterStorages.forEach(cs => {
-      storageItems.push(`storage-cluster:${cs.connId}`)
-      if (cs.isCluster) {
-        cs.nodes.filter(n => n.storages.length > 0).forEach(n => {
-          storageItems.push(`storage-node:${cs.connId}:${n.node}`)
-        })
-      }
+      cs.nodes.filter(n => n.storages.length > 0).forEach(n => {
+        storageItems.push(`storage-node:${cs.connId}:${n.node}`)
+      })
     })
     setStorageExpandedItems(storageItems)
 
@@ -2019,6 +2038,12 @@ return items
     programmaticExpand.current = true
     setManualExpandedItems([])
     requestAnimationFrame(() => { programmaticExpand.current = false })
+
+    // Close the four main section headers too. `expandAll` opens them via
+    // `setCollapsedSections(new Set())`; without the symmetric close here,
+    // collapse-all would leave PROXMOX VE / STORAGE / BACKUP / MIGRATION
+    // headers visually open while their children are empty.
+    setCollapsedSections(new Set(['pve', 'storage', 'pbs', 'migrate-ext']))
 
     // Collapse all sub-section tree items
     setStorageExpandedItems([])
@@ -2366,6 +2391,38 @@ return favorites.has(vmKey)
   }, [clusters])
   const fetchNetworksRef = useRef(fetchNetworks)
   fetchNetworksRef.current = fetchNetworks
+
+  // Persist Network section + inner tree (symmetry with the other sub-trees so
+  // "Expand all" survives navigation end-to-end). Placed here, after the
+  // `expandedNetSections` / `networkTreeExpandedItems` useState declarations
+  // above, to avoid a TDZ on the dependency arrays.
+  useEffect(() => {
+    if (isHydrated) localStorage.setItem('inventoryExpandedNetSections', JSON.stringify([...expandedNetSections]))
+  }, [expandedNetSections, isHydrated])
+  useEffect(() => {
+    if (isHydrated) localStorage.setItem('inventoryNetworkTreeExpandedItems', JSON.stringify(networkTreeExpandedItems))
+  }, [networkTreeExpandedItems, isHydrated])
+
+  // After hydration, if the Network section was persisted as open, the data
+  // fetch has to be re-triggered manually — Network is lazy-loaded and the
+  // click handler that normally fires the fetch never ran. We wait for SSE
+  // to deliver `clusters` first so `fetchNetworks` has the connection list.
+  useEffect(() => {
+    if (!isHydrated) return
+    if (!expandedNetSections.has('network')) return
+    if (clusters.length === 0) return
+    if (isProviderTenant) {
+      if (!networkFetchedRef.current) {
+        networkFetchedRef.current = true
+        fetchNetworksRef.current?.()
+      }
+    } else {
+      if (!tenantVnetsFetchedRef.current) {
+        tenantVnetsFetchedRef.current = true
+        void fetchTenantVnets()
+      }
+    }
+  }, [isHydrated, expandedNetSections, clusters.length, isProviderTenant, fetchTenantVnets])
 
   // Build network tree: Connection → Node → VLAN → VMs
   const networkTree = useMemo(() => {
@@ -3254,6 +3311,14 @@ return (
           selectedItems={selectedItemId || ''}
           expandedItems={search.trim() ? expandedItems : manualExpandedItems}
           onExpandedItemsChange={(_event, itemIds) => {
+            // MUI x-tree-view@8 can fire this on mount/render with the
+            // tree's filtered set (e.g. when persisted expand IDs reference
+            // TreeItems that have not yet been rendered because SSE data
+            // hasn't arrived). Without this guard, the empty/filtered list
+            // overwrites the freshly hydrated state and persists `[]` to
+            // localStorage, which is the regression Trembler34 reported in
+            // issue #301.
+            if (!isHydrated) return
             if (!search.trim() && !programmaticExpand.current) setManualExpandedItems(itemIds)
             expandingRef.current = true
             requestAnimationFrame(() => { expandingRef.current = false })
@@ -3593,6 +3658,7 @@ return (
             selectedItems={selectedItemId || ''}
             expandedItems={storageExpandedItems}
             onExpandedItemsChange={(_event, itemIds) => {
+              if (!isHydrated) return
               setStorageExpandedItems(itemIds)
               expandingRef.current = true
               requestAnimationFrame(() => { expandingRef.current = false })
@@ -3763,6 +3829,7 @@ return (
                   selectedItems={selectedItemId || ''}
                   expandedItems={networkTreeExpandedItems}
                   onExpandedItemsChange={(_event, itemIds) => {
+                    if (!isHydrated) return
                     setNetworkTreeExpandedItems(itemIds)
                     expandingRef.current = true
                     requestAnimationFrame(() => { expandingRef.current = false })
@@ -3810,6 +3877,7 @@ return (
                 selectedItems={selectedItemId || ''}
                 expandedItems={networkTreeExpandedItems}
                 onExpandedItemsChange={(_event, itemIds) => {
+                  if (!isHydrated) return
                   setNetworkTreeExpandedItems(itemIds)
                   expandingRef.current = true
                   requestAnimationFrame(() => { expandingRef.current = false })
@@ -3931,6 +3999,7 @@ return (
             selectedItems={selectedItemId || ''}
             expandedItems={backupExpandedItems}
             onExpandedItemsChange={(_event, itemIds) => {
+              if (!isHydrated) return
               setBackupExpandedItems(itemIds)
               expandingRef.current = true
               requestAnimationFrame(() => { expandingRef.current = false })
@@ -4112,6 +4181,7 @@ return (
                   return [...new Set([...migrationExpandedItems, ...auto])]
                 })()}
                 onExpandedItemsChange={(_event, itemIds) => {
+                  if (!isHydrated) return
                   setMigrationExpandedItems(itemIds)
                   expandingRef.current = true
                   requestAnimationFrame(() => { expandingRef.current = false })
