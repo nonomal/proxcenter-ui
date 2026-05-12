@@ -529,7 +529,7 @@ export async function runMigrationPipeline(jobId: string, config: MigrationConfi
       await appendLog(jobId, `[Disk ${i + 1}/${vmConfig.disks.length}] Streaming "${disk.label}" to block device (${diskSizeGB} GB)...`)
 
       const soapCookie = soapSession!.cookie
-      const safeCookie = soapCookie.replace(/"/g, '')
+      const safeCookie = soapCookie.replaceAll(/"/g, '')
       const vmdkUrl = overrideUrl || buildVmdkDownloadUrl(esxiUrl, disk)
       await appendLog(jobId, `Download URL: ${vmdkUrl.replace(/\?.*/, '?...')}${overrideUrl ? ' (NFC lease)' : ''}`, "info")
 
@@ -820,7 +820,7 @@ export async function runMigrationPipeline(jobId: string, config: MigrationConfi
 
       // Strip double quotes from cookie value to avoid shell quoting issues
       // ESXi returns: vmware_soap_session="abc123" — quotes are decorative, not required
-      const safeCookie = soapCookie.replace(/"/g, '')
+      const safeCookie = soapCookie.replaceAll(/"/g, '')
       const vmdkUrl = overrideUrl || buildVmdkDownloadUrl(esxiUrl, disk)
       await appendLog(jobId, `Download URL: ${vmdkUrl.replace(/\?.*/, '?...')}${overrideUrl ? ' (NFC lease)' : ''}`, "info")
 
@@ -955,7 +955,7 @@ export async function runMigrationPipeline(jobId: string, config: MigrationConfi
         sshPrefix = `ssh ${esxiSshOpts} -i "${keyFile}"`
         cleanupCmd = `rm -f "${keyFile}"`
       } else if (esxiPass) {
-        const safePass = esxiPass.replace(/'/g, "'\\''")
+        const safePass = esxiPass.replaceAll(/'/g, "'\\''")
         setupCmd = `export SSHPASS='${safePass}'`
         sshPrefix = `sshpass -e ssh ${esxiSshOpts}`
         cleanupCmd = ""
@@ -1051,7 +1051,7 @@ export async function runMigrationPipeline(jobId: string, config: MigrationConfi
       // /vmfs/volumes/Datastore is a symlink to /vmfs/volumes/<UUID>, we need the real path
       let remotePath = `/vmfs/volumes/${datastoreName}`
       const { esxiHost: resolveHost, esxiSshPort: resolvePort, esxiSshUser: resolveUser, setupCmd: resolveSetup, sshPrefix: resolveSshPrefix, cleanupCmd: resolveCleanup } = buildEsxiSshPrefix(`/tmp/proxcenter-sshfs-resolve-${jobId}`)
-      const safeDsName = datastoreName.replace(/'/g, "'\\''")
+      const safeDsName = datastoreName.replaceAll(/'/g, "'\\''")
       const resolveCmd = `${resolveSetup ? resolveSetup + ' && ' : ''}${resolveSshPrefix} -p ${resolvePort} ${resolveUser}@${resolveHost} "readlink -f '/vmfs/volumes/${safeDsName}'" 2>/dev/null${resolveCleanup ? ' ; ' + resolveCleanup : ''}`
       const resolveResult = await executeSSH(config.targetConnectionId, nodeIp, resolveCmd)
       if (resolveResult.success && resolveResult.output?.trim().startsWith("/vmfs/")) {
@@ -1100,7 +1100,7 @@ export async function runMigrationPipeline(jobId: string, config: MigrationConfi
         }
       } else if (esxiPass) {
         // Password-based auth via password_stdin + ssh wrapper script
-        const safePass = esxiPass.replace(/'/g, "'\\''")
+        const safePass = esxiPass.replaceAll(/'/g, "'\\''")
         await executeSSH(config.targetConnectionId, nodeIp,
           `cat > "${sshWrapperPath}" << 'SSHEOF'\n${sshWrapperContent}\nSSHEOF\nchmod +x "${sshWrapperPath}"`
         )
@@ -1799,7 +1799,7 @@ export async function runMigrationPipeline(jobId: string, config: MigrationConfi
         const baseMountPath = sshfsMountPath
         // For multi-datastore VMs, append datastore name to mount path
         if (datastores.length > 1) {
-          sshfsMountPath = `${baseMountPath}-${ds.replace(/[^a-zA-Z0-9_-]/g, '_')}`
+          sshfsMountPath = `${baseMountPath}-${ds.replaceAll(/[^a-zA-Z0-9_-]/g, '_')}`
         }
         const mountPath = await mountSshfs(ds)
         sshfsMountedDatastores.set(ds, mountPath)
@@ -1854,7 +1854,7 @@ export async function runMigrationPipeline(jobId: string, config: MigrationConfi
 
         // Deploy to ESXi via nested SSH (using sshpass for password auth)
         // ESXi stores keys in /etc/ssh/keys-<user>/authorized_keys
-        const safeEsxiPass = esxiPass.replace(/'/g, "'\\''")
+        const safeEsxiPass = esxiPass.replaceAll(/'/g, "'\\''")
         const esxiSshOpts = `-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=15 -o HostKeyAlgorithms=+ssh-rsa,ssh-ed25519 -o KexAlgorithms=+diffie-hellman-group14-sha1,diffie-hellman-group14-sha256 -o PreferredAuthentications=keyboard-interactive,password`
 
         const deployCmd = `export SSHPASS='${safeEsxiPass}' && sshpass -e ssh ${esxiSshOpts} -p ${esxiSshPort} ${esxiSshUser}@${esxiHost} "mkdir -p /etc/ssh/keys-${esxiSshUser} 2>/dev/null; echo '${pubKey}' >> /etc/ssh/keys-${esxiSshUser}/authorized_keys; echo DEPLOYED" 2>&1`
@@ -2125,7 +2125,7 @@ export async function runMigrationPipeline(jobId: string, config: MigrationConfi
           `sed -i '/^args:/d; /^boot:/d' "${confPath}"`)
 
         // Write args line (escape single quotes)
-        const escapedArgs = fullArgs.replace(/'/g, "'\\''")
+        const escapedArgs = fullArgs.replaceAll(/'/g, "'\\''")
         await executeSSH(config.targetConnectionId, nodeIp,
           `echo 'args: ${escapedArgs}' >> "${confPath}"`)
 
@@ -2196,7 +2196,7 @@ export async function runMigrationPipeline(jobId: string, config: MigrationConfi
 
             if (nbdFallbackOk && nbdFallbackParts.length > 0) {
               const nbdArgs = scsiControllerArgs + nbdFallbackParts.join(" ")
-              const nbdEscaped = nbdArgs.replace(/'/g, "'\\''")
+              const nbdEscaped = nbdArgs.replaceAll(/'/g, "'\\''")
               await executeSSH(config.targetConnectionId, nodeIp,
                 `sed -i '/^args:/d' "${confPath}" && echo 'args: ${nbdEscaped}' >> "${confPath}"`)
               bootMethod = "nbd"
@@ -2230,7 +2230,7 @@ export async function runMigrationPipeline(jobId: string, config: MigrationConfi
         // Helper: send HMP command to running QEMU VM via Proxmox monitor API
         // Send HMP command to QEMU via "qm monitor" over SSH (API monitor endpoint is root-only)
         async function qmMonitorCmd(command: string): Promise<{ success: boolean, output: string }> {
-          const safeCmd = command.replace(/'/g, "'\\''")
+          const safeCmd = command.replaceAll(/'/g, "'\\''")
           const result = await executeSSH(config.targetConnectionId, nodeIp,
             `echo '${safeCmd}' | qm monitor ${targetVmid} 2>&1`)
           if (!result.success) {
@@ -2329,7 +2329,7 @@ export async function runMigrationPipeline(jobId: string, config: MigrationConfi
             }
 
             // Check if this drive is "ready" (mirror synced, waiting for pivot)
-            const readyMatch = new RegExp(`${mirror.driveId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}.*ready`, "i")
+            const readyMatch = new RegExp(`${mirror.driveId.replaceAll(/[.*+?^${}()|[\]\\]/g, '\\$&')}.*ready`, "i")
             if (readyMatch.test(jobsResult.output)) {
               readyDrives.add(mirror.driveId)
               continue
@@ -2337,7 +2337,7 @@ export async function runMigrationPipeline(jobId: string, config: MigrationConfi
 
             // Parse progress: "Completed 123456789 of 987654321 bytes"
             const progressMatch = jobsResult.output.match(
-              new RegExp(`${mirror.driveId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}.*?Completed\\s+(\\d+)\\s+of\\s+(\\d+)`)
+              new RegExp(`${mirror.driveId.replaceAll(/[.*+?^${}()|[\]\\]/g, '\\$&')}.*?Completed\\s+(\\d+)\\s+of\\s+(\\d+)`)
             )
             if (progressMatch) {
               const done = Number.parseInt(progressMatch[1], 10)
@@ -2361,7 +2361,7 @@ export async function runMigrationPipeline(jobId: string, config: MigrationConfi
               totalDone += mirror.diskTotal
             } else {
               const pm = jobsResult.output.match(
-                new RegExp(`${mirror.driveId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}.*?Completed\\s+(\\d+)`)
+                new RegExp(`${mirror.driveId.replaceAll(/[.*+?^${}()|[\]\\]/g, '\\$&')}.*?Completed\\s+(\\d+)`)
               )
               if (pm) totalDone += Number.parseInt(pm[1], 10)
             }
@@ -2383,7 +2383,7 @@ export async function runMigrationPipeline(jobId: string, config: MigrationConfi
             for (const mirror of mirrors) {
               if (readyDrives.has(mirror.driveId)) continue
               const pm = jobsResult.output.match(
-                new RegExp(`${mirror.driveId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}.*?Completed\\s+(\\d+)\\s+of\\s+(\\d+)`)
+                new RegExp(`${mirror.driveId.replaceAll(/[.*+?^${}()|[\]\\]/g, '\\$&')}.*?Completed\\s+(\\d+)\\s+of\\s+(\\d+)`)
               )
               if (pm) {
                 const done = Number.parseInt(pm[1], 10)
@@ -2422,7 +2422,7 @@ export async function runMigrationPipeline(jobId: string, config: MigrationConfi
                     if (!jobs2.output.includes(mirror.driveId)) {
                       readyAfterPause.add(mirror.driveId)
                     } else {
-                      const readyRe = new RegExp(`${mirror.driveId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}.*ready`, "i")
+                      const readyRe = new RegExp(`${mirror.driveId.replaceAll(/[.*+?^${}()|[\]\\]/g, '\\$&')}.*ready`, "i")
                       if (readyRe.test(jobs2.output)) readyAfterPause.add(mirror.driveId)
                     }
                   }
@@ -2624,8 +2624,8 @@ export async function runMigrationPipeline(jobId: string, config: MigrationConfi
           const pubKeyResult = await executeSSH(config.targetConnectionId, nodeIp, `cat "${tmpKeyPath}.pub" 2>/dev/null`)
           const pubKey = pubKeyResult.output?.trim()
           if (pubKey) {
-            const safePub = pubKey.replace(/[/\\&]/g, '\\$&')
-            const safeEsxiPass2 = esxiPass.replace(/'/g, "'\\''")
+            const safePub = pubKey.replaceAll(/[/\\&]/g, '\\$&')
+            const safeEsxiPass2 = esxiPass.replaceAll(/'/g, "'\\''")
             const esxiSshOpts2 = `-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o HostKeyAlgorithms=+ssh-rsa,ssh-ed25519 -o KexAlgorithms=+diffie-hellman-group14-sha1,diffie-hellman-group14-sha256 -o PreferredAuthentications=keyboard-interactive,password`
             await executeSSH(config.targetConnectionId, nodeIp,
               `export SSHPASS='${safeEsxiPass2}' && sshpass -e ssh ${esxiSshOpts2} -p ${esxiSshPort} ${esxiSshUser}@${esxiHost} "sed -i '/${safePub.substring(0, 40)}/d' /etc/ssh/keys-${esxiSshUser}/authorized_keys ~/.ssh/authorized_keys 2>/dev/null; echo CLEANED" 2>&1`)

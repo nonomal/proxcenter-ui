@@ -25,11 +25,11 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> |
     const url = new URL(req.url)
     const sp = url.searchParams
 
-    const rawLimit = parseInt(sp.get("limit") || "50", 10)
-    const limit = Math.max(1, Math.min(500, isNaN(rawLimit) ? 50 : rawLimit))
+    const rawLimit = Number.parseInt(sp.get("limit") || "50", 10)
+    const limit = Math.max(1, Math.min(500, Number.isNaN(rawLimit) ? 50 : rawLimit))
 
-    const rawStart = parseInt(sp.get("start") || "0", 10)
-    const start = Math.max(0, isNaN(rawStart) ? 0 : rawStart)
+    const rawStart = Number.parseInt(sp.get("start") || "0", 10)
+    const start = Math.max(0, Number.isNaN(rawStart) ? 0 : rawStart)
 
     const running = sp.get("running") ?? "1"
     const errors = sp.get("errors") ?? "0"

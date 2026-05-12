@@ -141,7 +141,7 @@ function formatRate(bytes: number) {
 
 function formatTrendTime(label: any) {
   const ts = Number(label)
-  if (!ts || isNaN(ts)) return String(label || '')
+  if (!ts || Number.isNaN(ts)) return String(label || '')
   // Timestamps from RRD are in seconds if < 1e12, milliseconds otherwise
   const ms = ts < 1e12 ? ts * 1000 : ts
   return new Date(ms).toLocaleTimeString()

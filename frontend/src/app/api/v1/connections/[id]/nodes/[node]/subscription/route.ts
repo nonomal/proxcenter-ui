@@ -15,7 +15,7 @@ function formatSubscriptionData(subscription: any) {
   if (subscription?.checktime) {
     // C'est un timestamp unix en secondes
     const ts = typeof subscription.checktime === 'number' ? subscription.checktime : Number.parseInt(subscription.checktime)
-    if (!isNaN(ts)) {
+    if (!Number.isNaN(ts)) {
       lastCheckedFormatted = new Date(ts * 1000).toISOString()
     }
   }

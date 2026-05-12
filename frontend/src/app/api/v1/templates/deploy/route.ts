@@ -110,11 +110,11 @@ export async function POST(req: Request) {
     // negligible and not metered.
     if (vdcInfo) {
       const hw = body.hardware || ({} as any)
-      const cores = parseInt(String(hw.cores ?? '1'))
-      const sockets = parseInt(String(hw.sockets ?? '1'))
+      const cores = Number.parseInt(String(hw.cores ?? '1'))
+      const sockets = Number.parseInt(String(hw.sockets ?? '1'))
       const vcpus = (Number.isFinite(cores) ? cores : 1) * (Number.isFinite(sockets) ? sockets : 1)
-      const ramMb = parseInt(String(hw.memory ?? '512'))
-      const diskGb = parseInt(String(hw.diskSize ?? '0').replace(/G$/i, ''))
+      const ramMb = Number.parseInt(String(hw.memory ?? '512'))
+      const diskGb = Number.parseInt(String(hw.diskSize ?? '0').replace(/G$/i, ''))
       const storageMb = (Number.isFinite(diskGb) && diskGb > 0) ? diskGb * 1024 : 0
 
       const quotaCheck = await checkVdcQuota(body.connectionId, vdcInfo.poolName, vdcInfo.quota, {

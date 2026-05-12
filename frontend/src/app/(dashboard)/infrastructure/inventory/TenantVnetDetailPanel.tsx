@@ -382,7 +382,7 @@ export default function TenantVnetDetailPanel({ selectionId }: Props) {
                         onPageChange={(_, p) => setPage(p)}
                         rowsPerPage={rowsPerPage}
                         onRowsPerPageChange={(e) => {
-                          setRowsPerPage(parseInt(e.target.value, 10) || 10)
+                          setRowsPerPage(Number.parseInt(e.target.value, 10) || 10)
                           setPage(0)
                         }}
                         rowsPerPageOptions={[10, 25, 50]}

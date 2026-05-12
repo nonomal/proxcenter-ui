@@ -63,7 +63,7 @@ export async function POST(req: Request) {
     // means "no tag" (access port on the bridge's native VLAN).
     let vlanTag: number | undefined
     if (body.vlanTag !== undefined && body.vlanTag !== null && body.vlanTag !== "") {
-      const n = typeof body.vlanTag === "number" ? body.vlanTag : parseInt(String(body.vlanTag), 10)
+      const n = typeof body.vlanTag === "number" ? body.vlanTag : Number.parseInt(String(body.vlanTag), 10)
       if (!Number.isInteger(n) || n < 1 || n > 4094) {
         return NextResponse.json({ error: "vlanTag must be an integer between 1 and 4094" }, { status: 400 })
       }

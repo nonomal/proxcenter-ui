@@ -187,8 +187,8 @@ export default function ConnectionDialog({
   // override the auto-detected value at any time.
   useEffect(() => {
     if (!open) return
-    const lat = parseFloat(form.latitude)
-    const lng = parseFloat(form.longitude)
+    const lat = Number.parseFloat(form.latitude)
+    const lng = Number.parseFloat(form.longitude)
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) return
     if (form.country) return
     const ctrl = new AbortController()

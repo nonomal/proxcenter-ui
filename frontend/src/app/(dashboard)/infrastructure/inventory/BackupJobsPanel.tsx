@@ -163,8 +163,8 @@ export default function BackupJobsPanel({ connectionId, onError }: BackupJobsPan
         // On s'assure juste que les vmids sont des nombres pour le formulaire
         const parsedJobs = (json.data?.jobs || []).map((job: any) => ({
           ...job,
-          vmids: (job.vmids || []).map((v: any) => Number(v)).filter((v: number) => !isNaN(v)),
-          excludedVmids: (job.excludedVmids || []).map((v: any) => Number(v)).filter((v: number) => !isNaN(v))
+          vmids: (job.vmids || []).map((v: any) => Number(v)).filter((v: number) => !Number.isNaN(v)),
+          excludedVmids: (job.excludedVmids || []).map((v: any) => Number(v)).filter((v: number) => !Number.isNaN(v))
         }))
 
         setJobs(parsedJobs)

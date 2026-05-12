@@ -3,7 +3,7 @@
  */
 export function formatBytes(bytes: number, decimals: number = 2): string {
   if (bytes === 0) return '0 B'
-  if (!bytes || isNaN(bytes)) return '0 B'
+  if (!bytes || Number.isNaN(bytes)) return '0 B'
   const k = 1024
   const dm = decimals < 0 ? 0 : decimals
   const sizes = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB']
@@ -16,7 +16,7 @@ export function formatBytes(bytes: number, decimals: number = 2): string {
  */
 export function formatStorageSize(bytes: number, decimals: number = 2): string {
   if (bytes === 0) return '0 B'
-  if (!bytes || isNaN(bytes)) return '0 B'
+  if (!bytes || Number.isNaN(bytes)) return '0 B'
   const k = 1000
   const dm = decimals < 0 ? 0 : decimals
   const sizes = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']

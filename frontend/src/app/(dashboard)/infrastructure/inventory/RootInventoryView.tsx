@@ -158,11 +158,11 @@ function RootInventoryView({
 
   // Translate breakdown reasons (same logic as Resources page GlobalHealthScore)
   const trReason = (reason: string) => reason
-    .replace(/\(critical\)/g, `(${t('resources.critical')})`)
-    .replace(/\(warning\)/g, `(${t('resources.attention')})`)
-    .replace(/\(underused\)/g, `(${t('resources.underused')})`)
-    .replace(/\(excellent\)/g, `(${t('resources.scoreExcellent')})`)
-    .replace(/\(good\)/g, `(${t('resources.scoreGood')})`)
+    .replaceAll(/\(critical\)/g, `(${t('resources.critical')})`)
+    .replaceAll(/\(warning\)/g, `(${t('resources.attention')})`)
+    .replaceAll(/\(underused\)/g, `(${t('resources.underused')})`)
+    .replaceAll(/\(excellent\)/g, `(${t('resources.scoreExcellent')})`)
+    .replaceAll(/\(good\)/g, `(${t('resources.scoreGood')})`)
     .replace(/^No alerts$/, t('resources.noAlerts'))
     .replace(/(\d+) critical/, `$1 ${t('resources.critical')}`)
     .replace(/(\d+) warning/, `$1 ${t('resources.attention')}`)

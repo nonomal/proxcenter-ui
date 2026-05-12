@@ -91,7 +91,7 @@ async function handleChunk(
         `${baseUrl}/api2/json/nodes/${encodeURIComponent(node)}/storage/${encodeURIComponent(storage)}/upload`
       )
 
-      const boundary = `----ProxCenterUpload${randomUUID().replace(/-/g, "")}`
+      const boundary = `----ProxCenterUpload${randomUUID().replaceAll(/-/g, "")}`
       const parts = buildMultipartParts(boundary, contentType, fileName, mimeType)
 
       // Calculate total Content-Length: preamble + file data + closing
@@ -157,7 +157,7 @@ async function handleChunk(
       }
       streamingSessions.set(uploadId, session)
 
-      console.log(`[upload] Streaming "${fileName.replace(/[\r\n]/g, '')}" (${totalSize} bytes) directly to Proxmox, uploadId=${uploadId}`)
+      console.log(`[upload] Streaming "${fileName.replaceAll(/[\r\n]/g, '')}" (${totalSize} bytes) directly to Proxmox, uploadId=${uploadId}`)
     }
 
     // Stream chunk data directly to the open Proxmox connection

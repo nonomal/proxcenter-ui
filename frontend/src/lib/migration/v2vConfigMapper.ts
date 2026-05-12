@@ -25,9 +25,9 @@ export interface V2vVmConfig {
 function sanitizeName(raw: string): string {
   let name = raw
     .replace(/\.(vhdx|vhd|vmdk|qcow2|raw|img|vdi)$/i, '') // strip disk extensions
-    .replace(/[^a-zA-Z0-9.\-]/g, '-')
-    .replace(/-{2,}/g, '-')
-    .replace(/^[.\-]+|[.\-]+$/g, '')
+    .replaceAll(/[^a-zA-Z0-9.\-]/g, '-')
+    .replaceAll(/-{2,}/g, '-')
+    .replaceAll(/^[.\-]+|[.\-]+$/g, '')
     .substring(0, 63)
 
   return name || 'vm'
@@ -156,12 +156,12 @@ export function parseV2vXml(xmlString: string): V2vVmConfig {
   if (memMatch) {
     const unitAttr = memMatch[1].match(/unit\s*=\s*["']([^"']+)["']/)
     const unit = unitAttr ? unitAttr[1] : 'KiB'
-    memoryMB = convertMemoryToMB(parseInt(memMatch[2], 10), unit)
+    memoryMB = convertMemoryToMB(Number.parseInt(memMatch[2], 10), unit)
   }
 
   // --- vCPU ---
   const vcpuMatch = xmlString.match(/<vcpu[^>]*>(\d+)<\/vcpu>/)
-  const cores = vcpuMatch ? parseInt(vcpuMatch[1], 10) : 1
+  const cores = vcpuMatch ? Number.parseInt(vcpuMatch[1], 10) : 1
 
   // --- Firmware ---
   // Modern virt-v2v emits `<os firmware="efi">` as an attribute on <os>,

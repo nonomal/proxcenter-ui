@@ -218,8 +218,8 @@ describe('formatBps', () => {
     expect(formatBps(-100)).toBe('0 B/s')
   })
 
-  it('returns "0 B/s" for NaN', () => {
-    expect(formatBps(NaN)).toBe('0 B/s')
+  it('returns "0 B/s" for Number.NaN', () => {
+    expect(formatBps(Number.NaN)).toBe('0 B/s')
   })
 
   it('formats bytes/s', () => {
@@ -456,8 +456,8 @@ describe('pickNumber', () => {
     expect(pickNumber({ a: 10, b: 20 }, ['a', 'b'])).toBe(10)
   })
 
-  it('skips Infinity and NaN', () => {
-    expect(pickNumber({ a: Infinity, b: NaN, c: 5 }, ['a', 'b', 'c'])).toBe(5)
+  it('skips Infinity and Number.NaN', () => {
+    expect(pickNumber({ a: Infinity, b: Number.NaN, c: 5 }, ['a', 'b', 'c'])).toBe(5)
   })
 
   it('converts string numbers', () => {

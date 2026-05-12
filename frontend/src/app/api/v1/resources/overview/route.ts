@@ -155,7 +155,7 @@ function aggregateRrdByDayPerNode(
     if (point.cpu !== undefined && point.cpu !== null) {
       const cpuVal = Number(point.cpu)
 
-      if (!isNaN(cpuVal) && isFinite(cpuVal) && cpuVal >= 0) {
+      if (!Number.isNaN(cpuVal) && Number.isFinite(cpuVal) && cpuVal >= 0) {
         // CPU est un ratio 0-1, on le convertit en pourcentage
         const cpuPct = cpuVal * 100
 
@@ -173,10 +173,10 @@ function aggregateRrdByDayPerNode(
     const memUsed = Number(point.memused ?? point.mem ?? 0)
     const memTotal = Number(point.memtotal ?? point.maxmem ?? maxMem)
     
-    if (memUsed > 0 && memTotal > 0 && !isNaN(memUsed) && !isNaN(memTotal)) {
+    if (memUsed > 0 && memTotal > 0 && !Number.isNaN(memUsed) && !Number.isNaN(memTotal)) {
       const ramPct = (memUsed / memTotal) * 100
 
-      if (isFinite(ramPct) && ramPct >= 0 && ramPct <= 100) {
+      if (Number.isFinite(ramPct) && ramPct >= 0 && ramPct <= 100) {
         day.ram.push(ramPct)
         validRamCount++
         if (!firstValidPoint) firstValidPoint = point

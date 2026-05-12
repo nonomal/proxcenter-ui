@@ -210,7 +210,7 @@ export default function PbsTasksTab({ pbsId }: PbsTasksTabProps) {
   const onChangePage = (_: unknown, newPage: number) => setPage(newPage)
 
   const onChangeRowsPerPage = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setRowsPerPage(parseInt(e.target.value, 10))
+    setRowsPerPage(Number.parseInt(e.target.value, 10))
     setPage(0)
   }
 

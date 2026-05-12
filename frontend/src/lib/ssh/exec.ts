@@ -10,7 +10,7 @@ const ORCHESTRATOR_URL = process.env.ORCHESTRATOR_URL || "http://localhost:8080"
  * Wraps in single quotes and escapes embedded single quotes.
  */
 export function shellEscape(arg: string): string {
-  return "'" + arg.replace(/'/g, "'\\''") + "'"
+  return "'" + arg.replaceAll(/'/g, "'\\''") + "'"
 }
 
 export interface SSHResult {

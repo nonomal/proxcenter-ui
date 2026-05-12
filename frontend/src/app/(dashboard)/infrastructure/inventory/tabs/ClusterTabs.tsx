@@ -1774,7 +1774,7 @@ export default function ClusterTabs(props: any) {
                                       type="number"
                                       label="Max Restart"
                                       value={autoHaSettings.max_restart ?? 1}
-                                      onChange={(e) => setAutoHaSettings((prev: any) => ({ ...prev, max_restart: parseInt(e.target.value) || 0 }))}
+                                      onChange={(e) => setAutoHaSettings((prev: any) => ({ ...prev, max_restart: Number.parseInt(e.target.value) || 0 }))}
                                       inputProps={{ min: 0, max: 10 }}
                                       sx={{ flex: 1 }}
                                     />
@@ -1783,7 +1783,7 @@ export default function ClusterTabs(props: any) {
                                       type="number"
                                       label="Max Relocate"
                                       value={autoHaSettings.max_relocate ?? 1}
-                                      onChange={(e) => setAutoHaSettings((prev: any) => ({ ...prev, max_relocate: parseInt(e.target.value) || 0 }))}
+                                      onChange={(e) => setAutoHaSettings((prev: any) => ({ ...prev, max_relocate: Number.parseInt(e.target.value) || 0 }))}
                                       inputProps={{ min: 0, max: 10 }}
                                       sx={{ flex: 1 }}
                                     />
@@ -2495,7 +2495,7 @@ export default function ClusterTabs(props: any) {
                                       let m
                                       osdRe.lastIndex = 0
                                       while ((m = osdRe.exec(msg)) !== null) {
-                                        const id = parseInt(m[1], 10)
+                                        const id = Number.parseInt(m[1], 10)
                                         if (name === 'OSD_DOWN' || name === 'OSD_FLAGS') downIds.add(id)
                                         else if (name === 'OSD_NEARFULL' || name === 'OSD_BACKFILLFULL') warnIds.add(id)
                                         else if (name === 'OSD_FULL') fullIds.add(id)

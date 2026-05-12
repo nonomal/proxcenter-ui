@@ -31,7 +31,7 @@ export async function GET(req: Request, ctx: RouteContext) {
     const type = typeRaw === "lxc" ? "lxc" : "qemu"
     const url = new URL(req.url)
 
-    let days = parseInt(url.searchParams.get("days") || "30", 10)
+    let days = Number.parseInt(url.searchParams.get("days") || "30", 10)
     if (!Number.isFinite(days) || days < 1) days = 30
     if (days > 30) days = 30
 

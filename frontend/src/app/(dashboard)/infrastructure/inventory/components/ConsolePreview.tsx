@@ -44,14 +44,14 @@ function decodePpmToDataUrl(b64Data: string): Promise<string | null> {
       const parts = dims.split(/\s+/)
       let width: number, height: number
       if (parts.length >= 2) {
-        width = parseInt(parts[0])
-        height = parseInt(parts[1])
+        width = Number.parseInt(parts[0])
+        height = Number.parseInt(parts[1])
       } else {
-        width = parseInt(parts[0])
-        height = parseInt(readLine())
+        width = Number.parseInt(parts[0])
+        height = Number.parseInt(readLine())
       }
 
-      const maxVal = parseInt(readLine())
+      const maxVal = Number.parseInt(readLine())
       if (!width || !height || !maxVal) { resolve(null); return }
 
       // Create canvas and draw pixel data

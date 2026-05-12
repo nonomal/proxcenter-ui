@@ -112,7 +112,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Opérateur invalide' }, { status: 400 })
     }
 
-    if (threshold === undefined || threshold === null || isNaN(Number(threshold))) {
+    if (threshold === undefined || threshold === null || Number.isNaN(Number(threshold))) {
       return NextResponse.json({ error: 'Seuil invalide' }, { status: 400 })
     }
 

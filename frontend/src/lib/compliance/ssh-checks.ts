@@ -1017,14 +1017,14 @@ function checkSSHFilePerms(data: SSHHardeningData): HardeningCheck {
   for (const n of nodes) {
     const lines = n.sections.ssh_perms.split('\n').map(l => l.trim())
     const configPerm = Number.parseInt(lines[0], 8)
-    if (!isNaN(configPerm) && configPerm > 0o600) {
+    if (!Number.isNaN(configPerm) && configPerm > 0o600) {
       problems.push(`${n.node}: sshd_config perm ${lines[0]} (expected 600)`)
     }
     for (let i = 1; i < lines.length; i++) {
       if (lines[i] === 'NO_KEYS' || !lines[i]) continue
       const parts = lines[i].split(' ')
       const perm = Number.parseInt(parts[0], 8)
-      if (!isNaN(perm) && perm > 0o600) {
+      if (!Number.isNaN(perm) && perm > 0o600) {
         const keyName = parts[1]?.split('/').pop() || 'host key'
         problems.push(`${n.node}: ${keyName} perm ${parts[0]}`)
       }

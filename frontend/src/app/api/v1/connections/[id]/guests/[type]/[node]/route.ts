@@ -31,7 +31,7 @@ function sumNewDiskStorageMb(body: Record<string, any>): number {
     const [head] = raw.split(',')
     const m = head.match(sizeRe)
     if (!m) continue
-    const gb = parseFloat(m[1])
+    const gb = Number.parseFloat(m[1])
     if (Number.isFinite(gb) && gb > 0) totalMb += Math.round(gb * 1024)
   }
   return totalMb
@@ -73,8 +73,8 @@ export async function POST(
 
       if (vdcInfo) {
         // Estimate resources from body
-        const vcpus = parseInt(body.cores || '1') * parseInt(body.sockets || '1')
-        const ramMb = parseInt(body.memory || '512')
+        const vcpus = Number.parseInt(body.cores || '1') * Number.parseInt(body.sockets || '1')
+        const ramMb = Number.parseInt(body.memory || '512')
         const storageMb = sumNewDiskStorageMb(body)
 
         const quotaCheck = await checkVdcQuota(id, vdcInfo.poolName, vdcInfo.quota, {

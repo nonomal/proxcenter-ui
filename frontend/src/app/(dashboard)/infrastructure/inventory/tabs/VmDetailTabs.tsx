@@ -1972,7 +1972,7 @@ export default function VmDetailTabs(props: any) {
                                         const typeKey = parts[0] || 'std'
                                         const label = vgaLabels[typeKey] || typeKey
                                         const memPart = parts.slice(1).find((p: string) => p.startsWith('memory='))
-                                        const mem = memPart ? parseInt(memPart.split('=')[1], 10) : NaN
+                                        const mem = memPart ? Number.parseInt(memPart.split('=')[1], 10) : Number.NaN
                                         return Number.isFinite(mem) ? `${label} · ${mem} MB` : label
                                       })(),
                                       editValue: data.systemInfo.vga || 'std',
@@ -3391,7 +3391,7 @@ return (
                             size="small"
                             label={t('common.name')}
                             value={newSnapshotName}
-                            onChange={(e) => setNewSnapshotName(e.target.value.replace(/[^a-zA-Z0-9_-]/g, ''))}
+                            onChange={(e) => setNewSnapshotName(e.target.value.replaceAll(/[^a-zA-Z0-9_-]/g, ''))}
                             placeholder="my-snapshot"
                             helperText={t('inventory.snapshotNameHelp')}
                             fullWidth

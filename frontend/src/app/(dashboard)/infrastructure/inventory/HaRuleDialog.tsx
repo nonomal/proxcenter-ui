@@ -283,7 +283,16 @@ return
             placeholder={t('common.search') + '...'}
             style={{ border: 'none', outline: 'none', background: 'transparent', fontSize: 13, width: '100%', color: 'inherit', fontFamily: 'Inter, sans-serif' }}
           />
-          {resourceSearch && <i className="ri-close-line" style={{ fontSize: 14, opacity: 0.4, cursor: 'pointer' }} onClick={() => setResourceSearch('')} />}
+          {resourceSearch && (
+            <button
+              type="button"
+              aria-label={t('common.clear')}
+              onClick={() => setResourceSearch('')}
+              style={{ border: 'none', background: 'transparent', cursor: 'pointer', padding: 0, display: 'inline-flex', color: 'inherit' }}
+            >
+              <i className="ri-close-line" style={{ fontSize: 14, opacity: 0.4 }} />
+            </button>
+          )}
         </Box>
 
         <Box sx={{

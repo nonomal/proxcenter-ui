@@ -32,15 +32,15 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> |
     const url = new URL(req.url)
     const sp = url.searchParams
 
-    const rawLast = parseInt(sp.get("lastentries") || "500", 10)
-    const lastentries = Math.max(1, Math.min(5000, isNaN(rawLast) ? 500 : rawLast))
+    const rawLast = Number.parseInt(sp.get("lastentries") || "500", 10)
+    const lastentries = Math.max(1, Math.min(5000, Number.isNaN(rawLast) ? 500 : rawLast))
 
     const sinceRaw = sp.get("since") || ""
     const untilRaw = sp.get("until") || ""
     const service = (sp.get("service") || "").trim()
 
-    const sinceSec = sinceRaw ? parseInt(sinceRaw, 10) : NaN
-    const untilSec = untilRaw ? parseInt(untilRaw, 10) : NaN
+    const sinceSec = sinceRaw ? Number.parseInt(sinceRaw, 10) : Number.NaN
+    const untilSec = untilRaw ? Number.parseInt(untilRaw, 10) : Number.NaN
 
     let lines: string[] = []
     let source: SyslogSource = "journal"
@@ -48,8 +48,8 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> |
     // Try /nodes/localhost/journal first (PBS 3+)
     const journalQs = new URLSearchParams()
     journalQs.set("lastentries", String(lastentries))
-    if (!isNaN(sinceSec)) journalQs.set("since", String(sinceSec))
-    if (!isNaN(untilSec)) journalQs.set("until", String(untilSec))
+    if (!Number.isNaN(sinceSec)) journalQs.set("since", String(sinceSec))
+    if (!Number.isNaN(untilSec)) journalQs.set("until", String(untilSec))
 
     try {
       const journal = await pbsFetch<string[]>(
@@ -67,8 +67,8 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> |
       const syslogQs = new URLSearchParams()
       syslogQs.set("start", "0")
       syslogQs.set("limit", String(lastentries))
-      if (!isNaN(sinceSec)) syslogQs.set("since", String(sinceSec))
-      if (!isNaN(untilSec)) syslogQs.set("until", String(untilSec))
+      if (!Number.isNaN(sinceSec)) syslogQs.set("since", String(sinceSec))
+      if (!Number.isNaN(untilSec)) syslogQs.set("until", String(untilSec))
 
       const legacy = await pbsFetch<Array<{ n: number; t: string }>>(
         conn,

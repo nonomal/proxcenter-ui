@@ -1253,7 +1253,7 @@ echo "deb http://download.proxmox.com/debian/pve $(. /etc/os-release && echo $VE
               const parts = raw.split(',').map((p: string) => p.trim()).filter(Boolean)
               const vgaType = parts[0] || 'std'
               const memMatch = parts.slice(1).find((p: string) => p.startsWith('memory='))
-              const memory = memMatch ? parseInt(memMatch.split('=')[1], 10) : NaN
+              const memory = memMatch ? Number.parseInt(memMatch.split('=')[1], 10) : Number.NaN
               const memoryCapable = MEMORY_CAPABLE.has(vgaType)
               const memoryValue = memoryCapable ? (Number.isFinite(memory) ? memory : 16) : undefined
               const clipboardMatch = parts.slice(1).find((p: string) => p.startsWith('clipboard='))
@@ -1304,11 +1304,11 @@ echo "deb http://download.proxmox.com/debian/pve $(. /etc/os-release && echo $VE
                         InputProps={{ endAdornment: <InputAdornment position="end">MB</InputAdornment> }}
                         value={memoryValue ?? ''}
                         onChange={(e) => {
-                          const n = parseInt(e.target.value, 10)
+                          const n = Number.parseInt(e.target.value, 10)
                           if (Number.isFinite(n)) setEditOptionValue(buildValue(vgaType, n, clipboard))
                         }}
                         onBlur={(e) => {
-                          const n = parseInt(e.target.value, 10)
+                          const n = Number.parseInt(e.target.value, 10)
                           const clamped = Number.isFinite(n) ? Math.max(4, Math.min(512, n)) : 16
                           setEditOptionValue(buildValue(vgaType, clamped, clipboard))
                         }}
@@ -2123,7 +2123,7 @@ return
                       label={t('inventoryPage.esxiMigration.vlanTag')}
                       placeholder={t('inventoryPage.esxiMigration.vlanTagPlaceholder')}
                       value={migVlanTag}
-                      onChange={e => setMigVlanTag(e.target.value.replace(/[^0-9]/g, ''))}
+                      onChange={e => setMigVlanTag(e.target.value.replaceAll(/[^0-9]/g, ''))}
                       inputProps={{ min: 1, max: 4094, inputMode: 'numeric' }}
                       error={migVlanTag !== '' && (Number(migVlanTag) < 1 || Number(migVlanTag) > 4094)}
                       helperText={migVlanTag !== '' && (Number(migVlanTag) < 1 || Number(migVlanTag) > 4094)
@@ -2594,7 +2594,7 @@ return
                       ? `${migJob.transferSpeed}${migJob.bytesTransferred ? ` — ${(Number(migJob.bytesTransferred) / 1073741824).toFixed(1)} GB / ${migJob.totalBytes ? (Number(migJob.totalBytes) / 1073741824).toFixed(1) : '?'} GB` : ''}`
                       : migJob.status === 'completed' ? t('inventoryPage.esxiMigration.completed')
                       : migJob.status === 'failed' ? (migJob.error || t('inventoryPage.esxiMigration.failed'))
-                      : migJob.currentStep?.replace(/_/g, ' ') || ''
+                      : migJob.currentStep?.replaceAll(/_/g, ' ') || ''
                   }
                 >
                 <Box sx={{ flex: 1, maxWidth: 180, position: 'relative', height: 20, display: 'flex', alignItems: 'center', cursor: 'default' }}>
@@ -2654,7 +2654,7 @@ return
                 {migJob.status === 'failed' && <Chip size="small" label={t('inventoryPage.esxiMigration.failed')} color="error" sx={{ fontWeight: 600 }} />}
                 {migJob.status === 'cancelled' && <Chip size="small" label={t('inventoryPage.esxiMigration.cancelled')} color="warning" sx={{ fontWeight: 600 }} />}
                 {!['completed', 'failed', 'cancelled'].includes(migJob.status) && (
-                  <Chip size="small" label={migJob.currentStep?.replace(/_/g, ' ') || migJob.status} color="primary" sx={{ fontWeight: 600 }} />
+                  <Chip size="small" label={migJob.currentStep?.replaceAll(/_/g, ' ') || migJob.status} color="primary" sx={{ fontWeight: 600 }} />
                 )}
                 {migJob.targetVmid && <Typography variant="caption" color="text.secondary">{t('inventoryPage.esxiMigration.targetVmid')}: {migJob.targetVmid}</Typography>}
               </Box>
@@ -2794,7 +2794,7 @@ return
                         networkBridge: migNetworkBridge,
                         // 802.1Q VLAN tag (1-4094). Empty input means untagged
                         // access port — omit from the payload so the server-side
-                        // schema treats it as undefined rather than NaN.
+                        // schema treats it as undefined rather than Number.NaN.
                         ...(migVlanTag !== '' && Number(migVlanTag) >= 1 && Number(migVlanTag) <= 4094 && {
                           vlanTag: Number(migVlanTag),
                         }),
@@ -3187,7 +3187,7 @@ return
                             label={t('inventoryPage.esxiMigration.vlanTag')}
                             placeholder={t('inventoryPage.esxiMigration.vlanTagPlaceholder')}
                             value={migVlanTag}
-                            onChange={e => setMigVlanTag(e.target.value.replace(/[^0-9]/g, ''))}
+                            onChange={e => setMigVlanTag(e.target.value.replaceAll(/[^0-9]/g, ''))}
                             inputProps={{ min: 1, max: 4094, inputMode: 'numeric' }}
                             error={migVlanTag !== '' && (Number(migVlanTag) < 1 || Number(migVlanTag) > 4094)}
                             helperText={migVlanTag !== '' && (Number(migVlanTag) < 1 || Number(migVlanTag) > 4094)

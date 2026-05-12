@@ -169,20 +169,20 @@ export function parseMarkdown(md: string): string {
   const shield = (s: string) => { shields.push(s); return `\uFFFF${shields.length - 1}\uFFFF` }
 
   // 1. Protect fenced code blocks
-  let html = md.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, _lang, code) => {
-    const escaped = code.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  let html = md.replaceAll(/```(\w*)\n?([\s\S]*?)```/g, (_, _lang, code) => {
+    const escaped = code.replaceAll(/&/g, '&amp;').replaceAll(/</g, '&lt;').replaceAll(/>/g, '&gt;')
     return shield(`<pre><code>${escaped}</code></pre>`)
   })
 
   // 2. Protect existing HTML tags (e.g. <img src='…'/>, <a href='…'>…</a>)
-  html = html.replace(/<[a-z/][^>]*>/gi, tag => shield(tag))
+  html = html.replaceAll(/<[a-z/][^>]*>/gi, tag => shield(tag))
 
   // 3. Parse tables before inline transforms so | pipes aren't mangled
   html = html.replace(
     /^(\|.+\|)\r?\n(\|[\s:|-]+\|)\r?\n((?:\|.+\|\r?\n?)+)/gm,
     (_, headerRow: string, _separatorRow: string, bodyRows: string) => {
       const parseRow = (row: string) =>
-        row.trim().replace(/^\||\|$/g, '').split('|').map(c => c.trim())
+        row.trim().replaceAll(/^\||\|$/g, '').split('|').map(c => c.trim())
 
       const headers = parseRow(headerRow)
       const thCells = headers.map(h => `<th>${h}</th>`).join('')
@@ -199,34 +199,34 @@ export function parseMarkdown(md: string): string {
 
   // 4. Inline & block transforms (safe: HTML tags are shielded)
   html = html
-    .replace(/`([^`]+)`/g, '<code>$1</code>')
-    .replace(/^### (.*)$/gm, '<h3>$1</h3>')
-    .replace(/^## (.*)$/gm, '<h2>$1</h2>')
-    .replace(/^# (.*)$/gm, '<h1>$1</h1>')
-    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-    .replace(/__([^_]+)__/g, '<strong>$1</strong>')
-    .replace(/\*([^*]+)\*/g, '<em>$1</em>')
-    .replace(/_([^_]+)_/g, '<em>$1</em>')
-    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, text, url) => {
+    .replaceAll(/`([^`]+)`/g, '<code>$1</code>')
+    .replaceAll(/^### (.*)$/gm, '<h3>$1</h3>')
+    .replaceAll(/^## (.*)$/gm, '<h2>$1</h2>')
+    .replaceAll(/^# (.*)$/gm, '<h1>$1</h1>')
+    .replaceAll(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replaceAll(/__([^_]+)__/g, '<strong>$1</strong>')
+    .replaceAll(/\*([^*]+)\*/g, '<em>$1</em>')
+    .replaceAll(/_([^_]+)_/g, '<em>$1</em>')
+    .replaceAll(/\[([^\]]+)\]\(([^)]+)\)/g, (_, text, url) => {
       if (/^https?:\/\//i.test(url)) return `<a href="${url}" target="_blank" rel="noopener">${text}</a>`
       return text
     })
-    .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, url) => {
+    .replaceAll(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, url) => {
       if (/^https?:\/\//i.test(url)) return `<img src="${url}" alt="${alt}" style="max-width: 100%;" />`
       return alt
     })
-    .replace(/^---$/gm, '<hr />')
-    .replace(/^\*\*\*$/gm, '<hr />')
-    .replace(/^> (.*)$/gm, '<blockquote>$1</blockquote>')
-    .replace(/^[\*\-] (.*)$/gm, '<li>$1</li>')
-    .replace(/^\d+\. (.*)$/gm, '<li>$1</li>')
-    .replace(/\n\n/g, '</p><p>')
-    .replace(/\n/g, '<br />')
+    .replaceAll(/^---$/gm, '<hr />')
+    .replaceAll(/^\*\*\*$/gm, '<hr />')
+    .replaceAll(/^> (.*)$/gm, '<blockquote>$1</blockquote>')
+    .replaceAll(/^[\*\-] (.*)$/gm, '<li>$1</li>')
+    .replaceAll(/^\d+\. (.*)$/gm, '<li>$1</li>')
+    .replaceAll(/\n\n/g, '</p><p>')
+    .replaceAll(/\n/g, '<br />')
 
-  html = html.replace(/(<li>.*?<\/li>)+/g, '<ul>$&</ul>')
+  html = html.replaceAll(/(<li>.*?<\/li>)+/g, '<ul>$&</ul>')
 
   // 5. Restore all shielded blocks
-  html = html.replace(/\uFFFF(\d+)\uFFFF/g, (_, i) => shields[Number(i)])
+  html = html.replaceAll(/\uFFFF(\d+)\uFFFF/g, (_, i) => shields[Number(i)])
 
   if (!html.startsWith('<')) {
     html = '<p>' + html + '</p>'

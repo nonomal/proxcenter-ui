@@ -29,7 +29,7 @@ function formatBytes(bytes: number | undefined | null): string {
 }
 
 function formatDuration(seconds: number | undefined | null): string {
-  if (seconds == null || isNaN(seconds)) return '—'
+  if (seconds == null || Number.isNaN(seconds)) return '—'
   if (seconds < 60) return `${seconds}s`
   if (seconds < 3600) return `${Math.round(seconds / 60)}m`
 

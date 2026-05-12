@@ -206,7 +206,7 @@ async function downloadDiskViaNfc(
   // in a curl config file would have unescaped inner quotes and curl's config
   // parser would stop at the first one, dropping the session id and landing us
   // on a 401 from vCenter. Escape any " inside the cookie before embedding.
-  const cookieEsc = (vmwareSession.cookie || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"')
+  const cookieEsc = (vmwareSession.cookie || "").replaceAll(/\\/g, "\\\\").replaceAll(/"/g, '\\"')
 
   const ctrlPrefix = `${localPath}.ctrl`
   const pidFile = `${ctrlPrefix}.pid`
@@ -304,7 +304,7 @@ async function downloadDiskViaNfc(
       // Surface the curl stats on success so users can see HTTP code + actual
       // byte count + transfer time in the job logs for diagnosis.
       if (curlStats) {
-        const statsLine = curlStats.replace(/\n/g, " ")
+        const statsLine = curlStats.replaceAll(/\n/g, " ")
         await appendLog(jobId, `[NFC disk ${diskIndex + 1}/${totalDisks}] curl: ${statsLine}`, "info")
       }
       // Defer the control-file cleanup until after validation so the rest of
@@ -330,7 +330,7 @@ async function downloadDiskViaNfc(
       // give the user actionable context (was it HTTP 200 with 0 bytes? a
       // specific error from vCenter? a connection reset?). We format them
       // compactly on a single line.
-      const diagSuffix = ` [curl: ${(curlStats || "(no stats)").replace(/\n/g, " ")}]` +
+      const diagSuffix = ` [curl: ${(curlStats || "(no stats)").replaceAll(/\n/g, " ")}]` +
         (curlStderr ? ` [stderr: ${curlStderr.slice(0, 200)}]` : "")
 
       if (got < 65536) {
@@ -583,7 +583,7 @@ async function runVcenterNfcExport(
  * go through here so a VM named `Foo & <Bar>` doesn't break the descriptor.
  */
 function xmlEscape(s: string): string {
-  return s.replace(/[<>&"']/g, c => (
+  return s.replaceAll(/[<>&"']/g, c => (
     c === "<" ? "&lt;" :
     c === ">" ? "&gt;" :
     c === "&" ? "&amp;" :
@@ -1216,7 +1216,7 @@ export async function runV2vMigrationPipeline(
 
         // Auto-detect disk paths if not provided
         if (!config.diskPaths || config.diskPaths.length === 0) {
-          const vmName = config.sourceVmName.replace(/[^a-zA-Z0-9._-]/g, "*")
+          const vmName = config.sourceVmName.replaceAll(/[^a-zA-Z0-9._-]/g, "*")
           const findResult = await executeSSH(config.targetConnectionId, nodeIp,
             `find /mnt/hyperv -iname "*${vmName}*" \\( -iname "*.vhdx" -o -iname "*.vhd" \\) 2>/dev/null || true`)
           const detected = (findResult.output || "").split("\n").map(l => l.trim()).filter(l => l && l.startsWith("/"))
@@ -1322,7 +1322,7 @@ export async function runV2vMigrationPipeline(
       if (hasStoredKey) {
         // Path A: admin configured a private key → use it as-is.
         const esxiKey = decryptSecret(sourceConn.sshKeyEnc!)
-        const keyEscaped = esxiKey.replace(/'/g, "'\\''")
+        const keyEscaped = esxiKey.replaceAll(/'/g, "'\\''")
         const keyWrite = await executeSSH(config.targetConnectionId, nodeIp,
           `printf '%s' '${keyEscaped}' > ${shellEscape(keyPath)} && chmod 600 ${shellEscape(keyPath)}`)
         if (!keyWrite.success) throw new Error(`Failed to write SSH key: ${keyWrite.error || keyWrite.output}`)
@@ -1343,7 +1343,7 @@ export async function runV2vMigrationPipeline(
         if (!pubKey) throw new Error("Failed to read generated public key")
 
         const esxiPass = decryptSecret(sourceConn.sshPassEnc!)
-        const safeEsxiPass = esxiPass.replace(/'/g, "'\\''")
+        const safeEsxiPass = esxiPass.replaceAll(/'/g, "'\\''")
         const esxiSshOpts = `-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=15 -o HostKeyAlgorithms=+ssh-rsa,ssh-ed25519 -o KexAlgorithms=+diffie-hellman-group14-sha1,diffie-hellman-group14-sha256 -o PreferredAuthentications=keyboard-interactive,password`
 
         // ESXi keeps per-user authorized_keys under /etc/ssh/keys-<user>/ by default.
@@ -1386,7 +1386,7 @@ export async function runV2vMigrationPipeline(
         `    KexAlgorithms +diffie-hellman-group14-sha1,diffie-hellman-group14-sha256`,
         `    PubkeyAcceptedAlgorithms +ssh-rsa,ssh-ed25519`,
       ].join('\n')
-      const configEscaped = sshConfig.replace(/'/g, "'\\''")
+      const configEscaped = sshConfig.replaceAll(/'/g, "'\\''")
       const configWrite = await executeSSH(config.targetConnectionId, nodeIp,
         `printf '%s' '${configEscaped}' > ${shellEscape(configPath)} && chmod 600 ${shellEscape(configPath)}`)
       if (!configWrite.success) throw new Error(`Failed to write ssh config: ${configWrite.error || configWrite.output}`)
@@ -2177,7 +2177,7 @@ export async function runV2vMigrationPipeline(
 
     if (vmConfig) {
       // Override name from source VM (virt-v2v may use disk filename as name in -i disk mode)
-      vmConfig.name = config.sourceVmName.replace(/[^a-zA-Z0-9.\-]/g, "-").replace(/-{2,}/g, "-").replace(/^-|-$/g, "").substring(0, 63) || vmConfig.name
+      vmConfig.name = config.sourceVmName.replaceAll(/[^a-zA-Z0-9.\-]/g, "-").replaceAll(/-{2,}/g, "-").replaceAll(/^-|-$/g, "").substring(0, 63) || vmConfig.name
 
       // NFC transport path (vSAN): virt-v2v -i disk doesn't see the source VMX/OVF
       // so its generated XML carries placeholder defaults (1 vCPU, 1 GB RAM, no NICs).
@@ -2242,7 +2242,7 @@ export async function runV2vMigrationPipeline(
           : ""
       createParams = {
         vmid: targetVmid,
-        name: config.sourceVmName.replace(/[^a-zA-Z0-9.\-]/g, "-").substring(0, 63) || "vm",
+        name: config.sourceVmName.replaceAll(/[^a-zA-Z0-9.\-]/g, "-").substring(0, 63) || "vm",
         ostype: "l26",
         cores: 2,
         sockets: 1,
@@ -2476,8 +2476,8 @@ export async function runV2vMigrationPipeline(
         if (!statResult.success || !statResult.output?.trim()) {
           throw new Error(`Failed to get file size for ${diskFile}: ${statResult.error}`)
         }
-        const sizeBytes = parseInt(statResult.output.trim(), 10)
-        if (isNaN(sizeBytes) || sizeBytes <= 0) {
+        const sizeBytes = Number.parseInt(statResult.output.trim(), 10)
+        if (Number.isNaN(sizeBytes) || sizeBytes <= 0) {
           throw new Error(`Invalid file size for ${diskFile}: ${statResult.output}`)
         }
         const sizeKB = Math.ceil(sizeBytes / 1024)
@@ -2495,7 +2495,7 @@ export async function runV2vMigrationPipeline(
           .map(k => {
             const val = String(vmConf[k])
             const m = val.match(/vm-\d+-disk-(\d+)/)
-            return m ? parseInt(m[1], 10) : -1
+            return m ? Number.parseInt(m[1], 10) : -1
           })
           .filter(n => n >= 0)
         const maxDiskNum = existingNums.length > 0 ? Math.max(...existingNums) : -1
@@ -2740,8 +2740,8 @@ export async function runV2vMigrationPipeline(
         // enough to not collide with other keys but short enough to escape safely.
         const pubFingerprint = pubKey.split(/\s+/)[1]?.substring(0, 40) || ""
         if (pubFingerprint) {
-          const safePub = pubFingerprint.replace(/[/\\&.]/g, '\\$&')
-          const safeEsxiPass = esxiPass.replace(/'/g, "'\\''")
+          const safePub = pubFingerprint.replaceAll(/[/\\&.]/g, '\\$&')
+          const safeEsxiPass = esxiPass.replaceAll(/'/g, "'\\''")
           const esxiSshOpts = `-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o HostKeyAlgorithms=+ssh-rsa,ssh-ed25519 -o KexAlgorithms=+diffie-hellman-group14-sha1,diffie-hellman-group14-sha256 -o PreferredAuthentications=keyboard-interactive,password`
           const revokeCmd = `export SSHPASS='${safeEsxiPass}' && sshpass -e ssh ${esxiSshOpts} -p ${eport} ${euser}@${ehost} "sed -i '/${safePub}/d' /etc/ssh/keys-${euser}/authorized_keys ~/.ssh/authorized_keys 2>/dev/null; echo REVOKED" 2>&1`
           const revokeResult = await executeSSH(config.targetConnectionId, nodeIp, revokeCmd, CLEANUP_TIMEOUT_MS)

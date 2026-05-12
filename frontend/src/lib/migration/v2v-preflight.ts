@@ -165,8 +165,8 @@ export async function runV2vPreflight(
 
   // 5. Check disk space on /tmp
   if (dfCheck.success && dfCheck.output?.trim()) {
-    const availableBytes = parseInt(dfCheck.output.trim(), 10)
-    if (!isNaN(availableBytes)) {
+    const availableBytes = Number.parseInt(dfCheck.output.trim(), 10)
+    if (!Number.isNaN(availableBytes)) {
       result.diskSpaceAvailableBytes = availableBytes
       result.diskSpaceSufficient = availableBytes >= requiredDiskBytes
       if (!result.diskSpaceSufficient) {
@@ -203,8 +203,8 @@ export async function runV2vPreflight(
         if (path && avail && total) {
           storages.push({
             path: path.trim(),
-            availableBytes: parseInt(avail.trim(), 10) || 0,
-            totalBytes: parseInt(total.trim(), 10) || 0,
+            availableBytes: Number.parseInt(avail.trim(), 10) || 0,
+            totalBytes: Number.parseInt(total.trim(), 10) || 0,
             filesystem: fs?.trim() || 'unknown',
           })
         }
@@ -221,7 +221,7 @@ export async function runV2vPreflight(
   if (sourceType === 'hyperv' && vmName) {
     try {
       const scanResult = await executeSSH(targetConnectionId, nodeIp,
-        `find /mnt/hyperv -iname "*${vmName.replace(/[^a-zA-Z0-9._-]/g, '*')}*" \\( -iname "*.vhdx" -o -iname "*.vhd" \\) 2>/dev/null || true`)
+        `find /mnt/hyperv -iname "*${vmName.replaceAll(/[^a-zA-Z0-9._-]/g, '*')}*" \\( -iname "*.vhdx" -o -iname "*.vhd" \\) 2>/dev/null || true`)
       const detected = (scanResult.output || '').split('\n').map(l => l.trim()).filter(l => l && l.startsWith('/'))
       if (detected.length > 0) {
         result.detectedDisks = detected
@@ -335,14 +335,14 @@ export async function checkVirtioWinProgress(
 
   // Check current file size
   const statCheck = await executeSSH(targetConnectionId, nodeIp, `stat -c '%s' ${VIRTIO_WIN_PATH} 2>/dev/null || echo 0`)
-  const sizeBytes = parseInt(statCheck.output?.trim() || "0", 10) || 0
+  const sizeBytes = Number.parseInt(statCheck.output?.trim() || "0", 10) || 0
   const percent = Math.min(99, Math.round((sizeBytes / VIRTIO_WIN_EXPECTED_BYTES) * 100))
 
   if (exitOut === "RUNNING") {
     return { downloading: true, sizeBytes, expectedBytes: VIRTIO_WIN_EXPECTED_BYTES, percent, done: false }
   }
 
-  const exitCode = parseInt(exitOut, 10)
+  const exitCode = Number.parseInt(exitOut, 10)
   // Clean up exit marker
   await executeSSH(targetConnectionId, nodeIp, `rm -f ${VIRTIO_WIN_EXIT}`).catch(() => {})
 

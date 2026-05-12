@@ -30,11 +30,11 @@ export async function GET(
     const url = new URL(req.url)
     const sp = url.searchParams
 
-    const rawLimit = parseInt(sp.get("limit") || "500", 10)
-    const limit = Math.max(1, Math.min(5000, isNaN(rawLimit) ? 500 : rawLimit))
+    const rawLimit = Number.parseInt(sp.get("limit") || "500", 10)
+    const limit = Math.max(1, Math.min(5000, Number.isNaN(rawLimit) ? 500 : rawLimit))
 
-    const rawStart = parseInt(sp.get("start") || "0", 10)
-    const start = Math.max(0, isNaN(rawStart) ? 0 : rawStart)
+    const rawStart = Number.parseInt(sp.get("start") || "0", 10)
+    const start = Math.max(0, Number.isNaN(rawStart) ? 0 : rawStart)
 
     const encodedUpid = encodeURIComponent(upid)
 

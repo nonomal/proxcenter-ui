@@ -6,8 +6,8 @@ describe('formatBytes (1024-based)', () => {
     expect(formatBytes(0)).toBe('0 B')
   })
 
-  it('returns "0 B" for NaN', () => {
-    expect(formatBytes(NaN)).toBe('0 B')
+  it('returns "0 B" for Number.NaN', () => {
+    expect(formatBytes(Number.NaN)).toBe('0 B')
   })
 
   it('returns "0 B" for undefined/null', () => {
@@ -52,8 +52,8 @@ describe('formatStorageSize (1000-based)', () => {
     expect(formatStorageSize(0)).toBe('0 B')
   })
 
-  it('returns "0 B" for NaN', () => {
-    expect(formatStorageSize(NaN)).toBe('0 B')
+  it('returns "0 B" for Number.NaN', () => {
+    expect(formatStorageSize(Number.NaN)).toBe('0 B')
   })
 
   it('formats KB (1000)', () => {
@@ -88,8 +88,8 @@ describe('formatUptime', () => {
     expect(formatUptime(-10)).toBe('0s')
   })
 
-  it('returns "0s" for NaN/undefined', () => {
-    expect(formatUptime(NaN)).toBe('0s')
+  it('returns "0s" for Number.NaN/undefined', () => {
+    expect(formatUptime(Number.NaN)).toBe('0s')
     expect(formatUptime(undefined as any)).toBe('0s')
   })
 

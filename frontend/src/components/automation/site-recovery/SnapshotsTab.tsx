@@ -408,7 +408,7 @@ export default function SnapshotsTab({ connections, vmNameMap }: Props) {
             page={page}
             onPageChange={(_, p) => setPage(p)}
             rowsPerPage={rowsPerPage}
-            onRowsPerPageChange={e => { setRowsPerPage(parseInt(e.target.value, 10)); setPage(0) }}
+            onRowsPerPageChange={e => { setRowsPerPage(Number.parseInt(e.target.value, 10)); setPage(0) }}
             rowsPerPageOptions={[10, 25, 50, 100]}
           />
         )}

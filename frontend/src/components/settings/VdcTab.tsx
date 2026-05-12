@@ -424,8 +424,8 @@ export default function VdcTab() {
   const sluggify = (s: string): string =>
     String(s || '')
       .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-|-$/g, '')
+      .replaceAll(/[^a-z0-9]+/g, '-')
+      .replaceAll(/^-|-$/g, '')
 
   const computeVdcSlug = (tenant: any | null, connectionId: string): string => {
     if (!tenant) return ''
@@ -493,13 +493,13 @@ export default function VdcTab() {
       // Build quota object
       const quota: any = {}
 
-      if (!form.unlimitedVcpus && form.maxVcpus) quota.maxVcpus = parseInt(form.maxVcpus)
-      if (!form.unlimitedRam && form.maxRamGb) quota.maxRamMb = parseInt(form.maxRamGb) * 1024
-      if (!form.unlimitedStorage && form.maxStorageGb) quota.maxStorageMb = parseInt(form.maxStorageGb) * 1024
-      if (!form.unlimitedVms && form.maxVms) quota.maxVms = parseInt(form.maxVms)
-      if (!form.unlimitedSnapshots && form.maxSnapshots) quota.maxSnapshots = parseInt(form.maxSnapshots)
-      if (!form.unlimitedBackups && form.maxBackups) quota.maxBackups = parseInt(form.maxBackups)
-      if (form.maxVnets) quota.maxVnets = parseInt(form.maxVnets)
+      if (!form.unlimitedVcpus && form.maxVcpus) quota.maxVcpus = Number.parseInt(form.maxVcpus)
+      if (!form.unlimitedRam && form.maxRamGb) quota.maxRamMb = Number.parseInt(form.maxRamGb) * 1024
+      if (!form.unlimitedStorage && form.maxStorageGb) quota.maxStorageMb = Number.parseInt(form.maxStorageGb) * 1024
+      if (!form.unlimitedVms && form.maxVms) quota.maxVms = Number.parseInt(form.maxVms)
+      if (!form.unlimitedSnapshots && form.maxSnapshots) quota.maxSnapshots = Number.parseInt(form.maxSnapshots)
+      if (!form.unlimitedBackups && form.maxBackups) quota.maxBackups = Number.parseInt(form.maxBackups)
+      if (form.maxVnets) quota.maxVnets = Number.parseInt(form.maxVnets)
 
       // For unlimited fields, explicitly set null so the backend clears them
       if (form.unlimitedVcpus) quota.maxVcpus = null

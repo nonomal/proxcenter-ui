@@ -112,8 +112,8 @@ export function parseV2vLine(line: string): V2vProgress | null {
   // 1. JSON progress event (newer virt-v2v)
   const jsonProg = trimmed.match(V2V_JSON_PROGRESS_RE)
   if (jsonProg) {
-    const offset = parseInt(jsonProg[1], 10)
-    const total = parseInt(jsonProg[2], 10)
+    const offset = Number.parseInt(jsonProg[1], 10)
+    const total = Number.parseInt(jsonProg[2], 10)
     const pct = total > 0 ? (offset / total) * 100 : 0
     return { percent: pct, currentDisk: 1, totalDisks: 1, step: "Copying disk" }
   }
@@ -133,14 +133,14 @@ export function parseV2vLine(line: string): V2vProgress | null {
   // 4. Legacy percent format during disk copy
   const oldProg = trimmed.match(V2V_OLD_PROGRESS_RE)
   if (oldProg) {
-    return { percent: parseFloat(oldProg[1]), currentDisk: 1, totalDisks: 1, step: "Copying disk" }
+    return { percent: Number.parseFloat(oldProg[1]), currentDisk: 1, totalDisks: 1, step: "Copying disk" }
   }
 
   // 5. nbdcopy progress bar (during "Copying disk" phase on modern virt-v2v
   //    where disk transfer is delegated to nbdcopy instead of v2v's own loop).
   const nbdProg = trimmed.match(V2V_NBDCOPY_RE)
   if (nbdProg) {
-    return { percent: parseFloat(nbdProg[1]), currentDisk: 1, totalDisks: 1, step: "Copying disk" }
+    return { percent: Number.parseFloat(nbdProg[1]), currentDisk: 1, totalDisks: 1, step: "Copying disk" }
   }
 
   return null
@@ -156,8 +156,8 @@ function progressFromStep(step: string): V2vProgress | null {
   let totalDisks = 1
   const diskMatch = step.match(V2V_DISK_RE)
   if (diskMatch) {
-    currentDisk = parseInt(diskMatch[1], 10)
-    totalDisks = parseInt(diskMatch[2], 10)
+    currentDisk = Number.parseInt(diskMatch[1], 10)
+    totalDisks = Number.parseInt(diskMatch[2], 10)
   }
 
   // Match the phase prefix to get an approximate percent.
@@ -213,7 +213,7 @@ export function parsePvLine(line: string): PvProgress | null {
   return {
     transferred: match[1].trim(),
     speed: match[2].trim(),
-    percent: parseInt(match[3], 10),
+    percent: Number.parseInt(match[3], 10),
     eta: match[4].trim()
   }
 }

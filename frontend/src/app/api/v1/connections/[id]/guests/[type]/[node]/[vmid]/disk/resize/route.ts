@@ -12,7 +12,7 @@ export const runtime = "nodejs"
 function parseSizeDeltaMb(size: string): number {
   const match = size.match(/^\+?(\d+(?:\.\d+)?)\s*(G|M|T|K)?/i)
   if (!match) return 0
-  const value = parseFloat(match[1])
+  const value = Number.parseFloat(match[1])
   const unit = (match[2] || 'G').toUpperCase()
   if (unit === 'T') return Math.round(value * 1024 * 1024)
   if (unit === 'G') return Math.round(value * 1024)

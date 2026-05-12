@@ -176,13 +176,13 @@ export async function PUT(
         )
 
         const currentVcpus = (currentConfig?.cores || 1) * (currentConfig?.sockets || 1)
-        const newCores = body.cores ? parseInt(String(body.cores)) : (currentConfig?.cores || 1)
-        const newSockets = body.sockets ? parseInt(String(body.sockets)) : (currentConfig?.sockets || 1)
+        const newCores = body.cores ? Number.parseInt(String(body.cores)) : (currentConfig?.cores || 1)
+        const newSockets = body.sockets ? Number.parseInt(String(body.sockets)) : (currentConfig?.sockets || 1)
         const newVcpus = newCores * newSockets
         const vcpuDelta = newVcpus - currentVcpus
 
         const currentRamMb = currentConfig?.memory || 512
-        const newRamMb = body.memory ? parseInt(String(body.memory)) : currentRamMb
+        const newRamMb = body.memory ? Number.parseInt(String(body.memory)) : currentRamMb
         const ramDelta = newRamMb - currentRamMb
 
         // Only enforce quota when resources are INCREASING (decreases are always allowed)

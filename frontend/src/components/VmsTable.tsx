@@ -67,7 +67,7 @@ const secondsToUptime = (s: any) => {
 
   const sec = Number(s || 0)
 
-  if (!sec || isNaN(sec)) return '—'
+  if (!sec || Number.isNaN(sec)) return '—'
   const d = Math.floor(sec / 86400)
   const h = Math.floor((sec % 86400) / 3600)
 

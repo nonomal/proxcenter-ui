@@ -15,9 +15,9 @@ export function calculatePredictions(
   const alerts: PredictiveAlert[] = []
   const projectedTrends: ResourceTrend[] = [...trends]
 
-  const cpuHistory = trends.map(t => t.cpu).filter(v => v !== undefined && !isNaN(v))
-  const ramHistory = trends.map(t => t.ram).filter(v => v !== undefined && !isNaN(v))
-  const storageHistory = trends.map(t => t.storage).filter(v => v !== undefined && !isNaN(v))
+  const cpuHistory = trends.map(t => t.cpu).filter(v => v !== undefined && !Number.isNaN(v))
+  const ramHistory = trends.map(t => t.ram).filter(v => v !== undefined && !Number.isNaN(v))
+  const storageHistory = trends.map(t => t.storage).filter(v => v !== undefined && !Number.isNaN(v))
 
   const currentStoragePct = kpis.storage.total > 0 ? (kpis.storage.used / kpis.storage.total) * 100 : 0
 

@@ -95,8 +95,8 @@ export async function soapLogin(
   const serviceContent = await soapRetrieveServiceContent(baseUrl, insecureTLS)
 
   // Step 2: Login using the discovered SessionManager MOR
-  const escUser = username.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-  const escPass = password.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+  const escUser = username.replaceAll(/&/g, "&amp;").replaceAll(/</g, "&lt;").replaceAll(/>/g, "&gt;")
+  const escPass = password.replaceAll(/&/g, "&amp;").replaceAll(/</g, "&lt;").replaceAll(/>/g, "&gt;")
 
   const loginBody = `<?xml version="1.0" encoding="UTF-8"?>
 <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:urn="urn:vim25">
@@ -731,12 +731,12 @@ export function parseVmConfig(xml: string): EsxiVmConfig {
 export function buildVmdkDownloadUrl(esxiBaseUrl: string, disk: EsxiDiskInfo, dcPath = "ha-datacenter"): string {
   const host = esxiBaseUrl.replace(/^https?:\/\//, "").replace(/\/.*$/, "")
   const flatPath = disk.relativePath.replace(/\.vmdk$/, "-flat.vmdk")
-  return `https://${host}/folder/${encodeURIComponent(flatPath).replace(/%2F/g, "/")}?dcPath=${encodeURIComponent(dcPath)}&dsName=${encodeURIComponent(disk.datastoreName)}`
+  return `https://${host}/folder/${encodeURIComponent(flatPath).replaceAll(/%2F/g, "/")}?dcPath=${encodeURIComponent(dcPath)}&dsName=${encodeURIComponent(disk.datastoreName)}`
 }
 
 export function buildVmdkDescriptorUrl(esxiBaseUrl: string, disk: EsxiDiskInfo, dcPath = "ha-datacenter"): string {
   const host = esxiBaseUrl.replace(/^https?:\/\//, "").replace(/\/.*$/, "")
-  return `https://${host}/folder/${encodeURIComponent(disk.relativePath).replace(/%2F/g, "/")}?dcPath=${encodeURIComponent(dcPath)}&dsName=${encodeURIComponent(disk.datastoreName)}`
+  return `https://${host}/folder/${encodeURIComponent(disk.relativePath).replaceAll(/%2F/g, "/")}?dcPath=${encodeURIComponent(dcPath)}&dsName=${encodeURIComponent(disk.datastoreName)}`
 }
 
 // -- VM listing via SOAP (works on both ESXi and vCenter) --
@@ -970,7 +970,7 @@ export async function soapListVMs(
 
 /** XML-escape a value safely embedded in a SOAP body. */
 function xmlEscape(s: string): string {
-  return s.replace(/[<>&"']/g, c => (
+  return s.replaceAll(/[<>&"']/g, c => (
     c === "<" ? "&lt;" :
     c === ">" ? "&gt;" :
     c === "&" ? "&amp;" :

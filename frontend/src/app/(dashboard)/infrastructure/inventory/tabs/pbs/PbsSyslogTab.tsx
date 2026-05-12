@@ -41,13 +41,13 @@ const pulse = keyframes`
 function datetimeLocalToUnix(value: string): number | null {
   if (!value) return null
   const ms = Date.parse(value)
-  if (isNaN(ms)) return null
+  if (Number.isNaN(ms)) return null
   return Math.floor(ms / 1000)
 }
 
 /** Escape a string for inclusion in a RegExp. */
 function escapeRegExp(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return s.replaceAll(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
 /** Build highlighted fragments for a line given a client-side search term. */
@@ -112,14 +112,14 @@ export default function PbsSyslogTab({ pbsId }: PbsSyslogTabProps) {
       const le = overrides?.lastentries ?? lastEntries
       qs.set('lastentries', String(le))
       const s = overrides?.since
-      if (typeof s === 'number' && !isNaN(s)) {
+      if (typeof s === 'number' && !Number.isNaN(s)) {
         qs.set('since', String(s))
       } else if (s === undefined) {
         const sinceUnix = datetimeLocalToUnix(since)
         if (sinceUnix !== null) qs.set('since', String(sinceUnix))
       }
       const u = overrides?.until
-      if (typeof u === 'number' && !isNaN(u)) {
+      if (typeof u === 'number' && !Number.isNaN(u)) {
         qs.set('until', String(u))
       } else if (u === undefined) {
         const untilUnix = datetimeLocalToUnix(until)

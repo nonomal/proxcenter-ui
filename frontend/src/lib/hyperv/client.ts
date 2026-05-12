@@ -235,8 +235,8 @@ export class HyperVClient {
       const known = ["Running", "Off", "Saved", "Paused", "Stopping", "Starting", "Reset", "Other"]
       if (known.includes(state)) return state
       // Try parsing as number
-      const n = parseInt(state, 10)
-      if (!isNaN(n)) return this.stateNumberToString(n)
+      const n = Number.parseInt(state, 10)
+      if (!Number.isNaN(n)) return this.stateNumberToString(n)
       return state
     }
 
