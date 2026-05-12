@@ -263,7 +263,7 @@ export async function PUT(
     // Reconcile our IPAM DB with the netN/ipconfigN changes the user is
     // about to push. The helper handles the no-op case (no IPAM-managed
     // bridge involved) cheaply, so this is safe to call unconditionally.
-    let ipamRollback: (() => void) | null = null
+    let ipamRollback: (() => Promise<void>) | null = null
     if (type === 'qemu') {
       const before = await pveFetch<any>(
         conn,
@@ -316,7 +316,7 @@ export async function PUT(
       // PVE rejected the write — undo the IPAM mutations so the DB doesn't
       // drift away from the unchanged qm config.
       if (ipamRollback) {
-        try { ipamRollback() } catch { /* tolerate */ }
+        try { await ipamRollback() } catch { /* tolerate */ }
       }
       throw err
     }

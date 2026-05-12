@@ -160,7 +160,7 @@ describe('scanUsedIpsForSubnet', () => {
       subnetId: 'subnet-1',
       connectionId: 'conn-1',
     })
-    expect(out.map(r => r.ip).sort()).toEqual(['10.42.0.5', '10.42.0.6'])
+    expect(out.map(r => r.ip).sort((a, b) => a.localeCompare(b))).toEqual(['10.42.0.5', '10.42.0.6'])
   })
 
   it('caches the result for the second call within the TTL', async () => {

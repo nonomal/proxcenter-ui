@@ -363,15 +363,15 @@ export async function POST(
               )
             } catch (err: any) {
               console.error(`[restore-ipam-sync] PVE PUT config failed for vmid=${numericVmid}: ${err?.message ?? err}`)
-              try { sync.rollback() } catch { /* tolerate */ }
+              try { await sync.rollback() } catch { /* tolerate */ }
               try { await releaseAllocationsForVm(id, numericVmid) } catch { /* tolerate */ }
             }
           }
         } catch (err: any) {
           console.error(`[restore-ipam-sync] post-restore IPAM sync failed for vmid=${vmid}: ${err?.message ?? err}`)
           // Best-effort cleanup so a failed sync doesn't leak partial
-          // allocations. The restored VM stays — data loss > drift.
-          try { releaseAllocationsForVm(id, numericVmid) } catch { /* tolerate */ }
+          // allocations. The restored VM stays, data loss > drift.
+          try { await releaseAllocationsForVm(id, numericVmid) } catch { /* tolerate */ }
         }
       })
     }

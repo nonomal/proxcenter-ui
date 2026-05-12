@@ -53,7 +53,7 @@ export async function GET(_req: NextRequest, ctx: RouteContext) {
 
     const liveByName = new Map(liveNodes.map(n => [n.name, n.status]))
     const known = new Set<string>([...savedNodes.map(n => n.nodeName), ...liveByName.keys()])
-    const nodes = Array.from(known).sort().map(nodeName => {
+    const nodes = Array.from(known).sort((a, b) => a.localeCompare(b)).map(nodeName => {
       const saved = savedNodes.find(n => n.nodeName === nodeName)
       const status = liveByName.get(nodeName) || null
       const base = saved ?? {

@@ -19,9 +19,9 @@ export interface Country {
  */
 export function countryFlag(code: string | null | undefined): string {
   if (!code || code.length !== 2) return ''
-  const offset = 0x1F1E6 - 'A'.charCodeAt(0)
+  const offset = 0x1F1E6 - ('A'.codePointAt(0) as number)
   return String.fromCodePoint(
-    ...code.toUpperCase().split('').map(c => c.charCodeAt(0) + offset),
+    ...code.toUpperCase().split('').map(c => (c.codePointAt(0) as number) + offset),
   )
 }
 

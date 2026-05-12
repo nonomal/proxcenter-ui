@@ -214,15 +214,15 @@ export async function POST(
               )
             } catch (err: any) {
               console.error(`[clone-ipam-sync] PVE PUT config failed for vmid=${newVmid}: ${err?.message ?? err}`)
-              try { sync.rollback() } catch { /* tolerate */ }
+              try { await sync.rollback() } catch { /* tolerate */ }
               try { await releaseAllocationsForVm(id, newVmid) } catch { /* tolerate */ }
             }
           }
         } catch (err: any) {
           console.error(`[clone-ipam-sync] post-clone IPAM sync failed for vmid=${body.newid}: ${err?.message ?? err}`)
           // Best-effort cleanup so a failed sync doesn't leak partial
-          // allocations. The clone itself stays — data loss > drift.
-          try { releaseAllocationsForVm(id, newVmid) } catch { /* tolerate */ }
+          // allocations. The clone itself stays, data loss > drift.
+          try { await releaseAllocationsForVm(id, newVmid) } catch { /* tolerate */ }
         }
       })
     }

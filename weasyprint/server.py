@@ -48,5 +48,8 @@ def render() -> Response:
 
 
 if __name__ == "__main__":
-    # Local dev convenience — production runs through gunicorn (see CMD in Dockerfile).
-    app.run(host="0.0.0.0", port=5000)
+    # Local dev convenience. Production runs through gunicorn (see CMD in
+    # Dockerfile), which binds 0.0.0.0 inside the container so other
+    # containers can reach it. The dev entrypoint stays on 127.0.0.1 to
+    # avoid exposing the WeasyPrint port on the host network by accident.
+    app.run(host="127.0.0.1", port=5000)

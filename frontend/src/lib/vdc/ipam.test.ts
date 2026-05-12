@@ -191,7 +191,8 @@ describe('release / find / list / bind', () => {
     const b = await allocateIp({ ...ids, mac: 'AA:00:00:00:00:02', vmid: 100 })
     await allocateIp({ ...ids, mac: 'AA:00:00:00:00:03', vmid: 200 })
     const released = await releaseAllocationsForVm(ids.connectionId, 100)
-    expect(released.map((r) => r.ip).sort()).toEqual([a.ip, b.ip].sort())
+    const cmp = (x: string, y: string) => x.localeCompare(y)
+    expect(released.map((r) => r.ip).sort(cmp)).toEqual([a.ip, b.ip].sort(cmp))
     expect(await listAllocationsForSubnet(ids.subnetId)).toHaveLength(1)
   })
 
