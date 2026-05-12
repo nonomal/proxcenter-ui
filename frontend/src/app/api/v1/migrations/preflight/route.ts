@@ -2,6 +2,7 @@ import { NextResponse } from "next/server"
 
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
 import { runV2vPreflight, installV2vPackages, startVirtioWinDownload, checkVirtioWinProgress } from "@/lib/migration/v2v-preflight"
+import { safeLog } from "@/lib/log/sanitize"
 
 export const runtime = "nodejs"
 
@@ -59,7 +60,7 @@ export async function POST(req: Request) {
     return NextResponse.json(result)
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : "Unknown error"
-    console.error("[migrations/preflight] Error:", message)
+    console.error("[migrations/preflight] Error:", safeLog(message))
     return NextResponse.json({ error: message }, { status: 500 })
   }
 }

@@ -4,6 +4,7 @@ import { demoResponse } from "@/lib/demo/demo-api"
 import { pbsFetch } from "@/lib/proxmox/pbs-client"
 import { getPbsConnectionById } from "@/lib/connections/getConnection"
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
+import { safeLog } from "@/lib/log/sanitize"
 
 export const runtime = "nodejs"
 
@@ -55,7 +56,7 @@ export async function GET(
       throw e
     }
   } catch (e: any) {
-    console.error("PBS updates changelog error:", e)
+    console.error("PBS updates changelog error:", safeLog(e?.message ?? e))
 
     return NextResponse.json({ error: e?.message || String(e) }, { status: 500 })
   }

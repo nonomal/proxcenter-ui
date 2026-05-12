@@ -119,6 +119,6 @@ export async function GET(
     return new Response(body, { status: 200, headers })
   } catch (e: any) {
     console.error('PBS download error:', e)
-    return new Response(e?.message || String(e), { status: 500 })
+    return new Response('PBS download failed', { status: 500 })
   }
 }

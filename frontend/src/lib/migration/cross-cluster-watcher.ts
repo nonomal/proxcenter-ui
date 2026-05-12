@@ -4,6 +4,7 @@ import { getTenantPrisma } from '@/lib/tenant'
 import { getNodeIp } from '@/lib/ssh/node-ip'
 import { executeSSHDirect, shellEscape, type SSHResult } from '@/lib/ssh/exec'
 import type { PveConn } from '@/lib/connections/getConnection'
+import { safeLog } from '@/lib/log/sanitize'
 
 const ORCHESTRATOR_URL = process.env.ORCHESTRATOR_URL || 'http://proxcenter-orchestrator:8080'
 
@@ -117,9 +118,9 @@ async function runSshForWatcher(
  */
 export async function watchMigrationAndCleanup(opts: WatcherOpts): Promise<void> {
   const { connectionId, tenantId, sourceConn, sourceNode, vmid, upid, deleteSource } = opts
-  const tag = `[migrate-watcher:${vmid}]`
+  const tag = `[migrate-watcher:${safeLog(vmid)}]`
 
-  console.log(`${tag} started (deleteSource=${deleteSource}, upid=${upid})`)
+  console.log(`${tag} started (deleteSource=${deleteSource}, upid=${safeLog(upid)})`)
 
   let taskStatus: any = null
   for (let i = 0; i < MAX_POLL_ATTEMPTS; i++) {

@@ -4,6 +4,7 @@ import { Agent, request } from "undici"
 import { extractHostFromUrl, extractPortFromUrl, replaceHostInUrl } from "./urlUtils"
 import { getNodeIps, setNodeIps, getFailoverLock, setFailoverLock, incrementFailures, resetFailures, getFailureCount, FAILURE_THRESHOLD } from "../cache/nodeIpCache"
 import { invalidateConnectionCache } from "../connections/getConnection"
+import { safeLog } from "../log/sanitize"
 
 // Connect timeout: 5s max for TCP handshake. Undici's default (10-30s) is too
 // high — when a node is down, every request blocks until the OS TCP timeout.
@@ -109,7 +110,7 @@ function refreshFailoverTimestamp(connId: string): void {
 
 function setFailoverUrl(connId: string, url: string): void {
   getFailoverStore().set(connId, { url, cachedAt: Date.now() })
-  console.log(`[failover] Cached failover URL for connection ${connId}: ${url}`)
+  console.log(`[failover] Cached failover URL for connection ${safeLog(connId)}: ${safeLog(url)}`)
 }
 
 function clearFailoverUrl(connId: string): void {
@@ -121,7 +122,7 @@ async function updateConnectionBaseUrl(connId: string, newUrl: string): Promise<
   try {
     setFailoverUrl(connId, newUrl)
   } catch (e) {
-    console.error(`[failover] Failed to update connection ${connId} baseUrl:`, e)
+    console.error(`[failover] Failed to update connection ${safeLog(connId)} baseUrl:`, e)
   }
 }
 
@@ -221,12 +222,12 @@ export async function pveFetch<T>(
         // Primary is back! Clear failover cache and reset failures
         clearFailoverUrl(opts.id)
         resetFailures(opts.id)
-        console.log(`[failover] Primary node recovered for connection ${opts.id}, clearing failover cache`)
+        console.log(`[failover] Primary node recovered for connection ${safeLog(opts.id)}, clearing failover cache`)
         return result
       } catch (probeErr) {
         // Primary still down, reset timer and use failover
         refreshFailoverTimestamp(opts.id)
-        console.log(`[failover] Primary still down for connection ${opts.id}, staying on failover`)
+        console.log(`[failover] Primary still down for connection ${safeLog(opts.id)}, staying on failover`)
       }
     }
 
@@ -288,10 +289,10 @@ export async function pveFetch<T>(
 
         const shouldFailover = incrementFailures(opts.id)
         if (!shouldFailover) {
-          console.warn(`[failover] Connection ${opts.id} failure ${getFailureCount(opts.id)}/${FAILURE_THRESHOLD} for ${path} (${isTimeoutError(err) ? 'timeout' : 'hard error'})`)
+          console.warn(`[failover] Connection ${safeLog(opts.id)} failure ${getFailureCount(opts.id)}/${FAILURE_THRESHOLD} for ${safeLog(path)} (${isTimeoutError(err) ? 'timeout' : 'hard error'})`)
           throw err
         }
-        console.log(`[failover] Connection ${opts.id} reached failure threshold, initiating failover...`)
+        console.log(`[failover] Connection ${safeLog(opts.id)} reached failure threshold, initiating failover...`)
       } else {
         // Non-network error (HTTP 500, parse error, etc.) - don't failover
         throw err
@@ -336,7 +337,7 @@ export async function pveFetch<T>(
     }
 
     if (!cached || cached.ips.length === 0) {
-      console.error(`[failover] No node IPs available for connection ${connId}. Visit Inventory or re-save the connection to discover nodes.`)
+      console.error(`[failover] No node IPs available for connection ${safeLog(connId)}. Visit Inventory or re-save the connection to discover nodes.`)
       throw err
     }
 

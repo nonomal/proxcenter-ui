@@ -535,7 +535,7 @@ echo "deb http://download.proxmox.com/debian/pve $(. /etc/os-release && echo $VE
 
       if (failedInstalls.length > 0) {
         const aggregated = failedInstalls.map(f => `=== ${f.node} ===\n${f.error || '(no error string)'}\n${f.output.slice(-2000)}`).join('\n\n')
-        const looks401Enterprise = /\b401\b/i.test(aggregated) && /enterprise\.proxmox\.com/i.test(aggregated)
+        const looks401Enterprise = /\b401\b/i.test(aggregated) && aggregated.toLowerCase().includes('enterprise.proxmox.com')
         installError = {
           output: aggregated,
           hintKey: looks401Enterprise ? '401_enterprise' : undefined,

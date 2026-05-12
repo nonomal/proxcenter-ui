@@ -1,6 +1,7 @@
 import { Client } from "ssh2"
 import { prisma } from "@/lib/db/prisma"
 import { decryptSecret } from "@/lib/crypto/secret"
+import { safeLog } from "@/lib/log/sanitize"
 
 const ORCHESTRATOR_URL = process.env.ORCHESTRATOR_URL || "http://localhost:8080"
 
@@ -127,7 +128,7 @@ export async function executeSSH(
 
     if (res.ok) {
       const data = await res.json()
-      console.log(`[ssh] executed via orchestrator on ${nodeIp}`)
+      console.log(`[ssh] executed via orchestrator on ${safeLog(nodeIp)}`)
       return { success: data.success !== false, output: data.output, error: data.error }
     }
 
@@ -135,13 +136,13 @@ export async function executeSSH(
     const errMsg = err?.error || res.statusText
     // If orchestrator rejects the command (whitelist), fall through to direct ssh2
     if (errMsg.includes('not allowed') || errMsg.includes('not permitted') || res.status === 403) {
-      console.log(`[ssh] orchestrator rejected command, falling back to ssh2 for ${nodeIp}`)
+      console.log(`[ssh] orchestrator rejected command, falling back to ssh2 for ${safeLog(nodeIp)}`)
     } else {
       return { success: false, error: errMsg }
     }
   } catch {
     // Orchestrator unreachable – fall through to ssh2
-    console.log(`[ssh] orchestrator unavailable, falling back to ssh2 for ${nodeIp}`)
+    console.log(`[ssh] orchestrator unavailable, falling back to ssh2 for ${safeLog(nodeIp)}`)
   }
 
   // 2. Fallback: direct ssh2
@@ -195,7 +196,7 @@ export function executeSSHDirect(opts: {
           clearTimeout(timeout)
           conn.end()
           if (code === 0 || code === null) {
-            console.log(`[ssh] executed via ssh2 on ${opts.host}`)
+            console.log(`[ssh] executed via ssh2 on ${safeLog(opts.host)}`)
             resolve({ success: true, output: stdout.trim(), error: stderr.trim() || undefined })
           } else {
             // Preserve stdout on non-zero exit so callers can surface full
