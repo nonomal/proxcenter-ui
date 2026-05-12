@@ -277,14 +277,12 @@ jobs:
           cache-to: type=gha,mode=max
           platforms: linux/amd64
 
-      - name: Make WeasyPrint package public
-        if: github.event_name != 'pull_request'
-        run: |
-          curl -sS -X PATCH \
-            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            -H "Accept: application/vnd.github.v3+json" \
-            https://api.github.com/user/packages/container/proxcenter-weasyprint \
-            -d '{"visibility":"public"}'
+      # The proxcenter-weasyprint package stays PRIVATE on GHCR (Enterprise
+      # only). A previous version of this workflow PATCHed it back to
+      # public after every build, which silently reverted the operator's
+      # privacy setting and additionally tripped githubactions:S7636
+      # (secret expanded in a `run:` block). Keep the package's visibility
+      # to whatever it was set to on the registry; do not touch it here.
 
   # ========================================
   # Run Backend Tests

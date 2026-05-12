@@ -113,24 +113,27 @@ COPY --from=builder /app/public ./public
 # Pruned production node_modules from the builder (already trimmed of
 # next/@next/@swc — see the prune step above). Carries the Prisma CLI +
 # its full transitive graph, @prisma/client, adapter-pg, pg.
-COPY --from=builder --chown=nextjs:nodejs /app/node_modules ./node_modules
+# --chmod=0555 makes the application code read+execute only, preventing
+# in-container tampering by a compromised process (defense in depth on
+# top of running as the non-root `nextjs` user).
+COPY --from=builder --chown=nextjs:nodejs --chmod=0555 /app/node_modules ./node_modules
 
 # Standalone Next.js bundle: server.js, lean traced node_modules
 # (re-adds next + @next entries the prune dropped) and the compiled
 # .next/ tree.
-COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
-COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+COPY --from=builder --chown=nextjs:nodejs --chmod=0555 /app/.next/standalone ./
+COPY --from=builder --chown=nextjs:nodejs --chmod=0555 /app/.next/static ./.next/static
 
 # Prisma schema, migrations and pre-bundled seed.js (built by esbuild above).
-COPY --from=builder --chown=nextjs:nodejs /app/prisma ./prisma
-COPY --from=builder --chown=nextjs:nodejs /app/prisma.config.ts ./prisma.config.ts
+COPY --from=builder --chown=nextjs:nodejs --chmod=0555 /app/prisma ./prisma
+COPY --from=builder --chown=nextjs:nodejs --chmod=0555 /app/prisma.config.ts ./prisma.config.ts
 
 # Unified server entry point + WebSocket proxy.
-COPY --from=builder --chown=nextjs:nodejs /app/start.js ./start.js
-COPY --from=builder --chown=nextjs:nodejs /app/ws-proxy.js ./ws-proxy.js
+COPY --from=builder --chown=nextjs:nodejs --chmod=0555 /app/start.js ./start.js
+COPY --from=builder --chown=nextjs:nodejs --chmod=0555 /app/ws-proxy.js ./ws-proxy.js
 
 # Package metadata (used by the startup banner for the version label).
-COPY --from=builder --chown=nextjs:nodejs /app/package.json ./package.json
+COPY --from=builder --chown=nextjs:nodejs --chmod=0555 /app/package.json ./package.json
 
 # No extra runtime dependencies — start.js runs as single process
 
