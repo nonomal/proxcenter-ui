@@ -70,6 +70,9 @@ export const prismaTest = new PrismaClient({
  */
 export async function truncate(tables: string[]): Promise<void> {
   if (tables.length === 0) return
-  const list = tables.map((t) => `"${t}"`).join(', ')
+  // $executeRawUnsafe bypasses the PrismaPg adapter's schema rewrite, so the
+  // query hits the connection's default search_path (public). Qualify each
+  // table name with the test schema so TRUNCATE lands on the right rows.
+  const list = tables.map((t) => `"${schema}"."${t}"`).join(', ')
   await prismaTest.$executeRawUnsafe(`TRUNCATE TABLE ${list} RESTART IDENTITY CASCADE`)
 }
