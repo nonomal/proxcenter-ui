@@ -61,6 +61,19 @@ jobs:
       - name: Install dependencies
         run: npm ci --legacy-peer-deps --ignore-scripts
 
+      - name: Generate Prisma client
+        # --ignore-scripts above skips the postinstall, and we don't have a
+        # postinstall that runs `prisma generate` anyway. Several test suites
+        # (alerts/visibility, vdc/scope, vdc/sdn, vdc/vnets, vdc/backupJobs,
+        # vdc/ipam*, db/vdcPbsBindings) import `@/lib/db/prisma` which loads
+        # `.prisma/client/default` at module load time. Without this step the
+        # suites fail with "Cannot find module .prisma/client/default".
+        # The URL value is only required for the config to load, `prisma
+        # generate` does not open a connection.
+        env:
+          DATABASE_URL: postgresql://proxcenter:test-pass@localhost:5432/proxcenter
+        run: npx prisma generate
+
       - name: Install psql client
         # The test globalSetup shells out to psql to create / drop the
         # per-run schema; ubuntu-latest images ship without it.
