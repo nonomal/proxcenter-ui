@@ -111,7 +111,7 @@ export async function GET(
     const contentLength = upstream.headers['content-length']
     const headers: Record<string, string> = {
       'Content-Type': 'application/octet-stream',
-      'Content-Disposition': `attachment; filename="${fileName.replaceAll(/"/g, '')}"`,
+      'Content-Disposition': `attachment; filename="${fileName.replaceAll('"', '')}"`,
       'Cache-Control': 'no-store',
     }
     if (typeof contentLength === 'string') headers['Content-Length'] = contentLength

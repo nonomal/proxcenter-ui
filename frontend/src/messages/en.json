@@ -4282,7 +4282,7 @@
     "nameLabel": "Name (optional)",
     "namePlaceholder": "John Doe",
     "emailLabel": "Email",
-    "passwordLabel": "Password",
+    "signInLabel": "Password",
     "passwordHelper": "Minimum 8 characters",
     "confirmPasswordLabel": "Confirm password",
     "createAccount": "Create administrator account",

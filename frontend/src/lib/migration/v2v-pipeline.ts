@@ -206,7 +206,7 @@ async function downloadDiskViaNfc(
   // in a curl config file would have unescaped inner quotes and curl's config
   // parser would stop at the first one, dropping the session id and landing us
   // on a 401 from vCenter. Escape any " inside the cookie before embedding.
-  const cookieEsc = (vmwareSession.cookie || "").replaceAll(/\\/g, "\\\\").replaceAll(/"/g, '\\"')
+  const cookieEsc = (vmwareSession.cookie || "").replaceAll("\\", "\\\\").replaceAll('"', '\\"')
 
   const ctrlPrefix = `${localPath}.ctrl`
   const pidFile = `${ctrlPrefix}.pid`
@@ -304,7 +304,7 @@ async function downloadDiskViaNfc(
       // Surface the curl stats on success so users can see HTTP code + actual
       // byte count + transfer time in the job logs for diagnosis.
       if (curlStats) {
-        const statsLine = curlStats.replaceAll(/\n/g, " ")
+        const statsLine = curlStats.replaceAll("\n", " ")
         await appendLog(jobId, `[NFC disk ${diskIndex + 1}/${totalDisks}] curl: ${statsLine}`, "info")
       }
       // Defer the control-file cleanup until after validation so the rest of
@@ -330,7 +330,7 @@ async function downloadDiskViaNfc(
       // give the user actionable context (was it HTTP 200 with 0 bytes? a
       // specific error from vCenter? a connection reset?). We format them
       // compactly on a single line.
-      const diagSuffix = ` [curl: ${(curlStats || "(no stats)").replaceAll(/\n/g, " ")}]` +
+      const diagSuffix = ` [curl: ${(curlStats || "(no stats)").replaceAll("\n", " ")}]` +
         (curlStderr ? ` [stderr: ${curlStderr.slice(0, 200)}]` : "")
 
       if (got < 65536) {
@@ -1322,7 +1322,7 @@ export async function runV2vMigrationPipeline(
       if (hasStoredKey) {
         // Path A: admin configured a private key → use it as-is.
         const esxiKey = decryptSecret(sourceConn.sshKeyEnc!)
-        const keyEscaped = esxiKey.replaceAll(/'/g, "'\\''")
+        const keyEscaped = esxiKey.replaceAll("'", "'\\''")
         const keyWrite = await executeSSH(config.targetConnectionId, nodeIp,
           `printf '%s' '${keyEscaped}' > ${shellEscape(keyPath)} && chmod 600 ${shellEscape(keyPath)}`)
         if (!keyWrite.success) throw new Error(`Failed to write SSH key: ${keyWrite.error || keyWrite.output}`)
@@ -1343,7 +1343,7 @@ export async function runV2vMigrationPipeline(
         if (!pubKey) throw new Error("Failed to read generated public key")
 
         const esxiPass = decryptSecret(sourceConn.sshPassEnc!)
-        const safeEsxiPass = esxiPass.replaceAll(/'/g, "'\\''")
+        const safeEsxiPass = esxiPass.replaceAll("'", "'\\''")
         const esxiSshOpts = `-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=15 -o HostKeyAlgorithms=+ssh-rsa,ssh-ed25519 -o KexAlgorithms=+diffie-hellman-group14-sha1,diffie-hellman-group14-sha256 -o PreferredAuthentications=keyboard-interactive,password`
 
         // ESXi keeps per-user authorized_keys under /etc/ssh/keys-<user>/ by default.
@@ -1386,7 +1386,7 @@ export async function runV2vMigrationPipeline(
         `    KexAlgorithms +diffie-hellman-group14-sha1,diffie-hellman-group14-sha256`,
         `    PubkeyAcceptedAlgorithms +ssh-rsa,ssh-ed25519`,
       ].join('\n')
-      const configEscaped = sshConfig.replaceAll(/'/g, "'\\''")
+      const configEscaped = sshConfig.replaceAll("'", "'\\''")
       const configWrite = await executeSSH(config.targetConnectionId, nodeIp,
         `printf '%s' '${configEscaped}' > ${shellEscape(configPath)} && chmod 600 ${shellEscape(configPath)}`)
       if (!configWrite.success) throw new Error(`Failed to write ssh config: ${configWrite.error || configWrite.output}`)
@@ -2741,7 +2741,7 @@ export async function runV2vMigrationPipeline(
         const pubFingerprint = pubKey.split(/\s+/)[1]?.substring(0, 40) || ""
         if (pubFingerprint) {
           const safePub = pubFingerprint.replaceAll(/[/\\&.]/g, '\\$&')
-          const safeEsxiPass = esxiPass.replaceAll(/'/g, "'\\''")
+          const safeEsxiPass = esxiPass.replaceAll("'", "'\\''")
           const esxiSshOpts = `-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o HostKeyAlgorithms=+ssh-rsa,ssh-ed25519 -o KexAlgorithms=+diffie-hellman-group14-sha1,diffie-hellman-group14-sha256 -o PreferredAuthentications=keyboard-interactive,password`
           const revokeCmd = `export SSHPASS='${safeEsxiPass}' && sshpass -e ssh ${esxiSshOpts} -p ${eport} ${euser}@${ehost} "sed -i '/${safePub}/d' /etc/ssh/keys-${euser}/authorized_keys ~/.ssh/authorized_keys 2>/dev/null; echo REVOKED" 2>&1`
           const revokeResult = await executeSSH(config.targetConnectionId, nodeIp, revokeCmd, CLEANUP_TIMEOUT_MS)

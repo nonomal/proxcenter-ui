@@ -513,7 +513,14 @@ export default function StorageDetailPanel({
                     }}
                   />
                   {pbsStorageSearch && (
-                    <i className="ri-close-line" style={{ fontSize: 12, opacity: 0.4, cursor: 'pointer' }} onClick={() => { setPbsStorageSearch(''); setPbsStoragePage(0) }} />
+                    <button
+                      type="button"
+                      aria-label="Clear search"
+                      onClick={() => { setPbsStorageSearch(''); setPbsStoragePage(0) }}
+                      style={{ border: 'none', background: 'transparent', cursor: 'pointer', padding: 0, display: 'inline-flex', color: 'inherit' }}
+                    >
+                      <i className="ri-close-line" style={{ fontSize: 12, opacity: 0.4 }} />
+                    </button>
                   )}
                 </Box>
               </Box>

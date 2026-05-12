@@ -4244,7 +4244,7 @@
     "nameLabel": "姓名（可选）",
     "namePlaceholder": "张三",
     "emailLabel": "电子邮件",
-    "passwordLabel": "密码",
+    "signInLabel": "密码",
     "passwordHelper": "至少 8 个字符",
     "confirmPasswordLabel": "确认密码",
     "createAccount": "创建管理员账户",

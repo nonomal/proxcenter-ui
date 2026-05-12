@@ -4282,7 +4282,7 @@
     "nameLabel": "Nom (optionnel)",
     "namePlaceholder": "Jean Dupont",
     "emailLabel": "Email",
-    "passwordLabel": "Mot de passe",
+    "signInLabel": "Mot de passe",
     "passwordHelper": "Minimum 8 caractères",
     "confirmPasswordLabel": "Confirmer le mot de passe",
     "createAccount": "Créer le compte administrateur",

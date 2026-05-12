@@ -95,8 +95,8 @@ export async function soapLogin(
   const serviceContent = await soapRetrieveServiceContent(baseUrl, insecureTLS)
 
   // Step 2: Login using the discovered SessionManager MOR
-  const escUser = username.replaceAll(/&/g, "&amp;").replaceAll(/</g, "&lt;").replaceAll(/>/g, "&gt;")
-  const escPass = password.replaceAll(/&/g, "&amp;").replaceAll(/</g, "&lt;").replaceAll(/>/g, "&gt;")
+  const escUser = username.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
+  const escPass = password.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
 
   const loginBody = `<?xml version="1.0" encoding="UTF-8"?>
 <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:urn="urn:vim25">
@@ -731,12 +731,12 @@ export function parseVmConfig(xml: string): EsxiVmConfig {
 export function buildVmdkDownloadUrl(esxiBaseUrl: string, disk: EsxiDiskInfo, dcPath = "ha-datacenter"): string {
   const host = esxiBaseUrl.replace(/^https?:\/\//, "").replace(/\/.*$/, "")
   const flatPath = disk.relativePath.replace(/\.vmdk$/, "-flat.vmdk")
-  return `https://${host}/folder/${encodeURIComponent(flatPath).replaceAll(/%2F/g, "/")}?dcPath=${encodeURIComponent(dcPath)}&dsName=${encodeURIComponent(disk.datastoreName)}`
+  return `https://${host}/folder/${encodeURIComponent(flatPath).replaceAll("%2F", "/")}?dcPath=${encodeURIComponent(dcPath)}&dsName=${encodeURIComponent(disk.datastoreName)}`
 }
 
 export function buildVmdkDescriptorUrl(esxiBaseUrl: string, disk: EsxiDiskInfo, dcPath = "ha-datacenter"): string {
   const host = esxiBaseUrl.replace(/^https?:\/\//, "").replace(/\/.*$/, "")
-  return `https://${host}/folder/${encodeURIComponent(disk.relativePath).replaceAll(/%2F/g, "/")}?dcPath=${encodeURIComponent(dcPath)}&dsName=${encodeURIComponent(disk.datastoreName)}`
+  return `https://${host}/folder/${encodeURIComponent(disk.relativePath).replaceAll("%2F", "/")}?dcPath=${encodeURIComponent(dcPath)}&dsName=${encodeURIComponent(disk.datastoreName)}`
 }
 
 // -- VM listing via SOAP (works on both ESXi and vCenter) --

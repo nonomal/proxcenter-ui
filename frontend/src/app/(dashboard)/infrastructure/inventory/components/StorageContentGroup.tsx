@@ -118,7 +118,14 @@ function StorageContentGroup({ group, formatBytes: fmt, onUpload, onDelete, onDo
               }}
             />
             {search && (
-              <i className="ri-close-line" style={{ fontSize: 13, opacity: 0.4, cursor: 'pointer' }} onClick={() => setSearch('')} />
+              <button
+                type="button"
+                aria-label="Clear search"
+                onClick={() => setSearch('')}
+                style={{ border: 'none', background: 'transparent', cursor: 'pointer', padding: 0, display: 'inline-flex', color: 'inherit' }}
+              >
+                <i className="ri-close-line" style={{ fontSize: 13, opacity: 0.4 }} />
+              </button>
             )}
           </Box>
           {onUpload && (

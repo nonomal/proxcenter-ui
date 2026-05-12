@@ -186,7 +186,7 @@ return
             />
             <TextField
               fullWidth
-              label={t('setup.passwordLabel')}
+              label={t('setup.signInLabel')}
               type={isPasswordShown ? 'text' : 'password'}
               value={password}
               onChange={e => setPassword(e.target.value)}

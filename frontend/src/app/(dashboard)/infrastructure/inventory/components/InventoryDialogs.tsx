@@ -2594,7 +2594,7 @@ return
                       ? `${migJob.transferSpeed}${migJob.bytesTransferred ? ` — ${(Number(migJob.bytesTransferred) / 1073741824).toFixed(1)} GB / ${migJob.totalBytes ? (Number(migJob.totalBytes) / 1073741824).toFixed(1) : '?'} GB` : ''}`
                       : migJob.status === 'completed' ? t('inventoryPage.esxiMigration.completed')
                       : migJob.status === 'failed' ? (migJob.error || t('inventoryPage.esxiMigration.failed'))
-                      : migJob.currentStep?.replaceAll(/_/g, ' ') || ''
+                      : migJob.currentStep?.replaceAll("_", ' ') || ''
                   }
                 >
                 <Box sx={{ flex: 1, maxWidth: 180, position: 'relative', height: 20, display: 'flex', alignItems: 'center', cursor: 'default' }}>
@@ -2654,7 +2654,7 @@ return
                 {migJob.status === 'failed' && <Chip size="small" label={t('inventoryPage.esxiMigration.failed')} color="error" sx={{ fontWeight: 600 }} />}
                 {migJob.status === 'cancelled' && <Chip size="small" label={t('inventoryPage.esxiMigration.cancelled')} color="warning" sx={{ fontWeight: 600 }} />}
                 {!['completed', 'failed', 'cancelled'].includes(migJob.status) && (
-                  <Chip size="small" label={migJob.currentStep?.replaceAll(/_/g, ' ') || migJob.status} color="primary" sx={{ fontWeight: 600 }} />
+                  <Chip size="small" label={migJob.currentStep?.replaceAll("_", ' ') || migJob.status} color="primary" sx={{ fontWeight: 600 }} />
                 )}
                 {migJob.targetVmid && <Typography variant="caption" color="text.secondary">{t('inventoryPage.esxiMigration.targetVmid')}: {migJob.targetVmid}</Typography>}
               </Box>

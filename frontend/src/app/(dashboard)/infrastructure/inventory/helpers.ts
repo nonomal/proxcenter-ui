@@ -170,7 +170,7 @@ export function parseMarkdown(md: string): string {
 
   // 1. Protect fenced code blocks
   let html = md.replaceAll(/```(\w*)\n?([\s\S]*?)```/g, (_, _lang, code) => {
-    const escaped = code.replaceAll(/&/g, '&amp;').replaceAll(/</g, '&lt;').replaceAll(/>/g, '&gt;')
+    const escaped = code.replaceAll("&", '&amp;').replaceAll("<", '&lt;').replaceAll(">", '&gt;')
     return shield(`<pre><code>${escaped}</code></pre>`)
   })
 
@@ -221,7 +221,7 @@ export function parseMarkdown(md: string): string {
     .replaceAll(/^[\*\-] (.*)$/gm, '<li>$1</li>')
     .replaceAll(/^\d+\. (.*)$/gm, '<li>$1</li>')
     .replaceAll(/\n\n/g, '</p><p>')
-    .replaceAll(/\n/g, '<br />')
+    .replaceAll("\n", '<br />')
 
   html = html.replaceAll(/(<li>.*?<\/li>)+/g, '<ul>$&</ul>')
 

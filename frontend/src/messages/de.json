@@ -4242,7 +4242,7 @@
     "nameLabel": "Name (optional)",
     "namePlaceholder": "Max Mustermann",
     "emailLabel": "E-Mail",
-    "passwordLabel": "Passwort",
+    "signInLabel": "Passwort",
     "passwordHelper": "minimal 8 characters",
     "confirmPasswordLabel": "bestätigen Passwort",
     "createAccount": "erstellen administrator Konto",
