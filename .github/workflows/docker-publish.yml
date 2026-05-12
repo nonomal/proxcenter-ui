@@ -473,20 +473,21 @@ jobs:
             echo "::error::Commit RELEASE_NOTES_${TAG}.md at the tagged SHA, then re-push the tag."
             exit 1
           fi
+          # Built via echo (not heredoc) — a bash heredoc forces its body to
+          # column 0, which breaks the YAML literal block scalar that requires
+          # consistent indentation. Single-quoted strings hold the markdown
+          # code fences so bash never interprets the backticks.
+          cp "$NOTES_FILE" /tmp/release-body.md
           {
-            cat "$NOTES_FILE"
-            cat <<EOF
-
-
-## Docker Images
-
-\`\`\`bash
-docker pull ghcr.io/adminsyspro/proxcenter-frontend:${TAG}
-docker pull ghcr.io/adminsyspro/proxcenter-orchestrator:${TAG}
-docker pull ghcr.io/adminsyspro/proxcenter-weasyprint:${TAG}
-\`\`\`
-EOF
-          } > /tmp/release-body.md
+            printf '\n\n'
+            echo '## Docker Images'
+            echo ''
+            echo '```bash'
+            echo "docker pull ghcr.io/adminsyspro/proxcenter-frontend:${TAG}"
+            echo "docker pull ghcr.io/adminsyspro/proxcenter-orchestrator:${TAG}"
+            echo "docker pull ghcr.io/adminsyspro/proxcenter-weasyprint:${TAG}"
+            echo '```'
+          } >> /tmp/release-body.md
           echo "body_path=/tmp/release-body.md" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
