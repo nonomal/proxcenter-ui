@@ -12,6 +12,13 @@ name: SonarCloud (PR gate)
 on:
   pull_request:
     branches: [main]
+  # Also analyze main after each merge so SonarCloud has a fresh baseline
+  # to compare PRs against. Without this trigger the project's new-code
+  # period drifts and pre-existing issues start showing up as "new" on
+  # every PR. The PR gate above prevents anything that would degrade the
+  # rating from reaching main, so main keeps its AAA after analysis.
+  push:
+    branches: [main]
 
 permissions:
   contents: read
