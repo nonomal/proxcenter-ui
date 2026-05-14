@@ -403,7 +403,7 @@ return currentScore > bestScore ? current : best
                           sx={{ height: 16, fontSize: '0.6rem', '& .MuiChip-label': { px: 0.5 } }}
                         />
                       </Box>
-                      {s.total && (
+                      {!!s.total && (
                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                           <Box sx={{ flex: 1, height: 3, bgcolor: 'action.hover', borderRadius: 0.5, overflow: 'hidden' }}>
                             <Box sx={{

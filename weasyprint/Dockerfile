@@ -24,7 +24,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-RUN pip install --no-cache-dir \
+# --only-binary :all: blocks running setup scripts during install
+# (sonar docker:S8541): wheels exist on PyPI for weasyprint, flask and
+# gunicorn on linux/amd64, so the build still succeeds.
+RUN pip install --no-cache-dir --only-binary :all: \
         weasyprint==66.0 \
         flask==3.1.0 \
         gunicorn==23.0.0

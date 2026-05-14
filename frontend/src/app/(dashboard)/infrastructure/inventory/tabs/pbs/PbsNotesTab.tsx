@@ -103,7 +103,7 @@ export default function PbsNotesTab({ pbsId }: PbsNotesTabProps) {
     }
   }, [dirty, saving, pbsId, value, t])
 
-  saveRef.current = handleSave
+  saveRef.current = () => { void handleSave() }
 
   const handleReset = useCallback(() => {
     setValue(original)
