@@ -535,7 +535,14 @@ echo "deb http://download.proxmox.com/debian/pve $(. /etc/os-release && echo $VE
 
       if (failedInstalls.length > 0) {
         const aggregated = failedInstalls.map(f => `=== ${f.node} ===\n${f.error || '(no error string)'}\n${f.output.slice(-2000)}`).join('\n\n')
-        const looks401Enterprise = /\b401\b/i.test(aggregated) && aggregated.toLowerCase().includes('enterprise.proxmox.com')
+        // Match the full URL form ("https://enterprise.proxmox.com") rather
+        // than the bare substring so an apt error mentioning a third-party
+        // mirror that happens to contain "enterprise.proxmox.com" in a path
+        // (e.g. evil.example.com/enterprise.proxmox.com/...) does not trigger
+        // the subscription-required hint. The PVE enterprise repo only
+        // serves HTTPS, so includes() on the full URL prefix is enough.
+        const looks401Enterprise = /\b401\b/i.test(aggregated)
+          && aggregated.includes('https://enterprise.proxmox.com')
         installError = {
           output: aggregated,
           hintKey: looks401Enterprise ? '401_enterprise' : undefined,
