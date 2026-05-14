@@ -2367,7 +2367,7 @@ return favorites.has(vmKey)
   const fetchNetworks = useCallback(() => {
     const connIds = clusters.map(c => c.connId).filter(Boolean)
     if (connIds.length === 0) return
-    const cacheKey = connIds.sort().join(',')
+    const cacheKey = connIds.sort((a, b) => a.localeCompare(b)).join(',')
     if (networkCacheRef.current?.connIds === cacheKey) {
       setNetworkData(networkCacheRef.current.data)
       return

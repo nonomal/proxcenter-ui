@@ -435,7 +435,7 @@ export default function SnapshotsTab({ connections, vmNameMap }: Props) {
                 <Typography variant='caption' color='text.secondary'>{t('siteRecovery.snapshots.image')}</Typography>
                 <Typography variant='body2' sx={{ fontFamily: 'monospace', fontSize: '0.8rem' }}>{detail.pool}/{detail.image}</Typography>
               </Box>
-              {detail.vmid && (
+              {!!detail.vmid && (
                 <Box>
                   <Typography variant='caption' color='text.secondary'>{t('siteRecovery.snapshots.vm')}</Typography>
                   <Typography variant='body2'>{detail.vmid}{vmNameMap?.[detail.vmid] ? ` · ${vmNameMap[detail.vmid]}` : ''}</Typography>

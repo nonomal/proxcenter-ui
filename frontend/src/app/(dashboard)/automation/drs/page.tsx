@@ -1613,7 +1613,7 @@ return Object.entries(metricsData as any)
   // All clusters collapsed by default — no auto-expand
 
   // Detect PVE HA groups / affinity rules that may conflict with DRS
-  const clusterIds = useMemo(() => clusters.map(c => c.id).sort().join(','), [clusters])
+  const clusterIds = useMemo(() => clusters.map(c => c.id).sort((a, b) => a.localeCompare(b)).join(','), [clusters])
 
   const { data: haDataMap } = useSWR(
     clusterIds ? `ha-check:${clusterIds}` : null,
@@ -1686,7 +1686,7 @@ return Object.entries(metricsData as any)
 
   // IDs des migrations actives (string stable pour la dépendance)
   const activeMigrationIds = useMemo(() =>
-    activeMigrations.map(m => m.id).sort().join(','),
+    activeMigrations.map(m => m.id).sort((a, b) => a.localeCompare(b)).join(','),
     [activeMigrations]
   )
 

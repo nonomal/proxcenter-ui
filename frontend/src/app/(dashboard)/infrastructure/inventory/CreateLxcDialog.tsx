@@ -351,7 +351,7 @@ return
       const score = (node.cpuPct || 0) + (node.memPct || 0)
       const bestScore = (best.cpuPct || 0) + (best.memPct || 0)
       return score < bestScore ? node : best
-    })
+    }, onlineNodes[0])
 
     return bestNode.node
   }

@@ -268,7 +268,7 @@ function ContentGroupCard({ group, connId, node, storage, readOnly, onDeleted, o
             </strong>{' '}
             ?
           </DialogContentText>
-          {deleteTarget?.size && (
+          {!!deleteTarget?.size && (
             <Typography variant="caption" sx={{ opacity: 0.6, mt: 1, display: 'block' }}>
               Size: {formatBytes(deleteTarget.size)}
             </Typography>
