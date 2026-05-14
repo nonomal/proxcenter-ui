@@ -72,6 +72,22 @@ jobs:
         # references via sonar.javascript.lcov.reportPaths.
         run: npm run test:coverage
 
+      - name: Rewrite LCOV paths for Sonar
+        # Vitest runs from `frontend/`, so the LCOV SF: lines look like
+        # `src/lib/...`. Sonar runs from the repo root and expects
+        # `frontend/src/lib/...` (matches sonar.sources). Without this
+        # rewrite Sonar logs "Could not resolve <N> file paths" and
+        # new_coverage stays at 0 %.
+        run: |
+          if [ -f frontend/coverage/lcov.info ]; then
+            sed -i 's|^SF:src/|SF:frontend/src/|' frontend/coverage/lcov.info
+            echo "Rewrote LCOV paths (first 3 SF lines):"
+            grep -m 3 '^SF:' frontend/coverage/lcov.info || true
+          else
+            echo "No LCOV produced at frontend/coverage/lcov.info"
+            exit 1
+          fi
+
       - name: SonarCloud scan
         uses: SonarSource/sonarqube-scan-action@v7
         env:
