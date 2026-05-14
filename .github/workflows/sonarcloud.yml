@@ -1,0 +1,108 @@
+name: SonarCloud (PR gate)
+
+# Pre-merge analysis only. Goal: nothing degrades the rating on main, so
+# the public badge stays AAA. SonarCloud's automatic analysis on the
+# SonarCloud side keeps refreshing the main branch rating after merge,
+# this workflow gates the PR before it can land.
+#
+# Make this check required in branch protection ("Settings -> Branches ->
+# main -> Require status checks -> SonarCloud Code Analysis") so a failed
+# Quality Gate blocks the merge.
+
+on:
+  pull_request:
+    branches: [main]
+  # Also analyze main after each merge so SonarCloud has a fresh baseline
+  # to compare PRs against. Without this trigger the project's new-code
+  # period drifts and pre-existing issues start showing up as "new" on
+  # every PR. The PR gate above prevents anything that would degrade the
+  # rating from reaching main, so main keeps its AAA after analysis.
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  sonar:
+    name: SonarCloud Code Analysis
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: proxcenter
+          POSTGRES_PASSWORD: test-pass
+          POSTGRES_DB: proxcenter
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U proxcenter -d proxcenter"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          # Sonar needs full history for blame / SCM info / new-code detection.
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci --legacy-peer-deps --ignore-scripts
+
+      - name: Generate Prisma client
+        working-directory: frontend
+        env:
+          DATABASE_URL: postgresql://proxcenter:test-pass@localhost:5432/proxcenter
+        run: npx prisma generate
+
+      - name: Install psql client
+        # The Vitest globalSetup shells out to psql to create / drop the
+        # per-run schema; ubuntu-latest images ship without it.
+        run: sudo apt-get install -y --no-install-recommends postgresql-client
+
+      - name: Run tests with coverage
+        working-directory: frontend
+        env:
+          POSTGRES_TEST_URL_BASE: postgresql://proxcenter:test-pass@localhost:5432/proxcenter
+        # Produces frontend/coverage/lcov.info which sonar-project.properties
+        # references via sonar.javascript.lcov.reportPaths.
+        run: npm run test:coverage
+
+      - name: Rewrite LCOV paths for Sonar
+        # Vitest runs from `frontend/`, so the LCOV SF: lines look like
+        # `src/lib/...`. Sonar runs from the repo root and expects
+        # `frontend/src/lib/...` (matches sonar.sources). Without this
+        # rewrite Sonar logs "Could not resolve <N> file paths" and
+        # new_coverage stays at 0 %.
+        run: |
+          if [ -f frontend/coverage/lcov.info ]; then
+            sed -i 's|^SF:src/|SF:frontend/src/|' frontend/coverage/lcov.info
+            echo "Rewrote LCOV paths (first 3 SF lines):"
+            grep -m 3 '^SF:' frontend/coverage/lcov.info || true
+          else
+            echo "No LCOV produced at frontend/coverage/lcov.info"
+            exit 1
+          fi
+
+      - name: SonarCloud scan
+        uses: SonarSource/sonarqube-scan-action@v7
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: https://sonarcloud.io
+        with:
+          # Wait for the Quality Gate result so the workflow status reflects
+          # pass/fail. With branch protection requiring this check, a failed
+          # gate blocks the merge before the rating can degrade.
+          args: >
+            -Dsonar.qualitygate.wait=true

@@ -28,5 +28,26 @@ export default defineConfig({
     // `it`s still run sequentially within it) and keeps the suite fast
     // enough for the size we have today.
     fileParallelism: false,
+    // Coverage config used by `npm run test:coverage`. The Sonar workflow
+    // runs this before the scan and the lcov output below is picked up via
+    // sonar.javascript.lcov.reportPaths in sonar-project.properties.
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'lcov'],
+      reportsDirectory: './coverage',
+      // Cover application source only. Test files, vendored template code
+      // (@core / @menu / @layouts) and generated Prisma output should not
+      // dilute the percentage.
+      include: ['src/**/*.{ts,tsx,js,jsx}'],
+      exclude: [
+        'src/**/*.test.{ts,tsx,js,jsx}',
+        'src/__tests__/**',
+        'src/@core/**',
+        'src/@menu/**',
+        'src/@layouts/**',
+        'src/types/**',
+        '**/*.d.ts',
+      ],
+    },
   },
 })
