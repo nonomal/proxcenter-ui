@@ -9,8 +9,13 @@ function validateAIUrl(input) {
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
     throw new Error('Only http and https URLs are allowed')
   }
-  // Return origin + pathname to cut taint flow from user input
-  return `${parsed.origin}${parsed.pathname}`
+  // Return origin + pathname to cut taint flow from user input.
+  // Trim trailing slashes so callers can safely append a sub-path
+  // (e.g. `${base}/api/generate`) without producing `//api/...` which
+  // Ollama 301-redirects to a GET and breaks POST endpoints.
+  let url = `${parsed.origin}${parsed.pathname}`
+  while (url.endsWith('/')) url = url.slice(0, -1)
+  return url
 }
 
 /** Sanitize a string for safe logging (strip newlines/control chars) */
