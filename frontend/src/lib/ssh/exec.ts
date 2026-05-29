@@ -3,6 +3,7 @@ import { prisma } from "@/lib/db/prisma"
 import { decryptSecret } from "@/lib/crypto/secret"
 import { safeLog } from "@/lib/log/sanitize"
 import { orchestratorHeaders } from "@/lib/orchestrator/headers"
+import { makeHostVerifier } from "@/lib/ssh/host-key-store"
 
 const ORCHESTRATOR_URL = process.env.ORCHESTRATOR_URL || "http://localhost:8080"
 
@@ -229,6 +230,10 @@ export function executeSSHDirect(opts: {
       port: opts.port,
       username: opts.user,
       readyTimeout: 30_000,
+      // TOFU host-key verification. Pin on first contact, refuse any
+      // later connection whose server key differs. Closes the MITM gap
+      // that ssh2's default "trust everything" behaviour leaves open.
+      hostVerifier: makeHostVerifier(opts.host, opts.port),
     }
 
     if (opts.key) {
