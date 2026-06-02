@@ -2,9 +2,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 
 import { orchestratorFetch } from '@/lib/orchestrator'
-import { getTenantConnectionIds } from '@/lib/tenant'
 import { checkPermission, PERMISSIONS } from '@/lib/rbac'
-import { assertReportTypeAllowed, buildScopePayloadForCurrentTenant } from '@/lib/reports/tenantScope'
+import { applyReportRequestScope } from '@/lib/reports/connectionScope'
 
 export const runtime = 'nodejs'
 
@@ -48,22 +47,10 @@ export async function PUT(
     const { id } = await params
     const body = await request.json()
 
-    const typeDenied = await assertReportTypeAllowed(body?.type)
-    if (typeDenied) return typeDenied
-
-    // Force connection_ids + vDC scope to the current tenant's slice on every
-    // update so a vDC tenant cannot pivot a schedule onto another tenant's
-    // connections or widen its scope. Backend additionally checks tenant_id
-    // ownership via the X-Tenant-ID header.
-    const tenantConnectionIds = await getTenantConnectionIds()
-    body.connection_ids = Array.from(tenantConnectionIds)
-
-    const scope = await buildScopePayloadForCurrentTenant()
-    if (scope) {
-      body.node_filter = scope.node_filter
-      body.vmid_filter = scope.vmid_filter
-      body.storage_filter = scope.storage_filter
-    }
+    // Enforce the report-type allow-list + resolve the connection scope (vDC
+    // forced to its slice, provider narrow-only, 'vdc' type cleared). Authoritative.
+    const scopeDenied = await applyReportRequestScope(body)
+    if (scopeDenied) return scopeDenied
 
     const data = await orchestratorFetch(`/reports/schedules/${id}`, {
       method: 'PUT',
