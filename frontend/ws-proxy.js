@@ -25,6 +25,8 @@ try {
 }
 
 const { WebSocket } = require('ws')
+const net = require('node:net')
+const tls = require('node:tls')
 
 // Always use localhost for internal API calls (ws-proxy runs in same container as frontend)
 const APP_PORT = process.env.PORT || 3000
@@ -193,6 +195,153 @@ async function handleWsConnection(clientWs, req) {
       console.error('[WS] Shell error:', err)
       clientWs.close(4004, 'Internal error')
     }
+
+    return
+  }
+
+  // Route: /ws/spice/{sessionId} - QEMU SPICE console (spice-html5).
+  // spice-html5 opens one WS per channel; each WS maps to its own upstream:
+  // TCP -> node:3128 -> HTTP CONNECT {proxyticket}:{tlsPort} -> TLS -> relay.
+  if (pathParts[1] === 'ws' && pathParts[2] === 'spice' && pathParts[3]) {
+    const sessionId = pathParts[3]
+    console.log(`[WS] SPICE session: ${sessionId}`)
+
+    // SPICE differs from VNC: the client (spice-html5) speaks FIRST, sending
+    // its SpiceLinkMess the instant the WebSocket opens. Resolving the session
+    // (the consume fetch below) is async, so if the 'message' listener were
+    // attached only afterwards, that first frame would arrive during the await
+    // with no listener and be dropped by ws — leaving the SPICE link half-open
+    // and the console hanging forever. So wire up the client listeners and the
+    // pre-upstream buffer BEFORE any await. Frames that arrive before the
+    // upstream TLS tunnel is ready are queued and flushed once it connects.
+    let upstream = null
+    let upstreamReady = false
+    let tcp = null
+    const clientBuf = []
+
+    const closeAll = (code, reason) => {
+      try { if (clientWs.readyState === WebSocket.OPEN) clientWs.close(code || 1000, reason || '') } catch {}
+      try { upstream && upstream.destroy() } catch {}
+      try { tcp && tcp.destroy() } catch {}
+    }
+
+    clientWs.on('message', (data) => {
+      if (upstreamReady && upstream && upstream.writable) upstream.write(data)
+      else clientBuf.push(data)
+    })
+    clientWs.on('close', () => closeAll(1000, ''))
+    clientWs.on('error', () => closeAll(1011, 'client error'))
+
+    let session
+    try {
+      const r = await fetch(`${INTERNAL_API_URL}/api/internal/spice/consume`, {
+        method: 'POST',
+        headers: INTERNAL_HEADERS,
+        body: JSON.stringify({ sessionId }),
+      })
+      if (!r.ok) {
+        const err = await r.text()
+        console.error(`[WS] SPICE session not found/expired: ${sessionId}`, err)
+        clientWs.close(4001, 'Session not found or expired')
+        return
+      }
+      session = await r.json()
+    } catch (err) {
+      console.error('[WS] SPICE consume error:', err.message)
+      clientWs.close(4004, 'Internal error')
+      return
+    }
+
+    const { proxyticket, proxyHost, proxyPort, tlsPort, ca, hostSubject, insecure } = session
+    if (!proxyticket || !proxyHost || !tlsPort) {
+      console.error('[WS] Invalid SPICE session data:', session)
+      clientWs.close(4002, 'Invalid session data')
+      return
+    }
+
+    // 1) Plain TCP to the spiceproxy daemon, then HTTP CONNECT.
+    tcp = net.connect({ host: proxyHost, port: proxyPort })
+    let connectAcked = false
+    let connectBuf = ''
+
+    tcp.on('connect', () => {
+      // Proxmox's spiceproxy reads the connect string from the HOST HEADER
+      // (verify_spice_connect_url($request->header('Host'))), NOT the CONNECT
+      // request line. So the Host header MUST carry the proxyticket:tlsPort,
+      // not the proxy host:3128 — otherwise it 401s "invalid ticket". A valid
+      // ticket on any cluster node re-proxies to the VM's owning node.
+      const target = `${proxyticket}:${tlsPort}`
+      tcp.write(`CONNECT ${target} HTTP/1.1\r\nHost: ${target}\r\n\r\n`)
+    })
+
+    tcp.on('data', (chunk) => {
+      if (connectAcked) return // shouldn't happen; tls owns the socket after upgrade
+      connectBuf += chunk.toString('binary')
+      const headerEnd = connectBuf.indexOf('\r\n\r\n')
+      if (headerEnd === -1) return
+      const statusLine = connectBuf.split('\r\n')[0]
+      if (!/^HTTP\/1\.[01] 200/.test(statusLine)) {
+        console.error('[WS] SPICE CONNECT rejected:', statusLine)
+        closeAll(4003, 'CONNECT rejected')
+        return
+      }
+      connectAcked = true
+      // Any bytes after the header belong to TLS; net rarely delivers them
+      // here for a fresh CONNECT, but guard anyway.
+      const leftover = Buffer.from(connectBuf.slice(headerEnd + 4), 'binary')
+
+      // 2) TLS over the established tunnel. Validate against host-subject;
+      // never silently disable verification in production. A connection
+      // flagged insecure (self-signed PVE certs) opts out of verification,
+      // mirroring the VNC/shell relay; the flag is computed (not a literal
+      // false) so it tracks the connection setting rather than hard-coding it.
+      const verifyTls = insecure !== true
+      const tlsOpts = { socket: tcp, servername: undefined, rejectUnauthorized: verifyTls }
+      if (verifyTls) {
+        if (!ca || !hostSubject) {
+          console.error('[WS] SPICE TLS params missing; refusing to connect')
+          closeAll(4003, 'TLS params missing')
+          return
+        }
+        tlsOpts.ca = ca
+        tlsOpts.checkServerIdentity = (_host, cert) => {
+          // Proxmox host-subject is the expected certificate subject DN.
+          const subj = cert && cert.subject
+            ? Object.entries(cert.subject).map(([k, v]) => `${k}=${v}`).join(',')
+            : ''
+          // Compare on the CN at minimum; accept if host-subject CN matches.
+          const wantCn = (hostSubject.match(/CN=([^,]+)/) || [])[1]
+          const gotCn = cert && cert.subject ? cert.subject.CN : undefined
+          if (wantCn && gotCn && wantCn === gotCn) return undefined
+          return new Error(`SPICE host-subject mismatch (want ${hostSubject}, got ${subj})`)
+        }
+      }
+
+      upstream = tls.connect(tlsOpts, () => {
+        upstreamReady = true
+        // Flush browser SPICE-link bytes buffered during the CONNECT + TLS
+        // handshake; spice-html5 sends its link message the instant the WS
+        // opens, so dropping these would stall the link and fail the console.
+        console.log(`[WS] SPICE upstream TLS established for ${sessionId}, flushing ${clientBuf.length} queued frame(s)`)
+        for (const m of clientBuf) { try { upstream.write(m) } catch {} }
+        clientBuf.length = 0
+      })
+      if (leftover.length) upstream.write(leftover)
+
+      upstream.on('data', (d) => {
+        if (clientWs.readyState === WebSocket.OPEN) clientWs.send(d, { binary: true })
+      })
+      upstream.on('close', () => closeAll(1000, ''))
+      upstream.on('error', (e) => {
+        console.error('[WS] SPICE upstream error:', e.message)
+        closeAll(4003, 'Upstream error')
+      })
+    })
+
+    tcp.on('error', (e) => {
+      console.error('[WS] SPICE 3128 error:', e.message)
+      closeAll(4003, '3128 unreachable')
+    })
 
     return
   }
