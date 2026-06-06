@@ -246,8 +246,8 @@ export interface InventoryDialogsProps {
   setMigDiskPaths: (v: string) => void
   migTempStorage: string
   setMigTempStorage: (v: string) => void
-  migType: 'cold' | 'live' | 'sshfs_boot'
-  setMigType: (v: 'cold' | 'live' | 'sshfs_boot') => void
+  migType: 'cold' | 'live' | 'sshfs_boot' | 'warm'
+  setMigType: (v: 'cold' | 'live' | 'sshfs_boot' | 'warm') => void
   migTransferMode: 'https' | 'sshfs' | 'auto'
   setMigTransferMode: (v: 'https' | 'sshfs' | 'auto') => void
   migPveConnections: any[]
@@ -607,6 +607,42 @@ echo "deb http://download.proxmox.com/debian/pve $(. /etc/os-release && echo $VE
   }, [esxiMigrateVm?.connId, esxiMigrateVm?.vmid, esxiMigrateVm?.hostType])
   const sourceVsanDatastores = sourceDatastores.filter(n => n.toLowerCase().includes('vsan'))
   const vsanBlocksMigration = sourceVsanDatastores.length > 0
+
+  // Warm migration go/no-go. Probes the chosen target node for the VDDK runtime
+  // the engine needs (nbdkit + vddk plugin + nbd-client + the Broadcom VDDK),
+  // resolving the node exactly as runWarmMigration does so the verdict matches the
+  // engine's planning-time backstop. Node prep is the operator's job (documented);
+  // this only fast-fails a doomed launch. Cluster-auto ('__auto__') can't be probed
+  // before the node is resolved, so it's skipped (the engine backstop still covers it).
+  // The verdict carries the target it was taken for (`key`), so a stale result from a
+  // previously selected node is never mistaken for the current selection.
+  const [warmPreflight, setWarmPreflight] = useState<{ key: string; loading: boolean; ok: boolean; missing: string[]; error?: string } | null>(null)
+  React.useEffect(() => {
+    if ((esxiMigrateVm?.hostType !== 'vmware' && esxiMigrateVm?.hostType !== 'vcenter') || migType !== 'warm' || !migTargetConn || !migTargetNode || migTargetNode === '__auto__') {
+      setWarmPreflight(null)
+      return
+    }
+    const key = `${migTargetConn}::${migTargetNode}`
+    let cancelled = false
+    setWarmPreflight({ key, loading: true, ok: false, missing: [] })
+    fetch('/api/v1/migrations/preflight', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ targetConnectionId: migTargetConn, targetNode: migTargetNode, action: 'warm-check' }),
+    })
+      .then(r => r.json())
+      .then((d: { ok?: boolean; missing?: string[]; error?: string }) => {
+        if (!cancelled) setWarmPreflight({ key, loading: false, ok: !!d.ok, missing: d.missing || [], error: d.error })
+      })
+      .catch(() => { if (!cancelled) setWarmPreflight({ key, loading: false, ok: false, missing: [] }) })
+    return () => { cancelled = true }
+  }, [esxiMigrateVm?.hostType, migType, migTargetConn, migTargetNode])
+  // Only trust the verdict when it belongs to the currently selected target. On a
+  // node/connection switch the state briefly still holds the prior target's result
+  // (the effect re-runs after render); ignoring a mismatched key stops a stale "ready"
+  // from re-enabling the launch against a node that has not passed the current check.
+  const warmPreflightCurrent =
+    warmPreflight && warmPreflight.key === `${migTargetConn}::${migTargetNode}` ? warmPreflight : null
 
   const startVirtioWinDownload = async () => {
     const installNodes = migTargetNode === '__auto__'
@@ -2177,7 +2213,13 @@ return
                     <Stack direction="row" spacing={1}>
                       {([
                         { value: 'cold' as const, icon: 'ri-shut-down-line', color: 'info.main', labelKey: 'migrationTypeCold', descKey: 'migrationTypeColdDesc' },
-                        { value: 'live' as const, icon: 'ri-flashlight-line', color: 'success.main', labelKey: 'migrationTypeLive', descKey: 'migrationTypeLiveDesc' },
+                        // Warm (CBT, no in-transit data loss) is ESXi-direct only (hostType
+                        // 'vmware'). vCenter keeps its existing Live, and any other source that
+                        // reaches this selector (e.g. XCP-ng) keeps Live too — the backend rejects
+                        // warm for non-VMware sources.
+                        (esxiMigrateVm?.hostType === 'vmware' || esxiMigrateVm?.hostType === 'vcenter')
+                          ? { value: 'warm' as const, icon: 'ri-flashlight-line', color: 'success.main', labelKey: 'migrationTypeWarm', descKey: 'migrationTypeWarmDesc' }
+                          : { value: 'live' as const, icon: 'ri-flashlight-line', color: 'success.main', labelKey: 'migrationTypeLive', descKey: 'migrationTypeLiveDesc' },
                       ]).map(opt => (
                         <MuiTooltip key={opt.value} title={t(`inventoryPage.esxiMigration.${opt.descKey}`)} arrow placement="top">
                           <Box
@@ -2217,10 +2259,47 @@ return
                       which injects the VirtIO drivers + guest tools during conversion,
                       so no manual install is needed on that path. Live stays on the
                       in-house fast path without injection, hence the reminder. */}
-                  {!vsanBlocksMigration && esxiMigrateVm?.hostType !== 'vcenter' && esxiMigrateVm?.hostType !== 'hyperv' && esxiMigrateVm?.hostType !== 'nutanix' && !!esxiMigrateVm?.guestOS?.toLowerCase().includes('win') && migType === 'live' && (
+                  {!vsanBlocksMigration && esxiMigrateVm?.hostType !== 'vcenter' && esxiMigrateVm?.hostType !== 'hyperv' && esxiMigrateVm?.hostType !== 'nutanix' && !!esxiMigrateVm?.guestOS?.toLowerCase().includes('win') && (migType === 'live' || migType === 'warm') && (
                     <Alert severity="info" sx={{ fontSize: 12 }} icon={<i className="ri-windows-line" style={{ fontSize: 18 }} />}>
                       {t('inventoryPage.esxiMigration.windowsVirtioNote')}
                     </Alert>
+                  )}
+
+                  {/* Warm migration note: source stays online; CBT enabled on it; cutover does a
+                      clean guest shutdown; needs a block-storage target + nbdkit-vddk on the node. */}
+                  {migType === 'warm' && (
+                    <Alert severity="info" sx={{ fontSize: 12 }} icon={<i className="ri-flashlight-line" style={{ fontSize: 18 }} />}>
+                      {t('inventoryPage.esxiMigration.migrationTypeWarmNote')}
+                    </Alert>
+                  )}
+
+                  {/* Warm go/no-go: is the chosen target node provisioned with the VDDK
+                      runtime? Mirrors the engine's planning-time preflight so a launch that
+                      would fail is blocked here, with the missing pieces named. */}
+                  {migType === 'warm' && warmPreflightCurrent && (
+                    warmPreflightCurrent.loading ? (
+                      <Alert severity="info" sx={{ fontSize: 12 }} icon={<CircularProgress size={16} />}>
+                        {t('inventoryPage.esxiMigration.warmPreflightChecking')}
+                      </Alert>
+                    ) : warmPreflightCurrent.ok ? (
+                      <Alert severity="success" sx={{ fontSize: 12 }} icon={<i className="ri-checkbox-circle-line" style={{ fontSize: 18 }} />}>
+                        {t('inventoryPage.esxiMigration.warmPreflightReady')}
+                      </Alert>
+                    ) : (
+                      <Alert severity="warning" sx={{ fontSize: 12, '& .MuiAlert-message': { width: '100%' } }} icon={<i className="ri-error-warning-line" style={{ fontSize: 18 }} />}>
+                        <Typography variant="body2" fontWeight={600} sx={{ mb: 0.5 }}>
+                          {t('inventoryPage.esxiMigration.warmPreflightFailedTitle')}
+                        </Typography>
+                        {warmPreflightCurrent.missing.length > 0 && (
+                          <Typography variant="body2" sx={{ mb: 0.5 }}>
+                            {t('inventoryPage.esxiMigration.warmPreflightMissing', { items: warmPreflightCurrent.missing.join(', ') })}
+                          </Typography>
+                        )}
+                        <Typography variant="caption" sx={{ opacity: 0.8, display: 'block' }}>
+                          {t('inventoryPage.esxiMigration.warmPreflightDocsHint')}
+                        </Typography>
+                      </Alert>
+                    )
                   )}
 
                   {/* sshfs not installed warning */}
@@ -2245,7 +2324,7 @@ return
                     below — deps missing -> button disabled.
                   */}
                   {(() => {
-                    const isV2vVcenter = esxiMigrateVm?.hostType === 'vcenter' || esxiMigrateVm?.hostType === 'hyperv' || esxiMigrateVm?.hostType === 'nutanix'
+                    const isV2vVcenter = (esxiMigrateVm?.hostType === 'vcenter' && migType !== 'warm') || esxiMigrateVm?.hostType === 'hyperv' || esxiMigrateVm?.hostType === 'nutanix'
                     const isWindowsGuest = !!esxiMigrateVm?.guestOS?.toLowerCase().includes('win')
                     const isDirectEsxiWinCold = !isV2vVcenter && isWindowsGuest && migType === 'cold'
                     return (isV2vVcenter || isDirectEsxiWinCold) && vcenterPreflight?.checked
@@ -2401,7 +2480,7 @@ return
                       /tmp as a fallback when it lives on /, so reaching this branch
                       means the target node genuinely has no qualifying mount. */}
                   {(() => {
-                    const isV2vVcenter = esxiMigrateVm?.hostType === 'vcenter' || esxiMigrateVm?.hostType === 'hyperv' || esxiMigrateVm?.hostType === 'nutanix'
+                    const isV2vVcenter = (esxiMigrateVm?.hostType === 'vcenter' && migType !== 'warm') || esxiMigrateVm?.hostType === 'hyperv' || esxiMigrateVm?.hostType === 'nutanix'
                     const isWindowsGuest = !!esxiMigrateVm?.guestOS?.toLowerCase().includes('win')
                     const isDirectEsxiWinCold = !isV2vVcenter && isWindowsGuest && migType === 'cold'
                     const needsV2vDeps = isV2vVcenter || isDirectEsxiWinCold
@@ -2585,7 +2664,9 @@ return
                     : esxiMigrateVm?.hostType === 'hyperv'
                     ? 'Cold migration only. Mount your Hyper-V share at /mnt/hyperv/ on the target Proxmox node. Disks are detected automatically.'
                     : esxiMigrateVm?.hostType === 'vcenter'
-                    ? (migType === 'live'
+                    ? (migType === 'warm'
+                        ? 'Warm migration: the source stays online while changed blocks are copied (CBT) over vCenter, then a short cutover does a clean guest shutdown before the final sync. No in-transit data loss. vSAN-backed disks are supported. Needs a block-storage target and the VDDK runtime on the Proxmox node.'
+                        : migType === 'live'
                         ? 'Live migration: vCenter snapshot is created on the running VM, disks are exported via NFC while the VM stays up, then the source is powered off and the snapshot removed just before virt-v2v runs. Downtime = convert + import + boot (minutes).'
                         : 'Cold migration: the source VM must be powered off. virt-v2v handles disk conversion and virtio driver injection automatically.')
                     : migType === 'cold' ? t('inventoryPage.esxiMigration.coldMigrationInfo')
@@ -2755,7 +2836,7 @@ return
                   // that the user clicking Migrate then will simply pre-empt
                   // the check, and the backend re-validates the range anyway.
                   if (migTargetVmid && (migTargetVmidStatus === 'taken' || migTargetVmidStatus === 'invalid')) return true
-                  const isV2vVcenter = esxiMigrateVm?.hostType === 'vcenter' || esxiMigrateVm?.hostType === 'hyperv' || esxiMigrateVm?.hostType === 'nutanix'
+                  const isV2vVcenter = (esxiMigrateVm?.hostType === 'vcenter' && migType !== 'warm') || esxiMigrateVm?.hostType === 'hyperv' || esxiMigrateVm?.hostType === 'nutanix'
                   const isWindowsGuest = !!esxiMigrateVm?.guestOS?.toLowerCase().includes('win')
                   // Direct-ESXi Windows Cold is auto-routed through virt-v2v by the API
                   // for automatic driver injection, so we gate on the same deps as vCenter.
@@ -2800,6 +2881,12 @@ return
                   if (migSshfsAvailable === false && (migTransferMode === 'sshfs' || migType === 'sshfs_boot')) return true
                   // vSAN source on direct-ESXi: blocked because vSAN objects need NFC via vCenter.
                   if (vsanBlocksMigration) return true
+                  // Warm: require a CURRENT successful readiness check for the selected
+                  // node. warmPreflightCurrent is null unless the verdict matches the chosen
+                  // target, so this blocks a missing, stale (prior-node), in-flight, or
+                  // failed check, and a click can't beat the verdict to fire a doomed
+                  // migration. Cluster-auto is not gated (the engine backstop covers it).
+                  if (migType === 'warm' && migTargetNode !== '__auto__' && !warmPreflightCurrent?.ok) return true
                   return false
                 })()}
                 sx={{ textTransform: 'none' }}
@@ -3240,7 +3327,11 @@ return
                   <Stack direction="row" spacing={1}>
                     {([
                       { value: 'cold' as const, icon: 'ri-shut-down-line', color: 'info.main', labelKey: 'migrationTypeCold', descKey: 'migrationTypeColdDesc' },
-                      { value: 'live' as const, icon: 'ri-flashlight-line', color: 'success.main', labelKey: 'migrationTypeLive', descKey: 'migrationTypeLiveDesc' },
+                      // Warm (CBT, no in-transit loss) for direct ESXi AND vCenter (the engine
+                      // talks to the source endpoint generically); XCP-ng keeps Live.
+                      (bulkMigHostInfo?.hostType === 'vmware' || bulkMigHostInfo?.hostType === 'vcenter')
+                        ? { value: 'warm' as const, icon: 'ri-flashlight-line', color: 'success.main', labelKey: 'migrationTypeWarm', descKey: 'migrationTypeWarmDesc' }
+                        : { value: 'live' as const, icon: 'ri-flashlight-line', color: 'success.main', labelKey: 'migrationTypeLive', descKey: 'migrationTypeLiveDesc' },
                     ]).map(opt => (
                       <MuiTooltip key={opt.value} title={t(`inventoryPage.esxiMigration.${opt.descKey}`)} arrow placement="top">
                         <Box
@@ -3279,7 +3370,9 @@ return
                 {/* vCenter/Hyper-V info banner for bulk */}
                 {bulkMigHostInfo?.hostType === 'vcenter' && (
                   <Alert severity="info" sx={{ fontSize: 12 }} icon={<i className="ri-information-line" style={{ fontSize: 18 }} />}>
-                    {migType === 'live'
+                    {migType === 'warm'
+                      ? 'Warm migration: each source stays online while changed blocks are copied (CBT) over vCenter, then a short per-VM cutover does a clean guest shutdown before the final sync. No in-transit data loss; vSAN supported. Needs a block-storage target and the VDDK runtime on the Proxmox node(s).'
+                      : migType === 'live'
                       ? 'Live migration: each VM is snapshotted, its disks are NFC-exported while it stays running, then the source is powered off + snapshot removed just before virt-v2v. Per-VM downtime = convert + import + boot.'
                       : 'Cold migration: each source VM must be powered off first. virt-v2v handles disk conversion and virtio driver injection automatically.'}
                   </Alert>
@@ -3300,7 +3393,7 @@ return
                     covers apt-installable deps (virt-v2v / nbdkit / libnbd-bin),
                     virtio-win is a separate manual step surfaced via instructions
                     below and does NOT block the Start Migration button. */}
-                {(bulkMigHostInfo?.hostType === 'vcenter' || bulkMigHostInfo?.hostType === 'hyperv' || bulkMigHostInfo?.hostType === 'nutanix') && vcenterPreflight?.checked && (() => {
+                {(bulkMigHostInfo?.hostType === 'vcenter' || bulkMigHostInfo?.hostType === 'hyperv' || bulkMigHostInfo?.hostType === 'nutanix') && migType !== 'warm' && vcenterPreflight?.checked && (() => {
                   const isAutoBulk = migTargetNode === '__auto__'
                   const checkedNodesBulk = isAutoBulk
                     ? migNodeOptions.filter((o: any) => o.connId === migTargetConn && o.status === 'online').length
@@ -3781,7 +3874,7 @@ return
                 variant="outlined"
                 disabled={(() => {
                   if (!migTargetConn || !migTargetNode || !migTargetStorage || bulkMigStarting) return true
-                  const isV2vSource = bulkMigHostInfo?.hostType === 'vcenter' || bulkMigHostInfo?.hostType === 'hyperv' || bulkMigHostInfo?.hostType === 'nutanix'
+                  const isV2vSource = (bulkMigHostInfo?.hostType === 'vcenter' && migType !== 'warm') || bulkMigHostInfo?.hostType === 'hyperv' || bulkMigHostInfo?.hostType === 'nutanix'
                   if (isV2vSource) {
                     if (vcenterPreflight?.checked) {
                       if (!vcenterPreflight.virtV2vInstalled) return true
