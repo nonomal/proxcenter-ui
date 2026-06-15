@@ -55,6 +55,18 @@ export async function insertBinding(args: {
   mode: PbsBindingMode;
   pbsTokenId?: string | null; pbsTokenSecret?: string | null;
 }): Promise<PbsBindingRow> {
+  // A vDC PBS binding may only target a provider-pool PBS. An MSP tenant owns
+  // its PBS connections wholly; letting a vDC bind to an MSP-owned PBS would
+  // grant IaaS tenants namespace access to another tenant's dedicated server.
+  const owner = await prisma.connection.findUnique({
+    where: { id: args.pbsConnectionId },
+    select: { tenantId: true, type: true },
+  })
+  if (!owner) throw new Error(`PBS connection ${args.pbsConnectionId} not found`)
+  if (owner.tenantId !== 'default') {
+    throw new Error(`PBS connection ${args.pbsConnectionId} is owned by tenant ${owner.tenantId}; vDC bindings can only target provider-pool PBS`)
+  }
+
   const row = await prisma.vdcPbsNamespace.create({
     data: {
       id: randomUUID(),
@@ -95,6 +107,24 @@ export async function listBindingsForTenant(tenantId: string): Promise<PbsBindin
 
 export async function deleteBinding(id: string): Promise<void> {
   await prisma.vdcPbsNamespace.delete({ where: { id } })
+}
+
+/**
+ * Complete a placeholder binding with the freshly minted PBS sub-token.
+ * Throws (P2025) when the row no longer exists, e.g. the PBS connection was
+ * deleted while provisioning: callers use that signal to roll back the
+ * PBS-side artifacts they just created.
+ */
+export async function updateBindingToken(id: string, pbsTokenId: string, pbsTokenSecret: string): Promise<void> {
+  await prisma.vdcPbsNamespace.update({
+    where: { id },
+    data: { pbsTokenId, pbsTokenSecret },
+  })
+}
+
+/** Rollback-safe delete: no error when the row is already gone. */
+export async function deleteBindingIfExists(id: string): Promise<void> {
+  await prisma.vdcPbsNamespace.deleteMany({ where: { id } })
 }
 
 export async function insertPveStorage(args: {

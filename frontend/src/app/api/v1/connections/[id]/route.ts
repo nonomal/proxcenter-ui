@@ -3,7 +3,7 @@ import { NextResponse } from "next/server"
 
 import { getSessionPrisma, getCurrentTenantId } from "@/lib/tenant"
 import { prisma as globalPrisma } from "@/lib/db/prisma"
-import { getVdcScope } from "@/lib/vdc/scope"
+import { getTenantInfrastructureScope, maskingScope } from "@/lib/tenant/infraScope"
 import { encryptSecret, decryptSecret } from "@/lib/crypto/secret"
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
 import { invalidateConnectionCache } from "@/lib/connections/getConnection"
@@ -32,7 +32,8 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
     // vdcs.connection_id, PBS via vdc_pbs_namespaces). Mutations stay
     // tenant-scoped via getSessionPrisma() in PATCH/DELETE below.
     const tenantId = await getCurrentTenantId()
-    const vdcScope = await getVdcScope(tenantId)
+    const infra = await getTenantInfrastructureScope(tenantId)
+    const vdcScope = maskingScope(infra)
 
     const connection = await globalPrisma.connection.findUnique({
       where: { id },
@@ -43,10 +44,9 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
     }
 
     const ownsConnection = (connection as any).tenantId === tenantId
-    const allowedByVdc = !!vdcScope && (
-      vdcScope.connectionIds.has(id) || vdcScope.pbsConnectionIds.has(id)
-    )
-    if (!ownsConnection && !allowedByVdc) {
+    const allowedByVdc = !!vdcScope && (vdcScope.connectionIds.has(id) || vdcScope.pbsConnectionIds.has(id))
+    const allowedByProvider = infra.kind === 'provider'
+    if (!ownsConnection && !allowedByVdc && !allowedByProvider) {
       return NextResponse.json({ error: "Connection not found" }, { status: 404 })
     }
 
@@ -94,9 +94,22 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
     const body = parseResult.data
     const data: any = {}
 
+    // v1.5: Connection.type is immutable post-create (changing pve<->pbs would
+    // invalidate the provider-pool invariant). The DB trigger is the backstop;
+    // return a clean 400 here.
+    if (body.type !== undefined) {
+      const existingType = await prisma.connection.findUnique({ where: { id }, select: { type: true } })
+      if (existingType && existingType.type !== body.type) {
+        return NextResponse.json(
+          { error: 'Connection type is immutable; create a new connection instead' },
+          { status: 400 },
+        )
+      }
+      // type unchanged → no-op, leave data.type unset
+    }
+
     // Champs de base
     if (body.name !== undefined) data.name = body.name
-    if (body.type !== undefined) data.type = body.type
     if (body.baseUrl !== undefined) data.baseUrl = body.baseUrl
     if (body.behindProxy !== undefined) data.behindProxy = !!body.behindProxy
     if (body.insecureTLS !== undefined) data.insecureTLS = body.insecureTLS
@@ -298,6 +311,29 @@ export async function DELETE(_req: Request, ctx: { params: Promise<{ id: string 
       where: { id },
       select: { name: true, type: true, baseUrl: true },
     })
+
+    // Route PBS deletions through unbindFromVdc first: the DB delete-trigger
+    // cascades the binding rows (vdc_pbs_namespaces + vdc_pbs_pve_storages),
+    // but only the app-level unbind also removes the denormalized vdc_storages
+    // rows, the pbs-type storage definitions left on the PVE clusters and the
+    // PBS sub-token. Best-effort per binding: a failed unbind must not block
+    // the deletion (the trigger keeps the DB consistent either way).
+    if (connection?.type === "pbs") {
+      const bindings = await globalPrisma.vdcPbsNamespace.findMany({
+        where: { pbsConnectionId: id },
+        select: { id: true },
+      })
+      if (bindings.length > 0) {
+        const { unbindFromVdc } = await import("@/lib/vdc/pbsOrchestrator")
+        for (const b of bindings) {
+          try {
+            await unbindFromVdc(b.id)
+          } catch (e: any) {
+            console.error(`[connections] unbind ${b.id} before PBS delete failed:`, e?.message || e)
+          }
+        }
+      }
+    }
 
     // Option: supprime aussi les hosts gérés liés
     await prisma.managedHost.deleteMany({ where: { connectionId: id } }).catch(() => {})

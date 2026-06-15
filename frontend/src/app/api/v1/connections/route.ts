@@ -1,9 +1,10 @@
 // src/app/api/v1/connections/route.ts
 import { NextResponse } from "next/server"
+import type { Prisma } from "@prisma/client"
 
-import { getSessionPrisma, getCurrentTenantId } from "@/lib/tenant"
+import { getSessionPrisma, getCurrentTenantId, DEFAULT_TENANT_ID } from "@/lib/tenant"
 import { prisma as globalPrisma } from "@/lib/db/prisma"
-import { getVdcScope } from "@/lib/vdc/scope"
+import { getTenantInfrastructureScope } from "@/lib/tenant/infraScope"
 import { encryptSecret } from "@/lib/crypto/secret"
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
 import { createConnectionSchema } from "@/lib/schemas"
@@ -34,33 +35,69 @@ export async function GET(req: Request) {
     if (typeFilter) where.type = typeFilter
     if (hasCephFilter === 'true') where.hasCeph = true
 
-    // vDC-aware: tenant's connections belong to the provider, use vDC scope to filter
+    // Tenant scope: provider sees all; iaas sees its vDC-referenced connections;
+    // msp sees the connections it directly owns (Connection.tenant_id).
     const tenantId = await getCurrentTenantId()
-    const vdcScope = await getVdcScope(tenantId)
-    const prisma = vdcScope ? globalPrisma : await getSessionPrisma()
+    const infra = await getTenantInfrastructureScope(tenantId)
 
-    // For vDC tenants, restrict to connections referenced by their vDCs.
-    // PVE connections come from vdcs.connection_id (→ scope.connectionIds);
-    // PBS connections come from vdc_pbs_namespaces (→ scope.pbsConnectionIds).
-    // When the caller asks for both (no type filter), allow either set.
-    if (vdcScope) {
-      const pveIds = [...vdcScope.connectionIds]
-      const pbsIds = [...vdcScope.pbsConnectionIds]
-      const allowedIds = typeFilter === 'pbs'
-        ? pbsIds
-        : typeFilter === 'pve'
-          ? pveIds
-          : [...pveIds, ...pbsIds]
-      where.id = { in: allowedIds }
+    let prisma: typeof globalPrisma | Awaited<ReturnType<typeof getSessionPrisma>>
+    if (infra.kind === "provider") {
+      prisma = globalPrisma
+    } else if (infra.kind === "msp") {
+      prisma = await getSessionPrisma()
+    } else {
+      prisma = globalPrisma
+      const pveIds = [...infra.vdcScope.connectionIds]
+      const pbsIds = [...infra.vdcScope.pbsConnectionIds]
+      where.id = {
+        in: typeFilter === "pbs" ? pbsIds : typeFilter === "pve" ? pveIds : [...pveIds, ...pbsIds],
+      }
     }
 
-    const connections = await prisma.connection.findMany({
+    // `prisma` is a union type (global | session); passing it directly to the
+    // deeply-overloaded findMany generic trips TS2589. The concrete row type
+    // is declared here so downstream mapping is fully typed without relying on
+    // Prisma's generic inference across the union.
+    interface ConnectionRow {
+      id: string
+      name: string
+      type: string
+      tenantId: string | null
+      baseUrl: string
+      behindProxy: boolean
+      insecureTLS: boolean
+      hasCeph: boolean
+      latitude: number | null
+      longitude: number | null
+      locationLabel: string | null
+      country: string | null
+      fingerprint: string | null
+      sshEnabled: boolean
+      sshPort: number
+      sshUser: string
+      sshAuthMethod: string | null
+      sshUseSudo: boolean
+      sshKeyEnc: string | null
+      sshPassEnc: string | null
+      createdAt: Date
+      updatedAt: Date
+      hosts: { id: string; node: string; ip: string | null; enabled: boolean }[]
+    }
+
+    // Delegate to globalPrisma for the type signature (both clients share the
+    // same schema); the union assignability check itself hits TS2589, so we
+    // suppress it here. The cast is safe: both union members are PrismaClient
+    // instances with identical connection model signatures.
+    // @ts-expect-error TS2589: union assignability exceeds TS instantiation depth
+    const typedPrisma: typeof globalPrisma = prisma
+    const connections: ConnectionRow[] = await typedPrisma.connection.findMany({
       where: Object.keys(where).length > 0 ? where : undefined,
       orderBy: { createdAt: "desc" },
       select: {
         id: true,
         name: true,
         type: true,
+        tenantId: true,
         baseUrl: true,
         behindProxy: true,
         insecureTLS: true,
@@ -70,13 +107,11 @@ export async function GET(req: Request) {
         locationLabel: true,
         country: true,
         fingerprint: true,
-        // SSH fields (sans les secrets)
         sshEnabled: true,
         sshPort: true,
         sshUser: true,
         sshAuthMethod: true,
         sshUseSudo: true,
-        // Inclure les champs chiffrés pour vérifier si configuré (ne pas renvoyer au client)
         sshKeyEnc: true,
         sshPassEnc: true,
         createdAt: true,
@@ -133,7 +168,53 @@ export async function POST(req: Request) {
       latitude, longitude, locationLabel, country,
       sshEnabled, sshPort, sshUser, sshAuthMethod,
       sshKey, sshPassphrase, sshPassword, sshUseSudo,
+      ownerTenantId,
     } = parseResult.data
+
+    // Create-with-owner (provider-only): the NOC can create a connection
+    // directly owned by an MSP client tenant instead of creating it in the
+    // pool and reassigning afterwards. Anyone else may only create for
+    // themselves (the session tenant).
+    const sessionTenantId = await getCurrentTenantId()
+    let ownerTenant = sessionTenantId
+
+    if (ownerTenantId && ownerTenantId !== sessionTenantId) {
+      const infra = await getTenantInfrastructureScope(sessionTenantId)
+      if (infra.kind !== 'provider') {
+        return NextResponse.json(
+          { error: "Only the provider can create a connection for another tenant" },
+          { status: 403 }
+        )
+      }
+      if (type !== 'pve' && type !== 'pbs') {
+        return NextResponse.json(
+          { error: "Only PVE and PBS connections can be owned by an MSP tenant" },
+          { status: 400 }
+        )
+      }
+      const target = await globalPrisma.tenant.findUnique({
+        where: { id: ownerTenantId },
+        select: { operatingModel: true, enabled: true },
+      })
+      if (!target) {
+        return NextResponse.json({ error: `Unknown tenant: ${ownerTenantId}` }, { status: 400 })
+      }
+      if (target.operatingModel !== 'msp') {
+        return NextResponse.json(
+          { error: "The owner tenant must be an MSP tenant (or omit ownerTenantId for the provider pool)" },
+          { status: 400 }
+        )
+      }
+      // Mirrors the owner-reassign endpoint: no new connections for a tenant
+      // that cannot log in or operate.
+      if (!target.enabled) {
+        return NextResponse.json(
+          { error: `Tenant ${ownerTenantId} is disabled` },
+          { status: 400 }
+        )
+      }
+      ownerTenant = ownerTenantId
+    }
 
     // Préparer les données
     const data: any = {
@@ -309,29 +390,29 @@ export async function POST(req: Request) {
       }
     }
 
-    const prisma = await getSessionPrisma()
-    const created = await prisma.connection.create({
-      data,
-      select: {
-        id: true,
-        name: true,
-        type: true,
-        baseUrl: true,
-        behindProxy: true,
-        insecureTLS: true,
-        hasCeph: true,
-        latitude: true,
-        longitude: true,
-        locationLabel: true,
-        country: true,
-        sshEnabled: true,
-        sshPort: true,
-        sshUser: true,
-        sshAuthMethod: true,
-        sshUseSudo: true,
-        createdAt: true,
-        updatedAt: true,
-      },
+    // v1.5: create the connection and (for provider-owned PVE) its
+    // provider_connections row atomically. The pool-sync trigger is DEFERRABLE
+    // INITIALLY DEFERRED and validates at COMMIT, so both rows must land in one
+    // transaction. Use the GLOBAL client (provider_connections has no tenant_id
+    // column) and set tenant_id explicitly instead of relying on the
+    // tenant-scoped client's injection. An MSP-owned connection gets NO pool
+    // row (the connection_tenant_model_check trigger validates the owner).
+    const tenantId = ownerTenant
+    const created = await globalPrisma.$transaction(async (tx) => {
+      const conn = await tx.connection.create({
+        data: { ...data, tenantId },
+        select: {
+          id: true, name: true, type: true, baseUrl: true, behindProxy: true,
+          insecureTLS: true, hasCeph: true, latitude: true, longitude: true,
+          locationLabel: true, country: true, sshEnabled: true, sshPort: true,
+          sshUser: true, sshAuthMethod: true, sshUseSudo: true, createdAt: true,
+          updatedAt: true,
+        },
+      })
+      if (conn.type === 'pve' && tenantId === DEFAULT_TENANT_ID) {
+        await tx.providerConnection.create({ data: { connectionId: conn.id } })
+      }
+      return conn
     })
 
     // Audit

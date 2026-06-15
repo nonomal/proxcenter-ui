@@ -35,6 +35,7 @@ import {
   Typography,
   LinearProgress,
   InputAdornment,
+  Checkbox,
   useTheme
 } from '@mui/material'
 
@@ -46,6 +47,9 @@ import { useRBAC } from '@/contexts/RBACContext'
 import EmptyState from '@/components/EmptyState'
 import { CountryFlag } from '@/components/ui/CountryFlag'
 import { findCountry } from '@/lib/utils/countries'
+
+import { isMultiLicenseEnabled } from '@/lib/features'
+import { buildLicenseTableRows, computePerTenantRollup } from '@/lib/license/view'
 
 import { useConnectionsManagement } from '@/hooks/useConnectionsManagement'
 import { useLicenseManagement } from '@/hooks/useLicenseManagement'
@@ -74,6 +78,10 @@ const OidcConfigTab = dynamic(() => import('@/components/settings/OidcConfigTab'
 })
 
 const ConnectionDialog = dynamic(() => import('@/components/settings/ConnectionDialog'), {
+  ssr: false
+})
+
+const DiagnosticModal = dynamic(() => import('@/components/settings/DiagnosticModal'), {
   ssr: false
 })
 
@@ -341,11 +349,55 @@ function ConnectionsTab() {
     loadHypervConnections,
   } = useConnectionsManagement()
 
+  // Tenant name map for ownership badges: id -> name
+  const [tenantNameMap, setTenantNameMap] = useState({})
+  useEffect(() => {
+    fetch('/api/v1/tenants')
+      .then(r => r.ok ? r.json() : null)
+      .then(json => {
+        if (!Array.isArray(json?.data)) return
+        const map = {}
+        for (const tenant of json.data) map[tenant.id] = tenant.name
+        setTenantNameMap(map)
+      })
+      .catch(() => {})
+  }, [])
+
+  // vDC map: connectionId -> Array<{ vdcName, tenantId }> (provider-only; silently ignore non-OK)
+  const [vdcsByConnection, setVdcsByConnection] = useState({})
+  useEffect(() => {
+    fetch('/api/v1/admin/vdcs')
+      .then(r => r.ok ? r.json() : null)
+      .then(json => {
+        const rows = Array.isArray(json) ? json : (Array.isArray(json?.data) ? json.data : null)
+        if (!rows) return
+        const map = {}
+        for (const vdc of rows) {
+          if (!vdc.connectionId) continue
+          if (!map[vdc.connectionId]) map[vdc.connectionId] = []
+          map[vdc.connectionId].push({ vdcName: vdc.name, tenantId: vdc.tenantId })
+        }
+        setVdcsByConnection(map)
+      })
+      .catch(() => {})
+  }, [])
+
   // Dialog
   const [addConnOpen, setAddConnOpen] = useState(false)
   const [addConnType, setAddConnType] = useState('pve')
   const [editingConn, setEditingConn] = useState(null)
   const [detectingCephId, setDetectingCephId] = useState(null)
+
+  // Diagnostic modal state
+  const [diagOpen, setDiagOpen] = useState(false)
+  const [diagConnectionId, setDiagConnectionId] = useState(null)
+  const [diagConnectionName, setDiagConnectionName] = useState('')
+
+  const openDiagnostic = (id, name) => {
+    setDiagConnectionId(id)
+    setDiagConnectionName(name)
+    setDiagOpen(true)
+  }
 
   const handleDetectCeph = async (connId) => {
     setDetectingCephId(connId)
@@ -402,6 +454,8 @@ function ConnectionsTab() {
         ...(formData.sshPassphrase.trim() && { sshPassphrase: formData.sshPassphrase.trim() }),
         ...(formData.sshPassword.trim() && { sshPassword: formData.sshPassword.trim() }),
       }),
+      // Provider-only create-with-owner: own the connection by an MSP tenant
+      ...(!editingConn?.id && formData.ownerTenantId && { ownerTenantId: formData.ownerTenantId }),
     }
 
     if (editingConn?.id) {
@@ -510,6 +564,90 @@ function ConnectionsTab() {
     }
   }
 
+  // Shared "Tenant / vDC" column definition factory
+  const makeTenantVdcColumn = (tenantMap, vdcMap) => ({
+    field: 'tenantVdc',
+    headerName: t('settings.connTenantVdcHeader'),
+    width: 200,
+    sortable: false,
+    renderCell: params => {
+      const row = params.row
+      const tid = row.tenantId
+      const isMspOwned = tid && tid !== 'default'
+
+      if (isMspOwned) {
+        const name = tenantMap[tid] || tid
+        return (
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, height: '100%', flexWrap: 'wrap' }}>
+            <Chip size='small' label={t('settings.connectionOwnedBy', { name })} color='secondary' variant='outlined' sx={{ fontSize: '0.7rem', height: 20 }} />
+          </Box>
+        )
+      }
+
+      const vdcs = vdcMap[row.id]
+      if (vdcs && vdcs.length > 0) {
+        return (
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, height: '100%', flexWrap: 'wrap' }}>
+            {vdcs.map((v, i) => {
+              const tName = tenantMap[v.tenantId] || v.tenantId
+              return (
+                <Chip
+                  key={i}
+                  size='small'
+                  label={`${tName} / ${v.vdcName}`}
+                  color='info'
+                  variant='outlined'
+                  sx={{ fontSize: '0.7rem', height: 20 }}
+                />
+              )
+            })}
+          </Box>
+        )
+      }
+
+      return (
+        <Box sx={{ display: 'flex', alignItems: 'center', height: '100%' }}>
+          <Typography variant='caption' sx={{ opacity: 0.4 }}>{t('settings.connPoolLabel')}</Typography>
+        </Box>
+      )
+    }
+  })
+
+  // Diagnostic column (shared across all 6 grids)
+  const makeDiagnosticColumn = () => ({
+    field: 'diagnostic',
+    headerName: '',
+    width: 46,
+    sortable: false,
+    renderCell: params => (
+      <Box sx={{ display: 'flex', alignItems: 'center', height: '100%' }}>
+        <Tooltip
+          title={t('settings.diagnostics.runDiagnostics')}
+          slotProps={{
+            tooltip: {
+              sx: {
+                bgcolor: 'background.paper',
+                color: 'text.primary',
+                border: '1px solid',
+                borderColor: 'divider',
+                borderRadius: 1,
+                boxShadow: 3,
+              }
+            }
+          }}
+        >
+          <IconButton
+            size='small'
+            onClick={(e) => { e.stopPropagation(); openDiagnostic(params.row.id, params.row.name) }}
+            sx={{ width: 28, height: 28 }}
+          >
+            <i className='ri-heart-pulse-line' style={{ fontSize: 16 }} />
+          </IconButton>
+        </Tooltip>
+      </Box>
+    )
+  })
+
   // PVE Columns
   const pveColumns = useMemo(
     () => [
@@ -525,6 +663,7 @@ function ConnectionsTab() {
           </Box>
         )
       },
+      makeTenantVdcColumn(tenantNameMap, vdcsByConnection),
       {
         field: 'baseUrl',
         headerName: t('settings.urlApi'),
@@ -590,21 +729,36 @@ function ConnectionsTab() {
               </Box>
             )
           }
+          const firstHost = hosts[0]
+          const extraCount = hosts.length - 1
+          // Full node list shown on hover so the row stays a single line even
+          // for large clusters. One node per line: name, IP, and disabled flag.
+          const nodeList = hosts
+            .map(h => `${h.node}${h.ip ? ` - ${h.ip}` : ''}${h.enabled ? '' : ` (${t('common.disabled')})`}`)
+            .join('\n')
           return (
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, height: '100%', flexWrap: 'wrap' }}>
-              {hosts.map(host => (
-                <Tooltip key={host.id} title={host.ip || t('settings.noIp')} arrow>
-                  <Chip
-                    size='small'
-                    label={host.node}
-                    icon={<i className='ri-server-line' style={{ fontSize: 14 }} />}
-                    variant='outlined'
-                    color={host.enabled ? 'default' : 'warning'}
-                    sx={{ fontFamily: '"JetBrains Mono", monospace', fontSize: '0.75rem' }}
-                  />
-                </Tooltip>
-              ))}
-            </Box>
+            <Tooltip
+              title={<span style={{ whiteSpace: 'pre-line' }}>{nodeList}</span>}
+              arrow
+              slotProps={{
+                tooltip: { sx: { bgcolor: 'background.paper', color: 'text.primary', border: '1px solid', borderColor: 'divider', boxShadow: 3, maxWidth: 360 } },
+                arrow: { sx: { color: 'background.paper', '&::before': { border: '1px solid', borderColor: 'divider' } } },
+              }}
+            >
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, height: '100%', minWidth: 0 }}>
+                <Chip
+                  size='small'
+                  label={firstHost.node}
+                  icon={<i className='ri-server-line' style={{ fontSize: 14 }} />}
+                  variant='outlined'
+                  color={firstHost.enabled ? 'default' : 'warning'}
+                  sx={{ fontSize: '0.75rem', maxWidth: 130, '& .MuiChip-label': { overflow: 'hidden', textOverflow: 'ellipsis' } }}
+                />
+                {extraCount > 0 && (
+                  <Chip size='small' label={`+${extraCount}`} variant='outlined' sx={{ fontSize: '0.75rem' }} />
+                )}
+              </Box>
+            </Tooltip>
           )
         }
       },
@@ -691,6 +845,7 @@ function ConnectionsTab() {
           )
         },
       },
+      makeDiagnosticColumn(),
       {
         field: 'actions',
         headerName: '',
@@ -712,7 +867,7 @@ function ConnectionsTab() {
         )
       }
     ],
-    [t, loadPveConnections, theme]
+    [t, loadPveConnections, theme, tenantNameMap, vdcsByConnection]
   )
 
   // PBS Columns
@@ -730,6 +885,7 @@ function ConnectionsTab() {
           </Box>
         )
       },
+      makeTenantVdcColumn(tenantNameMap, vdcsByConnection),
       {
         field: 'baseUrl',
         headerName: t('settings.urlApi'),
@@ -791,6 +947,7 @@ function ConnectionsTab() {
           )
         },
       },
+      makeDiagnosticColumn(),
       {
         field: 'actions',
         headerName: '',
@@ -812,7 +969,7 @@ function ConnectionsTab() {
         )
       }
     ],
-    [t, theme]
+    [t, theme, tenantNameMap, vdcsByConnection]
   )
 
   // VMware columns
@@ -830,6 +987,7 @@ function ConnectionsTab() {
           </Box>
         )
       },
+      makeTenantVdcColumn(tenantNameMap, vdcsByConnection),
       {
         field: 'baseUrl',
         headerName: t('settings.esxiHost'),
@@ -865,6 +1023,7 @@ function ConnectionsTab() {
           </Box>
         )
       },
+      makeDiagnosticColumn(),
       {
         field: 'actions',
         headerName: '',
@@ -886,7 +1045,7 @@ function ConnectionsTab() {
         )
       }
     ],
-    [t]
+    [t, tenantNameMap, vdcsByConnection]
   )
 
   // XCP-ng columns
@@ -904,6 +1063,7 @@ function ConnectionsTab() {
           </Box>
         )
       },
+      makeTenantVdcColumn(tenantNameMap, vdcsByConnection),
       {
         field: 'baseUrl',
         headerName: t('settings.xcpngHost'),
@@ -954,6 +1114,7 @@ function ConnectionsTab() {
           )
         },
       },
+      makeDiagnosticColumn(),
       {
         field: 'actions',
         headerName: '',
@@ -975,7 +1136,7 @@ function ConnectionsTab() {
         )
       }
     ],
-    [t]
+    [t, tenantNameMap, vdcsByConnection]
   )
 
   // Nutanix columns
@@ -993,6 +1154,7 @@ function ConnectionsTab() {
           </Box>
         )
       },
+      makeTenantVdcColumn(tenantNameMap, vdcsByConnection),
       {
         field: 'baseUrl',
         headerName: 'Prism Central',
@@ -1014,6 +1176,7 @@ function ConnectionsTab() {
           <ConnectionStatus connection={params.row} autoTest={true} />
         )
       },
+      makeDiagnosticColumn(),
       {
         field: 'actions',
         headerName: '',
@@ -1035,7 +1198,7 @@ function ConnectionsTab() {
         )
       }
     ],
-    [t]
+    [t, tenantNameMap, vdcsByConnection]
   )
 
   // Hyper-V columns
@@ -1053,6 +1216,7 @@ function ConnectionsTab() {
           </Box>
         )
       },
+      makeTenantVdcColumn(tenantNameMap, vdcsByConnection),
       {
         field: 'baseUrl',
         headerName: 'Hyper-V Host',
@@ -1074,6 +1238,7 @@ function ConnectionsTab() {
           <ConnectionStatus connection={params.row} autoTest={true} />
         )
       },
+      makeDiagnosticColumn(),
       {
         field: 'actions',
         headerName: '',
@@ -1095,7 +1260,7 @@ function ConnectionsTab() {
         )
       }
     ],
-    [t]
+    [t, tenantNameMap, vdcsByConnection]
   )
 
   return (
@@ -1464,6 +1629,14 @@ function ConnectionsTab() {
         mode={editingConn ? 'edit' : 'create'}
       />
 
+      {/* Diagnostic modal */}
+      <DiagnosticModal
+        open={diagOpen}
+        connectionId={diagConnectionId}
+        connectionName={diagConnectionName}
+        onClose={() => setDiagOpen(false)}
+      />
+
       {/* Dialog confirmation suppression connexion — remplace l'ancien
           window.confirm. Le titre i18n existant t('settings.deleteConnectionConfirm')
           est interpolé avec le typeName (PVE / PBS / VMware / …). */}
@@ -1565,6 +1738,7 @@ const CATEGORY_LABEL_KEYS = {
 
 function LicenseTab() {
   const t = useTranslations()
+  const theme = useTheme()
   const [licenseKey, setLicenseKey] = useState('')
   const [deactivateDialogOpen, setDeactivateDialogOpen] = useState(false)
 
@@ -1579,6 +1753,7 @@ function LicenseTab() {
     setSuccess,
     handleActivate: hookActivate,
     handleDeactivate: hookDeactivate,
+    loadLicenseStatus,
   } = useLicenseManagement()
 
   const handleActivate = async () => {
@@ -1622,6 +1797,137 @@ function LicenseTab() {
   const currentNodes = nodeStatus?.current_nodes || 0
   const nodeUsagePct = maxNodes > 0 ? Math.min(100, Math.round((currentNodes / maxNodes) * 100)) : 0
 
+  // ── Multi-license (Pillar C) ──
+  const [mlEnabled, setMlEnabled] = useState(false)
+  const [imports, setImports] = useState([])
+  const [pveConns, setPveConns] = useState([])      // for the import modal's cluster picker + rollup
+  const [tenantNames, setTenantNames] = useState({})
+  const [importOpen, setImportOpen] = useState(false)
+  const [importBlob, setImportBlob] = useState('')
+  const [importConnId, setImportConnId] = useState('')
+  const [importing, setImporting] = useState(false)
+  const [removeTarget, setRemoveTarget] = useState(null) // {rowId, licenseId} | null
+  const [editMapTarget, setEditMapTarget] = useState(null) // {rowId, licenseId} | null
+  const [editMapSelected, setEditMapSelected] = useState([])
+  const [savingMap, setSavingMap] = useState(false)
+
+  const loadImports = async () => {
+    try {
+      const res = await fetch('/api/v1/license/imports')
+      if (isMultiLicenseEnabled(res.status)) {
+        const data = await res.json().catch(() => ({}))
+        setMlEnabled(true)
+        setImports(Array.isArray(data?.imports) ? data.imports : [])
+      } else {
+        setMlEnabled(false)
+        setImports([])
+      }
+    } catch {
+      setMlEnabled(false)
+    }
+  }
+
+  useEffect(() => { loadImports() }, [])
+  useEffect(() => {
+    if (!mlEnabled) return
+    fetch('/api/v1/connections')
+      .then(r => (r.ok ? r.json() : null))
+      .then(j => setPveConns((j?.data || []).filter(c => c.type === 'pve')))
+      .catch(() => {})
+    fetch('/api/v1/tenants')
+      .then(r => (r.ok ? r.json() : null))
+      .then(j => {
+        const m = {}
+        for (const tt of (j?.data || [])) m[tt.id] = tt.name
+        setTenantNames(m)
+      })
+      .catch(() => {})
+  }, [mlEnabled])
+
+  const licenseRows = useMemo(() => buildLicenseTableRows(licenseStatus || {}, imports), [licenseStatus, imports])
+  const connName = useMemo(() => {
+    const m = {}
+    for (const c of pveConns) m[c.id] = c.name
+    return m
+  }, [pveConns])
+
+  // connectionId -> import rowId (import rows only; connections under the primary stay freely mappable)
+  const connToImport = useMemo(() => {
+    const m = {}
+    for (const r of licenseRows) {
+      if (r.role !== 'import') continue
+      for (const cid of r.connectionIds || []) m[cid] = r.rowId
+    }
+    return m
+  }, [licenseRows])
+
+  const perTenant = useMemo(() => {
+    const perLicense = licenseStatus?.node_status?.per_license || []
+    const connToTenant = {}
+    for (const c of pveConns) connToTenant[c.id] = c.tenantId
+    return computePerTenantRollup(perLicense, connToTenant, tenantNames)
+  }, [licenseStatus, pveConns, tenantNames])
+
+  const submitImport = async () => {
+    setImporting(true); setError(null); setSuccess(null)
+    try {
+      const cleaned = importBlob.split('\n').map(l => l.trimEnd()).join('\n').trim()
+      const res = await fetch('/api/v1/license/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ license: cleaned, connection_id: importConnId || undefined }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data?.error || t('settings.licenseImportFailed'))
+      setImportOpen(false); setImportBlob(''); setImportConnId('')
+      setSuccess(t('settings.licenseImportSuccess'))
+      await loadImports(); await loadLicenseStatus()
+    } catch (e) {
+      setError(e?.message || t('settings.licenseImportFailed'))
+    } finally { setImporting(false) }
+  }
+
+  const confirmRemove = async () => {
+    const target = removeTarget
+    setRemoveTarget(null)
+    if (!target) return
+    try {
+      const res = await fetch(`/api/v1/license/import/${encodeURIComponent(target.rowId)}`, { method: 'DELETE' })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data?.error || t('settings.licenseRemoveFailed'))
+      setSuccess(t('settings.licenseRemoveSuccess'))
+      await loadImports(); await loadLicenseStatus()
+    } catch (e) {
+      setError(e?.message || t('settings.licenseRemoveFailed'))
+    }
+  }
+
+  const openEditMapping = (row) => {
+    setEditMapTarget({ rowId: row.rowId, licenseId: row.licenseId })
+    setEditMapSelected(row.connectionIds || [])
+  }
+  const toggleMapConn = (cid) => {
+    setEditMapSelected(prev => (prev.includes(cid) ? prev.filter(x => x !== cid) : [...prev, cid]))
+  }
+  const submitEditMapping = async () => {
+    if (!editMapTarget) return
+    setSavingMap(true); setError(null); setSuccess(null)
+    try {
+      const res = await fetch(`/api/v1/license/import/${encodeURIComponent(editMapTarget.rowId)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ connection_ids: editMapSelected }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data?.error || t('settings.licenseMappingFailed'))
+      setEditMapTarget(null)
+      setSuccess(t('settings.licenseMappingSuccess'))
+      await loadImports(); await loadLicenseStatus()
+    } catch (e) {
+      setError(e?.message || t('settings.licenseMappingFailed'))
+    } finally { setSavingMap(false) }
+  }
+
   if (loading) {
     return (
       <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
@@ -1635,7 +1941,8 @@ function LicenseTab() {
       {error && <Alert severity='error' sx={{ mb: 2 }}>{error}</Alert>}
       {success && <Alert severity='success' sx={{ mb: 2 }}>{success}</Alert>}
 
-      {/* ── License Header Card ── */}
+      {/* ── License Header Card (fallback when multi-license data is unavailable, e.g. Community / no orchestrator) ── */}
+      {!mlEnabled && (
       <Card variant='outlined' sx={{ mb: 3, overflow: 'visible' }}>
         <CardContent sx={{ p: 3 }}>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 2.5, flexWrap: 'wrap' }}>
@@ -1801,9 +2108,100 @@ function LicenseTab() {
           )}
         </CardContent>
       </Card>
+      )}
 
-      {/* ── License Actions ── */}
-      {isLicensed && (
+      {/* ── Multi-license: fleet capacity + all licenses ── */}
+      {isLicensed && mlEnabled && (
+        <Card variant='outlined' sx={{ mb: 3 }}>
+          <CardContent sx={{ p: 3 }}>
+            {/* Read-only warning, only when the fleet quota is actually exceeded */}
+            {nodeStatus?.exceeded && (nodeStatus?.max_nodes || 0) > 0 && (
+              <Alert severity='warning' sx={{ mb: 2 }}>
+                {t('settings.licenseFleetExceeded')} ({nodeStatus.current_nodes} / {nodeStatus.max_nodes})
+              </Alert>
+            )}
+
+            {/* All-licenses table */}
+            <Box sx={{ display: 'flex', alignItems: 'center', mb: 1.5 }}>
+              <Typography variant='subtitle1' fontWeight={700} sx={{ flex: 1 }}>{t('settings.licensesTableTitle')}</Typography>
+              <Button size='small' variant='contained' startIcon={<i className='ri-add-line' />} onClick={() => { setImportBlob(''); setImportConnId(''); setImportOpen(true) }}>
+                {t('settings.licenseImportBtn')}
+              </Button>
+            </Box>
+            <DataGrid
+              autoHeight
+              rows={licenseRows}
+              getRowId={r => r.rowId}
+              disableRowSelectionOnClick
+              pageSizeOptions={[10, 25]}
+              initialState={{ pagination: { paginationModel: { pageSize: 10, page: 0 } } }}
+              columns={[
+                { field: 'role', headerName: t('settings.licenseColRole'), width: 110,
+                  renderCell: p => <Chip size='small' variant='outlined' color={p.row.role === 'primary' ? 'primary' : 'default'}
+                    label={p.row.role === 'primary' ? t('settings.licenseRolePrimary') : t('settings.licenseRoleImport')} /> },
+                { field: 'licenseId', headerName: t('settings.licenseColId'), flex: 1, minWidth: 160 },
+                { field: 'licensedTo', headerName: t('settings.licenseColLicensedTo'), flex: 1, minWidth: 140, sortable: false,
+                  renderCell: p => p.row.licensedTo || '—' },
+                { field: 'nodes', headerName: t('settings.licenseColNodes'), width: 150, sortable: false,
+                  renderCell: p => p.row.unlimited ? <span><i className='ri-infinity-line' /></span> : <span>{p.row.usedNodes} / {p.row.maxNodes}</span> },
+                { field: 'mapped', headerName: t('settings.licenseColMapped'), flex: 1, minWidth: 160, sortable: false,
+                  renderCell: p => {
+                    const ids = p.row.connectionIds || []
+                    if (ids.length === 0) return <Typography variant='caption' sx={{ opacity: 0.5 }}>{t('settings.licenseUnmappedFloating')}</Typography>
+                    return <Typography variant='caption'>{ids.map(id => connName[id] || id).join(', ')}</Typography>
+                  } },
+                { field: 'expiresAt', headerName: t('settings.licenseColExpires'), width: 120, sortable: false,
+                  renderCell: p => p.row.expiresAt ? new Date(p.row.expiresAt).toLocaleDateString() : '—' },
+                { field: 'state', headerName: t('settings.licenseColStatus'), width: 110, sortable: false,
+                  renderCell: p => <Chip size='small' color={p.row.state === 'active' ? 'success' : 'default'} label={p.row.state} /> },
+                { field: 'actions', headerName: '', width: 110, sortable: false,
+                  renderCell: p => p.row.role === 'import' ? (
+                    <Box sx={{ display: 'flex', gap: 0.5 }}>
+                      <Tooltip title={t('settings.licenseEditMapping')}>
+                        <IconButton size='small' onClick={() => openEditMapping(p.row)}><i className='ri-links-line' /></IconButton>
+                      </Tooltip>
+                      <Tooltip title={t('settings.licenseRemoveImport')}>
+                        <IconButton size='small' color='error' onClick={() => setRemoveTarget({ rowId: p.row.rowId, licenseId: p.row.licenseId })}><i className='ri-delete-bin-line' /></IconButton>
+                      </Tooltip>
+                    </Box>
+                  ) : (
+                    <Tooltip title={t('settings.deactivateLicense')}>
+                      <IconButton size='small' color='error' onClick={() => setDeactivateDialogOpen(true)}><i className='ri-delete-bin-line' /></IconButton>
+                    </Tooltip>
+                  ) },
+              ]}
+              sx={{ '& .MuiDataGrid-row:hover': { backgroundColor: 'action.hover' } }}
+            />
+
+            {perTenant.length > 0 && (
+              <Box sx={{ mt: 3 }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
+                  <i className='ri-group-line' style={{ fontSize: 18, opacity: 0.6 }} />
+                  <Typography variant='subtitle1' fontWeight={700}>{t('settings.licensePerTenantTitle')}</Typography>
+                </Box>
+                <Typography variant='caption' sx={{ opacity: 0.6, display: 'block', mb: 1 }}>{t('settings.licensePerTenantHint')}</Typography>
+                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                  {perTenant.map(row => (
+                    <Box key={row.tenantId} sx={{ display: 'flex', alignItems: 'center', gap: 1.5, px: 1.5, py: 1, borderRadius: 1, border: 1, borderColor: 'divider' }}>
+                      <Chip size='small' color='secondary' variant='outlined' label={row.tenantName} />
+                      <Typography variant='body2' fontWeight={600}>
+                        {row.unlimited ? <i className='ri-infinity-line' /> : `${row.usedNodes} / ${row.maxNodes}`}
+                      </Typography>
+                      <Box sx={{ flex: 1 }} />
+                      <Typography variant='caption' sx={{ opacity: 0.6 }}>
+                        {t('settings.licensePerTenantCoveredBy', { ids: row.licenseIds.join(', ') })}
+                      </Typography>
+                    </Box>
+                  ))}
+                </Box>
+              </Box>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* ── License Actions (fallback: only when the multi-license view is not active) ── */}
+      {isLicensed && !mlEnabled && (
         <Card variant='outlined' sx={{ mb: 3 }}>
           <CardContent sx={{ p: 3 }}>
             <Typography variant='subtitle1' fontWeight={700} sx={{ mb: 2 }}>
@@ -1866,6 +2264,98 @@ function LicenseTab() {
             startIcon={<i className='ri-delete-bin-line' />}
           >
             {t('settings.deactivateLicense')}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Import additional license */}
+      <Dialog open={importOpen} onClose={() => setImportOpen(false)} maxWidth='sm' fullWidth>
+        <DialogTitle sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+          <i className='ri-add-circle-line' style={{ fontSize: 22 }} />
+          {t('settings.licenseImportDialogTitle')}
+        </DialogTitle>
+        <DialogContent>
+          <TextField fullWidth multiline rows={4} sx={{ mt: 1, mb: 2 }}
+            label={t('settings.licenseImportBlobLabel')}
+            placeholder={t('settings.licenseImportBlobPlaceholder')}
+            value={importBlob}
+            onChange={e => setImportBlob(e.target.value)}
+          />
+          <FormControl fullWidth size='small'>
+            <InputLabel>{t('settings.licenseImportConnLabel')}</InputLabel>
+            <Select label={t('settings.licenseImportConnLabel')} value={importConnId} onChange={e => setImportConnId(e.target.value)}>
+              <MenuItem value=''>{t('settings.licenseImportConnNone')}</MenuItem>
+              {pveConns.map(c => {
+                const isCluster = (c.hosts?.length || 0) > 1
+                return (
+                  <MenuItem key={c.id} value={c.id}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      {isCluster
+                        ? <i className='ri-server-line' style={{ fontSize: 16, opacity: 0.7 }} />
+                        : <img src={theme.palette.mode === 'dark' ? '/images/proxmox-logo-dark.svg' : '/images/proxmox-logo.svg'} alt='' width={16} height={16} />}
+                      {c.name}
+                    </Box>
+                  </MenuItem>
+                )
+              })}
+            </Select>
+          </FormControl>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <Button onClick={() => setImportOpen(false)} variant='outlined'>{t('common.cancel')}</Button>
+          <Button onClick={submitImport} variant='contained' disabled={!importBlob.trim() || importing}
+            startIcon={importing ? <i className='ri-loader-4-line' /> : <i className='ri-check-line' />}>
+            {t('settings.licenseImportSubmit')}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Remove import confirmation */}
+      <Dialog open={!!removeTarget} onClose={() => setRemoveTarget(null)} maxWidth='xs' fullWidth>
+        <DialogTitle sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+          <i className='ri-error-warning-line' style={{ color: 'var(--mui-palette-error-main)', fontSize: 22 }} />
+          {t('settings.licenseRemoveImport')}
+        </DialogTitle>
+        <DialogContent><Typography>{t('settings.licenseRemoveConfirm')}</Typography></DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <Button onClick={() => setRemoveTarget(null)} variant='outlined'>{t('common.cancel')}</Button>
+          <Button onClick={confirmRemove} variant='contained' color='error' startIcon={<i className='ri-delete-bin-line' />}>
+            {t('settings.licenseRemoveImport')}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Edit license mapping */}
+      <Dialog open={!!editMapTarget} onClose={() => setEditMapTarget(null)} maxWidth='sm' fullWidth>
+        <DialogTitle sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+          <i className='ri-links-line' style={{ fontSize: 22 }} />
+          {t('settings.licenseEditMappingTitle')}
+        </DialogTitle>
+        <DialogContent>
+          <Typography variant='caption' sx={{ opacity: 0.7, display: 'block', mb: 1.5 }}>{t('settings.licenseEditMappingHint')}</Typography>
+          <Box sx={{ display: 'flex', flexDirection: 'column' }}>
+            {pveConns.map(c => {
+              const takenByOther = !!(editMapTarget && connToImport[c.id] && connToImport[c.id] !== editMapTarget.rowId)
+              return (
+                <FormControlLabel key={c.id}
+                  control={<Checkbox size='small' checked={editMapSelected.includes(c.id)} disabled={takenByOther} onChange={() => toggleMapConn(c.id)} />}
+                  label={
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      {(c.hosts?.length || 0) > 1
+                        ? <i className='ri-server-line' style={{ fontSize: 16, opacity: 0.7 }} />
+                        : <img src={theme.palette.mode === 'dark' ? '/images/proxmox-logo-dark.svg' : '/images/proxmox-logo.svg'} alt='' width={16} height={16} />}
+                      <span>{takenByOther ? `${c.name} (${t('settings.licenseConnCoveredByOther')})` : c.name}</span>
+                    </Box>
+                  } />
+              )
+            })}
+          </Box>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <Button onClick={() => setEditMapTarget(null)} variant='outlined'>{t('common.cancel')}</Button>
+          <Button onClick={submitEditMapping} variant='contained' disabled={savingMap}
+            startIcon={savingMap ? <i className='ri-loader-4-line' /> : <i className='ri-check-line' />}>
+            {t('settings.licenseMappingSave')}
           </Button>
         </DialogActions>
       </Dialog>

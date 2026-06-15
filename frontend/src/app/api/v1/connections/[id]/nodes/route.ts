@@ -2,12 +2,14 @@ import { NextResponse } from "next/server"
 
 import { pveFetch } from "@/lib/proxmox/client"
 import { getConnectionById } from "@/lib/connections/getConnection"
+import { prisma as globalPrisma } from "@/lib/db/prisma"
 import { checkPermission, PERMISSIONS } from "@/lib/rbac"
 import { resolveManagementIp } from "@/lib/proxmox/resolveManagementIp"
 import { extractHostFromUrl, extractPortFromUrl } from "@/lib/proxmox/urlUtils"
 import { setNodeIps } from "@/lib/cache/nodeIpCache"
 import { getSessionPrisma, getCurrentTenantId } from "@/lib/tenant"
-import { getVdcScope } from "@/lib/vdc/scope"
+import { DEFAULT_TENANT_ID } from "@/lib/tenant/constants"
+import { getTenantInfrastructureScope, maskingScope } from "@/lib/tenant/infraScope"
 
 export const runtime = "nodejs"
 
@@ -38,9 +40,17 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
 
   // Resolve tenant for vDC-aware caching and filtering
   const tenantId = await getCurrentTenantId()
-  const cacheKey = `${tenantId}:${id}`
 
-  // Check response cache (keyed by tenant to avoid cross-tenant leaks)
+  // The 30s response cache must not serve an MSP-owned cluster's node list,
+  // fetched by an authorized NOC user, to a narrowly scoped default-tenant
+  // user. The caller's connection-scoped view grant is part of the key;
+  // getConnectionById enforces the actual access.
+  const fleetView =
+    tenantId === DEFAULT_TENANT_ID &&
+    (await checkPermission(PERMISSIONS.CONNECTION_VIEW, "connection", id)) === null
+  const cacheKey = `${tenantId}:${fleetView ? "fleet" : "scoped"}:${id}`
+
+  // Check response cache (keyed by tenant + access scope to avoid leaks)
   const cache = getNodesCache()
   const cached = cache.get(cacheKey)
   if (cached && Date.now() - cached.timestamp < NODES_CACHE_TTL) {
@@ -48,6 +58,19 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
   }
 
   const conn = await getConnectionById(id)
+
+  // ManagedHost rows follow the connection owner's tenant (see lib/connections/
+  // assignment.ts). When the provider visits an MSP-owned connection, write
+  // through the global client with the owner's tenantId so the visit never
+  // creates default-owned rows that would collide with the MSP tenant's own
+  // upserts on the [connectionId, node] unique key.
+  const crossTenantView =
+    tenantId === DEFAULT_TENANT_ID &&
+    (conn.tenantId ?? DEFAULT_TENANT_ID) !== DEFAULT_TENANT_ID
+  const hostDb = crossTenantView ? globalPrisma : prisma
+  const hostTenant: { tenantId?: string } = crossTenantView
+    ? { tenantId: conn.tenantId }
+    : {}
 
   // Fetch nodes and cluster resources in parallel (for maintenance hastate)
   const [nodes, clusterResources] = await Promise.all([
@@ -158,17 +181,17 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
         const nodeName = n.node || n.name
         if (!nodeName) return Promise.resolve()
         liveNodeNames.push(nodeName)
-        return prisma.managedHost.upsert({
+        return hostDb.managedHost.upsert({
           where: { connectionId_node: { connectionId: id, node: nodeName } },
           update: { ip: n.ip || null },
-          create: { connectionId: id, node: nodeName, ip: n.ip || null },
+          create: { connectionId: id, node: nodeName, ip: n.ip || null, ...hostTenant },
         })
       })
     )
 
     // Cleanup stale ManagedHost entries for nodes removed from the cluster
     if (liveNodeNames.length > 0) {
-      await prisma.managedHost.deleteMany({
+      await hostDb.managedHost.deleteMany({
         where: { connectionId: id, node: { notIn: liveNodeNames } },
       })
     }
@@ -179,7 +202,7 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
   // Fetch SSH address overrides from ManagedHost
   let sshOverrides: Record<string, { sshAddress: string | null; hostId: string }> = {}
   try {
-    const hosts = await prisma.managedHost.findMany({
+    const hosts = await hostDb.managedHost.findMany({
       where: { connectionId: id },
       select: { id: true, node: true, sshAddress: true },
     })
@@ -194,15 +217,15 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
     hostId: sshOverrides[n.node || n.name]?.hostId || null,
   }))
 
-  // vDC filtering: restrict to nodes assigned to the tenant's vDC
-  const vdcScope = await getVdcScope(tenantId)
-  if (vdcScope) {
-    const allowedNodes = vdcScope.nodesByConnection.get(id)
-    if (allowedNodes) {
-      nodesWithSsh = nodesWithSsh.filter((n: any) => allowedNodes.has(n.node || n.name))
-    } else {
-      nodesWithSsh = []
-    }
+  // Node filtering: iaas (vDC) tenants see only their vDC's nodes; provider and
+  // msp tenants see the full node list (msp owns the whole cluster). maskingScope
+  // is null for provider + msp, so they skip filtering entirely.
+  const mask = maskingScope(await getTenantInfrastructureScope(tenantId))
+  if (mask) {
+    const allowedNodes = mask.nodesByConnection.get(id)
+    nodesWithSsh = allowedNodes
+      ? nodesWithSsh.filter((n: any) => allowedNodes.has(n.node || n.name))
+      : []
   }
 
   // Cache the response for 30s (keyed by tenant)
