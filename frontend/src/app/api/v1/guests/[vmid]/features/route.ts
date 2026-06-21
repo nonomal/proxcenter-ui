@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server"
 
 import { pveFetch } from "@/lib/proxmox/client"
-import { getConnectionById } from "@/lib/connections/getConnection"
+import { getConnectionByIdOrNull } from "@/lib/connections/getConnection"
 
 export const runtime = "nodejs"
 
@@ -21,16 +21,6 @@ function parseVmKey(vmKey: string) {
     type: parts[1],
     node: parts[2],
     vmid: parts[3],
-  }
-}
-
-async function getConnection(id: string) {
-  // Use the shared helper so vDC tenants reach provider-owned connections
-  // through their vDC scope instead of getting a tenant-scoped 404.
-  try {
-    return await getConnectionById(id)
-  } catch {
-    return null
   }
 }
 
@@ -59,7 +49,7 @@ export async function GET(
       return NextResponse.json({ data: { hasFeature: true } })
     }
 
-    const conn = await getConnection(connId)
+    const conn = await getConnectionByIdOrNull(connId)
 
     if (!conn) {
       return NextResponse.json({ error: "Connection not found" }, { status: 404 })
@@ -73,6 +63,7 @@ export async function GET(
     })
   } catch (e: any) {
     console.error("Feature check error:", e?.message)
-    return NextResponse.json({ data: { hasFeature: false } })
+    const status = /invalid vmkey/i.test(e?.message || "") ? 400 : 500
+    return NextResponse.json({ error: e?.message || "Feature check failed" }, { status })
   }
 }

@@ -69,6 +69,19 @@ function isCrossTenantFromSession(
   )
 }
 
+/**
+ * True when an error from getConnectionById/getPbsConnectionById means the
+ * connection genuinely does not exist (or is denied, which we surface as
+ * not-found to avoid id enumeration). Lets routes return 404 for not-found
+ * while letting real DB/crypto/infra errors propagate to a 500. Matches the
+ * "Connection not found" / "PBS Connection not found" messages those helpers
+ * throw; config errors (no baseUrl, no apiTokenEnc, ...) are NOT not-found.
+ */
+export function isConnectionNotFoundError(err: unknown): boolean {
+  const msg = (err as { message?: string } | null)?.message || ""
+  return /connection not found/i.test(msg)
+}
+
 // In-memory cache for connections
 const connectionCache = new Map<string, { data: PveConn | PbsConn; expiry: number }>()
 const CACHE_TTL = 60_000 // 60 seconds
@@ -164,6 +177,25 @@ export async function getConnectionById(id: string, tenantId?: string): Promise<
   connectionCache.set(cacheKey, { data: result, expiry: Date.now() + CACHE_TTL })
 
   return result
+}
+
+/**
+ * getConnectionById, but tolerant of a missing/denied connection: returns null
+ * for a genuine not-found (so the caller can answer 404) while letting real
+ * DB/crypto/config errors propagate to the caller's 500 path. Centralises the
+ * try/catch wrapper that the guest proxy routes (features, snapshots) shared
+ * verbatim. See isConnectionNotFoundError.
+ */
+export async function getConnectionByIdOrNull(
+  id: string,
+  tenantId?: string
+): Promise<PveConn | null> {
+  try {
+    return await getConnectionById(id, tenantId)
+  } catch (e) {
+    if (isConnectionNotFoundError(e)) return null
+    throw e
+  }
 }
 
 

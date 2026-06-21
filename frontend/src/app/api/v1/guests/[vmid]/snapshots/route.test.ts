@@ -7,7 +7,9 @@ vi.mock('next/headers', () => ({
 }))
 
 vi.mock('@/lib/connections/getConnection', () => ({
-  getConnectionById: vi.fn<(id: string) => Promise<any>>(),
+  // The not-found vs real-error mapping now lives in getConnectionByIdOrNull
+  // (unit-tested in getConnection.test.ts); the route just consumes its result.
+  getConnectionByIdOrNull: vi.fn<(id: string) => Promise<any>>(),
 }))
 
 vi.mock('@/lib/proxmox/client', () => ({
@@ -43,14 +45,14 @@ vi.mock('@/lib/audit', () => ({
 }))
 
 import { GET, POST, DELETE } from './route'
-import { getConnectionById } from '@/lib/connections/getConnection'
+import { getConnectionByIdOrNull } from '@/lib/connections/getConnection'
 import { pveFetch } from '@/lib/proxmox/client'
 import { checkPermission } from '@/lib/rbac'
 import { getCurrentTenantId } from '@/lib/tenant'
 import { resolveVdcForTenant, checkVdcQuota } from '@/lib/vdc/quota'
 import { audit } from '@/lib/audit'
 
-const getConnectionByIdMock = getConnectionById as any
+const getConnectionByIdOrNullMock = getConnectionByIdOrNull as any
 const pveFetchMock = pveFetch as any
 const checkPermissionMock = checkPermission as any
 const getCurrentTenantIdMock = getCurrentTenantId as any
@@ -66,7 +68,7 @@ const VMID = '101'
 beforeEach(() => {
   vi.clearAllMocks()
   checkPermissionMock.mockResolvedValue(null)
-  getConnectionByIdMock.mockResolvedValue({ id: CONN_ID })
+  getConnectionByIdOrNullMock.mockResolvedValue({ id: CONN_ID })
   pveFetchMock.mockResolvedValue([])
   getCurrentTenantIdMock.mockResolvedValue('default')
   resolveVdcForTenantMock.mockResolvedValue(null)
@@ -106,12 +108,22 @@ describe('GET /api/v1/guests/[vmid]/snapshots', () => {
   })
 
   it('404 when connection not found', async () => {
-    getConnectionByIdMock.mockRejectedValue(new Error('not found'))
+    getConnectionByIdOrNullMock.mockResolvedValue(null)
     const res = await GET(new Request('http://test.local/_'), {
       params: Promise.resolve({ vmid: VM_KEY }),
     })
-    // getConnection wrapper catches and returns null -> 404
+    // getConnection wrapper maps a genuine not-found to null -> 404
     expect(res.status).toBe(404)
+  })
+
+  it('500 when getConnection fails with a non-not-found error (no longer masked as 404)', async () => {
+    getConnectionByIdOrNullMock.mockRejectedValue(new Error('DB error'))
+    const res = await GET(new Request('http://test.local/_'), {
+      params: Promise.resolve({ vmid: VM_KEY }),
+    })
+    expect(res.status).toBe(500)
+    const body = await readJson<any>(res)
+    expect(body.error).toMatch(/DB error/i)
   })
 
   it('403 when RBAC denies vm.view', async () => {
@@ -168,7 +180,7 @@ describe('POST /api/v1/guests/[vmid]/snapshots', () => {
   })
 
   it('404 when connection not found', async () => {
-    getConnectionByIdMock.mockRejectedValue(new Error('not found'))
+    getConnectionByIdOrNullMock.mockResolvedValue(null)
     const res = await callRoute(POST as any, {
       method: 'POST',
       params: { vmid: VM_KEY },
@@ -295,7 +307,7 @@ describe('DELETE /api/v1/guests/[vmid]/snapshots', () => {
   })
 
   it('404 when connection not found', async () => {
-    getConnectionByIdMock.mockRejectedValue(new Error('not found'))
+    getConnectionByIdOrNullMock.mockResolvedValue(null)
     const res = await callRoute(DELETE as any, {
       method: 'DELETE',
       params: { vmid: VM_KEY },
