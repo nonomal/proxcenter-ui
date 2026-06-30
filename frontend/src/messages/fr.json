@@ -4078,6 +4078,7 @@
       "minimumSpecs": "Minimum",
       "addCustom": "Ajouter une image",
       "editCustom": "Modifier l'image",
+      "builtInLabel": "Intégrées",
       "customLabel": "Custom",
       "volume": "Volume",
       "sourceType": "Source de l'image",
@@ -4118,7 +4119,11 @@
       "updated": "Blueprint mis à jour",
       "deleted": "Blueprint supprimé",
       "tagsHelp": "Séparez les tags par des points-virgules (ex: prod;web;linux)",
-      "public": "Public (visible par tous les utilisateurs)"
+      "public": "Public (visible par tous les utilisateurs)",
+      "cloudInitSection": "Cloud-init (optionnel)",
+      "cloudInitHelp": "Intégré au blueprint et pré-rempli au déploiement. Les mots de passe ne sont jamais enregistrés dans un blueprint.",
+      "staticIpWarning": "Une IP statique est partagée par toutes les VMs créées depuis ce blueprint. Utilisez DHCP sauf si ce preset ne sert qu'à une seule VM.",
+      "bridgeHelp": "Choisissez un VNet de vDC, ou saisissez un nom de bridge (ex. vmbr0)."
     },
     "deploy": {
       "title": "Déployer une VM",
